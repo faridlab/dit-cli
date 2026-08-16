@@ -1,0 +1,28 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug dit (CLI)",
+      "cargo": { "args": ["build", "--bin=dit", "--package=dit-cli"] },
+      "args": [],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug dit-server",
+      "cargo": { "args": ["build", "--bin=dit-server", "--package=dit-server"] },
+      "args": [],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug unit tests (workspace)",
+      "cargo": { "args": ["test", "--no-run", "--workspace"] },
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "rust-analyzer.check.command": "clippy",
+  "rust-analyzer.check.extraArgs": ["--all-targets"],
+  "rust-analyzer.cargo.features": "all",
+  "editor.formatOnSave": true,
+  "[rust]": { "editor.defaultFormatter": "rust-lang.rust-analyzer" },
+
+  // ARCHITECTURE.md §12.3 / Risk #12: `dit fmt` writes whitespace-only lines
+  // inside nested blocks. If the editor trims them, DIT rewrites them, and the
+  // two fight forever — producing spurious diffs. Leave markdown alone.
+  "[markdown]": {
+    "files.trimTrailingWhitespace": false,
+    "files.insertFinalNewline": true
+  },
+
+  "files.watcherExclude": {
+    "**/target/**": true,
+    "**/.dit-cache/**": true,
+    "**/node_modules/**": true
+  },
+  "search.exclude": { "**/target": true, "**/node_modules": true },
+
+  // Naming rules — ARCHITECTURE.md §5.3.
+  "cSpell.words": ["comrak", "gitoxide", "proptest", "rusqlite", "thiserror", "ulid", "wasm"]
+}

@@ -1,0 +1,18 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "just check",
+      "type": "shell",
+      "command": "just check",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "invariants only",
+      "type": "shell",
+      "command": "cargo test --test invariants",
+      "problemMatcher": ["$rustc"]
+    }
+  ]
+}

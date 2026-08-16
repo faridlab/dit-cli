@@ -1,0 +1,14 @@
+[package]
+name    = "dit-store"
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dit-model = { workspace = true }
+dit-parse = { workspace = true }
+thiserror = { workspace = true }

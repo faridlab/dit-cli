@@ -1,0 +1,21 @@
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# DIT's own index — disposable by design (Principle 2), never committed.
+.dit-cache/
+.dit-worktree/
+
+node_modules/
+apps/web/dist/
+.env
+.env.*
+!.env.example
+
+.DS_Store
+*.log
+
+.claude/
+
+# The UI bundle is a build artifact, never committed (DESIGN.md §8).
+apps/web/dist/

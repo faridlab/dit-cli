@@ -1,0 +1,19 @@
+[package]
+name    = "dit-core"
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dit-model = { workspace = true }
+dit-parse = { workspace = true }
+dit-query = { workspace = true }
+dit-store = { workspace = true }
+dit-index = { workspace = true }
+dit-vcs = { workspace = true }
+dit-ai = { workspace = true }
+thiserror = { workspace = true }

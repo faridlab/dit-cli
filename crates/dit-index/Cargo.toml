@@ -1,0 +1,15 @@
+[package]
+name    = "dit-index"
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dit-model = { workspace = true }
+dit-parse = { workspace = true }
+dit-query = { workspace = true }
+thiserror = { workspace = true }

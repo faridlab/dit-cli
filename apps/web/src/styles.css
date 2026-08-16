@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+/* Dense, keyboard-first, dev-tool feel. Tokens live here so components stay
+   token-only — swapping the palette must never mean editing components. */
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --radius: 0.375rem;
+}
+
+:root {
+  color-scheme: light dark;
+}
+
+/* A tool people live in all day: motion is a distraction, not delight. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

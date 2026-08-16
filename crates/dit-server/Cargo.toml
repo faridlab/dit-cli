@@ -1,0 +1,23 @@
+[package]
+name    = "dit-server"
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Release builds embed the built UI into the binary (one file, no install).
+# Dev builds omit it, so `cargo run` never requires a Node toolchain and
+# `npm run dev` never requires rebuilding Rust. Same repo, independent loops.
+default = []
+embed-ui = []
+
+[dependencies]
+dit-core = { workspace = true }
+
+[[bin]]
+name = "dit-server"
+path = "src/main.rs"

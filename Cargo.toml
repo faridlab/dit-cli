@@ -1,0 +1,56 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+# The root is also a package so `tests/architecture.rs` and `tests/invariants.rs`
+# live at the workspace root, where ARCHITECTURE.md says they do. It ships no
+# code of its own.
+[package]
+name    = "dit-guards"
+publish = false
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+rust-version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[workspace.package]
+version    = "0.0.1"
+edition    = "2021"
+license    = "Apache-2.0"
+repository = "https://github.com/USER/dit"
+rust-version = "1.82"
+
+[workspace.dependencies]
+dit-model = { path = "crates/dit-model" }
+dit-parse = { path = "crates/dit-parse" }
+dit-query = { path = "crates/dit-query" }
+dit-store = { path = "crates/dit-store" }
+dit-index = { path = "crates/dit-index" }
+dit-vcs   = { path = "crates/dit-vcs" }
+dit-ai    = { path = "crates/dit-ai" }
+dit-core  = { path = "crates/dit-core" }
+
+serde     = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+# ARCHITECTURE.md §5.1 — enforced, not suggested.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+unwrap_used  = "deny"
+expect_used  = "deny"
+panic        = "deny"
+todo         = "deny"
+dbg_macro    = "deny"
+print_stdout = "deny"
+
+[profile.dev]
+debug = 1

@@ -1,0 +1,16 @@
+[package]
+name    = "dit-cli"
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dit-core = { workspace = true }
+
+[[bin]]
+name = "dit"
+path = "src/main.rs"
