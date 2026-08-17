@@ -5,6 +5,11 @@ edition.workspace      = true
 license.workspace      = true
 rust-version.workspace = true
 
+[features]
+# Serves the built web UI from inside the binary. Release builds want this;
+# dev builds leave it off so the frontend dev server owns the browser side.
+embed-ui = ["dit-server/embed-ui"]
+
 [lints]
 workspace = true
 

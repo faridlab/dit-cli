@@ -77,14 +77,32 @@ jobs:
       - run: node scripts/check-bundle-size.mjs
 
   # The UI is built here, at release time — never committed. See DESIGN.md §8:
-  # the same reasoning that rejected committing the snapshot index.
+  # the same reasoning that rejected committing the snapshot index. Each target
+  # lands as dit-<target>.tar.gz on the tagged release, which is what
+  # scripts/install.sh downloads.
   release-artifact:
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-latest, target: x86_64-apple-darwin }
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: "22" }
       - run: npm ci --prefix apps/web && npm run build --prefix apps/web
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --release --features embed-ui -p dit-server
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --locked --features embed-ui -p dit-cli --target ${{ matrix.target }}
+      - run: tar -czf dit-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release dit
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dit-${{ matrix.target }}.tar.gz
