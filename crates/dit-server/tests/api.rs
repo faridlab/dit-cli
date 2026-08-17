@@ -4,8 +4,6 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::path::Path;
-
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -16,7 +14,7 @@ const TOKEN: &str = "test-token";
 
 fn test_app() -> (axum::Router, tempfile::TempDir) {
     let tmp = tempfile::tempdir().unwrap();
-    let dit = dit_core::Dit::init(tmp.path(), Path::new("/bin/true")).unwrap();
+    let dit = dit_core::Dit::init(tmp.path(), &std::env::current_exe().unwrap()).unwrap();
     let state = dit_server::AppState::new(dit, "tester", TOKEN);
     (dit_server::app(state), tmp)
 }

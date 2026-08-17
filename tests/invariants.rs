@@ -141,7 +141,7 @@ fn i10_comrak_unsafe_is_never_enabled() {
 /// A workspace with one issue, plus the tempdir keeping it alive.
 fn workspace_with_issue(title: &str) -> (dit_core::Dit, tempfile::TempDir) {
     let tmp = tempfile::tempdir().unwrap();
-    let mut dit = dit_core::Dit::init(tmp.path(), Path::new("/bin/true")).unwrap();
+    let mut dit = dit_core::Dit::init(tmp.path(), &std::env::current_exe().unwrap()).unwrap();
     let draft = dit_model::IssueDraft {
         title: title.to_owned(),
         kind: dit_model::IssueKind::Task,
@@ -441,7 +441,7 @@ fn i8_unknown_fields_survive_roundtrip() {
 #[tokio::test]
 async fn i10_csp_header_present() {
     let tmp = tempfile::tempdir().unwrap();
-    let dit = dit_core::Dit::init(tmp.path(), Path::new("/bin/true")).unwrap();
+    let dit = dit_core::Dit::init(tmp.path(), &std::env::current_exe().unwrap()).unwrap();
     let state = dit_server::AppState::new(dit, "tester", "test-token");
     let app = dit_server::app(state);
 
