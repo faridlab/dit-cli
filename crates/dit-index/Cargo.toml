@@ -10,6 +10,15 @@ workspace = true
 
 [dependencies]
 dit-model = { workspace = true }
-dit-parse = { workspace = true }
 dit-query = { workspace = true }
 thiserror = { workspace = true }
+time      = { workspace = true }
+
+[dependencies.rusqlite]
+workspace = true
+# The bundled SQLite is compiled into the binary on purpose: the index is a
+# private cache file, not a shared database, so depending on whatever SQLite
+# a distribution happens to ship would only add a way to fail to start.
+
+[dev-dependencies]
+tempfile = { workspace = true }
