@@ -10,7 +10,11 @@
 use std::fs;
 use std::path::Path;
 
-use dit_vcs::git::{RebaseOutcome, Repo, VcsError};
+use dit_vcs::git::{Repo, VcsError};
+// Only the unix-scoped driver tests compare against RebaseOutcome, so the
+// import follows them — a bare import is dead code on Windows under -D warnings.
+#[cfg(unix)]
+use dit_vcs::git::RebaseOutcome;
 use dit_vcs::sync::{self, SyncOptions};
 
 /// A repo-local identity so commits never depend on the machine's global
