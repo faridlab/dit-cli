@@ -743,8 +743,11 @@ pub fn generate_token() -> Result<String, DitError> {
 
 /// The git-config string for the merge driver: an absolute binary path plus
 /// the placeholders git substitutes (base, ours, theirs, marker size, label).
+/// Git runs this string through a shell, so the path is written with forward
+/// slashes — a shell eats backslashes as escapes before finding the binary.
 fn driver_command(driver: &Path) -> String {
-    format!("{} merge-driver %O %A %B %L %P", driver.to_string_lossy())
+    let driver = driver.to_string_lossy().replace('\\', "/");
+    format!("{driver} merge-driver %O %A %B %L %P")
 }
 
 /// The entry point git invokes on this binary: `dit merge-driver %O %A %B %L %P`.
@@ -788,5 +791,16 @@ mod tests {
     fn repo_relative_paths_use_forward_slashes() {
         let rel = rel_to_root(Path::new("/w"), Path::new("/w/.dit/issues/x/issue.md"));
         assert_eq!(rel, ".dit/issues/x/issue.md");
+    }
+
+    #[test]
+    fn the_driver_command_uses_forward_slashes() {
+        // Git runs the configured command through a shell, and a shell reads
+        // a backslash as an escape — a Windows path would arrive at the
+        // driver with its separators eaten before the binary is ever found.
+        assert_eq!(
+            driver_command(Path::new(r"D:\a\dit-cli\target\debug\dit.exe")),
+            "D:/a/dit-cli/target/debug/dit.exe merge-driver %O %A %B %L %P"
+        );
     }
 }

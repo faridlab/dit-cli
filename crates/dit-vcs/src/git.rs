@@ -337,9 +337,11 @@ impl Repo {
     /// config. The driver command must be an ABSOLUTE path to the binary:
     /// git runs the command through a shell whose PATH differs between a
     /// terminal, a GUI app and a CI runner, and a driver that fails to start
-    /// silently leaves "ours" as the merge result.
+    /// silently leaves "ours" as the merge result. Absolute is judged per
+    /// platform — `/usr/local/bin/dit` on unix, `D:/bin/dit.exe` on Windows.
     pub fn configure_merge_driver(&self, driver_command: &str) -> Result<(), VcsError> {
-        if !driver_command.starts_with('/') {
+        let binary = driver_command.split_whitespace().next().unwrap_or("");
+        if !Path::new(binary).is_absolute() {
             return Err(VcsError::Git {
                 args: "config merge.dit-md.driver".to_owned(),
                 stderr: format!(

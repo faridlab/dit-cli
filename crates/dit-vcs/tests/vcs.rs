@@ -339,6 +339,18 @@ fn merge_driver_config_requires_an_absolute_path() {
 }
 
 #[test]
+#[cfg(windows)]
+fn merge_driver_config_accepts_a_drive_letter_path() {
+    // `current_exe()` on Windows is a drive-letter path; a guard that only
+    // understands a leading slash rejects it and `dit init` fails on every
+    // Windows machine.
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = hermetic_repo(tmp.path());
+    repo.configure_merge_driver("C:/tools/dit.exe merge-driver %O %A %B %L %P")
+        .unwrap();
+}
+
+#[test]
 fn commit_trailers_can_be_walked_from_the_log() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = hermetic_repo(tmp.path());
