@@ -93,6 +93,10 @@ fn workspace_with_remote(root: &Path) -> (Repo, std::path::PathBuf, Repo, std::p
 
     let local_dir = root.join("local");
     let local = Repo::clone(&bare, &local_dir).unwrap();
+    // A clone carries none of the origin's repo-local config, so the identity
+    // must be set again — otherwise commits here work only on machines that
+    // happen to have a global one (CI runners often do not).
+    local.set_identity("DIT Test", "dit@test.local").unwrap();
     (upstream, bare, local, local_dir)
 }
 
