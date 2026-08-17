@@ -1,21 +1,78 @@
-/**
- * Scaffold. See DESIGN.md §6.5 (server + browser) and §12 (block editor).
- *
- * Three rules this UI must never break:
- *  - Auth token goes in the `Authorization` header, never a cookie. Cookies are
- *    sent cross-origin automatically; a custom header requires a CORS preflight
- *    that will be refused. (§17.2)
- *  - Never render untrusted markdown as raw HTML. (Invariant I10)
- *  - Heavy modules — mermaid above all — are `import()`ed lazily and never
- *    reachable from the entry graph. (ADR 0003; the budget gate enforces it)
- */
-import { cn } from "./lib/cn";
+// Application root. Two jobs only: own the query client, and decide whether
+// a session token exists (URL fragment -> sessionStorage -> gate).
+//
+// Rules this UI must never break, restated where they bite:
+//  - The auth token rides the Authorization header (never a cookie, so a
+//    malicious page cannot make the browser send it cross-origin).
+//  - Markdown is rendered by the server; the client only injects HTML the
+//    server already sanitized.
+//  - Heavy editors load lazily so the first paint stays small.
+
+import { useMemo, useState } from "react";
+import {
+  MutationCache,
+  QueryCache,
+  QueryClient,
+  QueryClientProvider,
+} from "@tanstack/react-query";
+import { Toaster } from "sonner";
+import { AppShell } from "./components/AppShell";
+import { TokenGate } from "./components/TokenGate";
+import { ApiError } from "./lib/api";
+import { captureTokenFromLocation, clearToken, getToken, setToken } from "./lib/auth";
+
+function isAuthExhausted(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 401;
+}
 
 export function App() {
+  // The token may arrive as `#token=...` on the very first load. Capture and
+  // scrub it before anything renders with a half-parsed fragment URL.
+  const [unlocked, setUnlocked] = useState(() => {
+    captureTokenFromLocation();
+    return getToken() !== null;
+  });
+
+  // A rejected token means the session ended server-side (server restarted).
+  // Drop the stale token instead of hammering 401s; both caches share the
+  // reaction so queries and mutations behave the same way.
+  const onCacheError = (error: unknown) => {
+    if (isAuthExhausted(error)) {
+      clearToken();
+      setUnlocked(false);
+    }
+  };
+
+  const queryClient = useMemo(
+    () =>
+      new QueryClient({
+        queryCache: new QueryCache({ onError: onCacheError }),
+        mutationCache: new MutationCache({ onError: onCacheError }),
+        defaultOptions: {
+          queries: {
+            // One retry absorbs a server restart blip; more just delays the
+            // error state people need to see.
+            retry: 1,
+            refetchOnWindowFocus: false,
+          },
+        },
+      }),
+    [],
+  );
+
   return (
-    <main className={cn("min-h-dvh p-8 font-sans text-sm")}>
-      <h1 className="text-lg font-semibold">DIT</h1>
-      <p className="text-neutral-500">Scaffold — see DESIGN.md §10 for the roadmap.</p>
-    </main>
+    <QueryClientProvider client={queryClient}>
+      {unlocked ? (
+        <AppShell />
+      ) : (
+        <TokenGate
+          onUnlocked={(token) => {
+            setToken(token);
+            setUnlocked(true);
+          }}
+        />
+      )}
+      <Toaster theme="dark" position="bottom-right" gap={6} />
+    </QueryClientProvider>
   );
 }

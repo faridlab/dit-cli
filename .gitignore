@@ -8,6 +8,8 @@ Cargo.lock.bak
 
 node_modules/
 apps/web/dist/
+# TypeScript's incremental build cache — pure derived state.
+*.tsbuildinfo
 .env
 .env.*
 !.env.example

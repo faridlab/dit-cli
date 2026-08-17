@@ -12,8 +12,11 @@ import { readdirSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
-const DIST = "apps/web/dist/assets";
+// Resolved from this script's own location, because npm runs it with the
+// package directory as cwd — a cwd-relative path would never find dist.
+const DIST = fileURLToPath(new URL("../apps/web/dist/assets", import.meta.url));
 
 // Gzipped, because rust-embed stores compressed and that is what ships.
 const BUDGET_KB = {
