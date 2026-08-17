@@ -186,6 +186,8 @@ fn sync_refuses_to_rebase_without_a_configured_driver() {
 }
 
 #[test]
+#[cfg(unix)] // the stub driver is a shell script; Windows cannot execute it,
+             // and the product driver (the dit binary) has its own unit tests.
 fn sync_reports_conflicts_as_state_never_as_error() {
     let tmp = tempfile::tempdir().unwrap();
     let (upstream, _bare, local, local_dir) = workspace_with_remote(tmp.path());
@@ -276,6 +278,8 @@ fn sync_survives_a_push_rejected_mid_flight() {
 }
 
 #[test]
+#[cfg(unix)] // the stub driver is a shell script; Windows cannot execute it,
+             // and the product driver (the dit binary) has its own unit tests.
 fn rebase_invokes_the_configured_merge_driver() {
     let tmp = tempfile::tempdir().unwrap();
     // The repo lives in a subdirectory so the driver script and its log sit
