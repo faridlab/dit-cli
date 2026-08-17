@@ -358,3 +358,19 @@ fn dirty_worktree_refuses_to_rebase() {
     let err = repo.rebase("main").unwrap_err();
     assert!(matches!(err, VcsError::DirtyWorktree(_)), "{err}");
 }
+
+#[test]
+fn commit_with_nothing_staged_but_dirty_tree_is_not_an_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = hermetic_repo(tmp.path());
+    dit_file(tmp.path(), "issue.md", "base\n");
+    repo.add(".").unwrap();
+    repo.commit("base").unwrap();
+    // Nothing staged, but the tree is dirty: git refuses with a different
+    // phrase than the clean-tree case, and that is still "nothing to commit".
+    dit_file(tmp.path(), "issue.md", "unstaged edit\n");
+    let out = repo.commit("nothing staged").unwrap();
+    assert_eq!(out, None, "a dirty-but-unstaged tree must report Ok(None)");
+    let before = repo.head().unwrap();
+    assert_eq!(repo.head().unwrap(), before);
+}

@@ -163,10 +163,14 @@ impl Repo {
             return Ok(Some(self.run(&["rev-parse", "HEAD"])?));
         }
         // Depending on git version and state, "nothing to commit" lands on
-        // either stream — and it is not an error.
+        // either stream — and it is not an error. A dirty tree with nothing
+        // staged gets its own phrase, meaning the same thing.
         let stderr = String::from_utf8_lossy(&out.stderr);
         let stdout = String::from_utf8_lossy(&out.stdout);
-        if stderr.contains("nothing to commit") || stdout.contains("nothing to commit") {
+        let nothing_staged = ["nothing to commit", "no changes added to commit"]
+            .iter()
+            .any(|phrase| stderr.contains(phrase) || stdout.contains(phrase));
+        if nothing_staged {
             return Ok(None);
         }
         Err(VcsError::Git {
