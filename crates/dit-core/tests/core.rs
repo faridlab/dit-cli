@@ -304,7 +304,7 @@ fn init_in_an_existing_project_preserves_gitignore_and_readme() {
     .unwrap();
     std::fs::write(tmp.path().join("README.md"), "# My Project\n\nReal docs.\n").unwrap();
 
-    Dit::init(tmp.path(), Path::new("/bin/true")).unwrap();
+    Dit::init(tmp.path(), &std::env::current_exe().unwrap()).unwrap();
 
     let gitignore = std::fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
     assert!(
@@ -334,11 +334,11 @@ fn init_in_an_existing_project_preserves_gitignore_and_readme() {
 #[test]
 fn init_twice_appends_once_and_skips_the_empty_commit() {
     let tmp = tempfile::tempdir().unwrap();
-    Dit::init(tmp.path(), Path::new("/bin/true")).unwrap();
+    Dit::init(tmp.path(), &std::env::current_exe().unwrap()).unwrap();
     let before = Repo::open(tmp.path()).unwrap().head().unwrap();
     let gitignore = std::fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
 
-    Dit::init(tmp.path(), Path::new("/bin/true")).unwrap();
+    Dit::init(tmp.path(), &std::env::current_exe().unwrap()).unwrap();
 
     let after = Repo::open(tmp.path()).unwrap().head().unwrap();
     assert_eq!(before, after, "re-init must not move history");
