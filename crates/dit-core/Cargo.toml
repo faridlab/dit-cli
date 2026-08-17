@@ -14,6 +14,19 @@ dit-parse = { workspace = true }
 dit-query = { workspace = true }
 dit-store = { workspace = true }
 dit-index = { workspace = true }
-dit-vcs = { workspace = true }
-dit-ai = { workspace = true }
+dit-vcs   = { workspace = true }
+dit-ai    = { workspace = true }
 thiserror = { workspace = true }
+tracing   = { workspace = true }
+
+# The facade stamps files with real wall-clock times, so unlike the pure
+# crates below it, it needs the clock. Wasm builds never include this crate,
+# so enabling `std` here cannot leak into the wasm graph.
+time = { workspace = true, features = ["std"] }
+
+# Session-token entropy for the server. Already in the graph via dit-store;
+# declared here because the facade is the only crate delivery names.
+getrandom = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
