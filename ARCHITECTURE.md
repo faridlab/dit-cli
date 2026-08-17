@@ -90,7 +90,10 @@ const ALLOWED: &[(&str, &[&str])] = &[
     ("dit-ai",     &["dit-model"]),
     ("dit-core",   &["dit-model", "dit-parse", "dit-query",
                      "dit-store", "dit-index", "dit-vcs", "dit-ai"]),
-    ("dit-cli",    &["dit-core"]),
+    ("dit-cli",    &["dit-core", "dit-server"]),
+    //                      ^^^^^^^^^^ `dit ui` runs the server's router
+    // in-process: delivery calling delivery, never an adapter. Without it,
+    // "one binary, no separate installation" (DESIGN.md §6.5) dies.
     ("dit-server", &["dit-core"]),
     ("dit-wasm",   &["dit-model", "dit-parse", "dit-query"]),
 ];

@@ -59,6 +59,16 @@ enum Command {
     },
     /// Check everything that silently breaks a workspace when wrong.
     Doctor,
+    /// Serve this workspace to the browser and open it: one binary, no
+    /// separate installation.
+    Ui {
+        /// Interface to bind. 127.0.0.1 keeps it on this machine; anything
+        /// else opens it to the network the interface sits on.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        #[arg(long, default_value_t = 7700)]
+        port: u16,
+    },
     /// Register this binary as the repository's merge driver.
     InstallDriver,
     /// Called by git during merges; humans never type this.
@@ -286,6 +296,42 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
                 Ok(ExitCode::SUCCESS)
             }
         }
+        Command::Ui { host, port } => {
+            let dit = open()?;
+            // The same token file the standalone server reads, so `dit ui`
+            // and `dit-server` hand the same URL shape for one workspace.
+            let token = dit_server::config::load_or_create_token(&dit.root().join(".dit-cache"))?;
+            let state = dit_server::AppState::with_bind_host(dit, &me, &token, &host);
+            let app = dit_server::app(state);
+            let display_host = if host == "0.0.0.0" {
+                "127.0.0.1"
+            } else {
+                host.as_str()
+            };
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?
+                .block_on(dit_server::serve(app, &host, port, move || {
+                    let url = format!("http://{display_host}:{port}/#token={token}");
+                    println!("DIT listening on http://{display_host}:{port}/");
+                    println!("open: {url}");
+                    open_browser(&url);
+                }))
+                .map_err(|e| {
+                    // A taken port is almost always another dit ui or
+                    // dit-server still holding it; say so instead of a bare
+                    // OS error.
+                    if e.kind() == std::io::ErrorKind::AddrInUse {
+                        std::io::Error::new(
+                            e.kind(),
+                            format!("{e} — is another dit ui or dit-server on port {port}?"),
+                        )
+                    } else {
+                        e
+                    }
+                })?;
+            Ok(ExitCode::SUCCESS)
+        }
         Command::InstallDriver => {
             let dit = open()?;
             let exe = std::env::current_exe()?;
@@ -490,6 +536,26 @@ fn resolve(dit: &Dit, reference: &str) -> Result<IssueId, DitError> {
         Some(hit) => Ok(hit.issue.id),
         None => Err(DitError::NotFound(reference.to_owned())),
     }
+}
+
+/// Ask the OS to open `url`. A failure here must not take the server down:
+/// the URL is already on stdout, and a detached opener process is not worth
+/// an exit code.
+fn open_browser(url: &str) {
+    use std::io::IsTerminal;
+    // Piped stdout means a script or a test is driving dit — a browser
+    // window opening on behalf of a pipeline is a surprise nobody wants.
+    if !std::io::stdout().is_terminal() {
+        return;
+    }
+    let program = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    let _ = std::process::Command::new(program).arg(url).spawn();
 }
 
 fn open() -> Result<Dit, DitError> {

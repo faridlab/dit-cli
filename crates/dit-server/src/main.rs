@@ -90,25 +90,14 @@ fn run(args: Args, workspace: PathBuf) -> Result<(), String> {
     } else {
         args.host.clone()
     };
-    println!("DIT listening on http://{display_host}:{}/", args.port);
-    println!("open: http://{display_host}:{}/#token={token}", args.port);
-
+    let port = args.port;
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("cannot start the async runtime: {e}"))?
-        .block_on(async move {
-            let listener = tokio::net::TcpListener::bind((args.host.as_str(), args.port))
-                .await
-                .map_err(|e| {
-                    format!(
-                        "cannot bind {host}:{port}: {e}",
-                        host = args.host,
-                        port = args.port
-                    )
-                })?;
-            axum::serve(listener, app)
-                .await
-                .map_err(|e| format!("server stopped: {e}"))
-        })
+        .block_on(dit_server::serve(app, &args.host, port, move || {
+            println!("DIT listening on http://{display_host}:{port}/");
+            println!("open: http://{display_host}:{port}/#token={token}");
+        }))
+        .map_err(|e| format!("cannot bind {}:{}: {e}", args.host, port))
 }

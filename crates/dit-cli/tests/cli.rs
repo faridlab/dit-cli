@@ -213,3 +213,51 @@ fn reindex_rebuilds_after_the_cache_is_deleted() {
     );
     assert!(dit(tmp.path(), &["issue", "show", &short]).status.success());
 }
+
+#[test]
+fn ui_outside_a_workspace_fails_cleanly() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = dit(tmp.path(), &["ui"]);
+    assert!(!out.status.success(), "there is nothing to serve here");
+}
+
+/// `dit ui` must actually serve: bind, answer HTTP on the loopback, and
+/// reject an unauthenticated request — the same gate the browser hits.
+/// The opener is skipped automatically because the test's stdout is a pipe.
+#[test]
+fn ui_serves_the_workspace_over_http() {
+    use std::io::{Read, Write};
+
+    let tmp = tempfile::tempdir().unwrap();
+    assert!(dit(tmp.path(), &["init"]).status.success());
+
+    // Reserve a free port, then hand it to the server.
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_dit"))
+        .args(["ui", "--port", &port.to_string()])
+        .current_dir(tmp.path())
+        .env_remove("DIT_ME")
+        .spawn()
+        .unwrap();
+
+    let request = "GET /api/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    let mut answered = false;
+    for _ in 0..100 {
+        if let Ok(mut stream) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+            if stream.write_all(request.as_bytes()).is_ok() {
+                let mut buf = String::new();
+                if stream.read_to_string(&mut buf).is_ok() && buf.starts_with("HTTP/1.1 401") {
+                    answered = true;
+                    break;
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(answered, "`dit ui` never answered on port {port}");
+}

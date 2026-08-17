@@ -10,7 +10,9 @@ workspace = true
 
 [dependencies]
 dit-core = { workspace = true }
+dit-server = { workspace = true }
 clap = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

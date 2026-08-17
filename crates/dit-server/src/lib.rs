@@ -19,3 +19,19 @@ pub mod state;
 
 pub use routes::app;
 pub use state::AppState;
+
+/// Bind `host:port` and serve until the process is stopped. `on_bound` runs
+/// once the socket is live, so callers announce (or open a browser) only
+/// after the port is actually theirs — never into a page that cannot load.
+/// The dance lives here so `dit ui` can serve in-process without depending
+/// on axum itself.
+pub async fn serve(
+    app: axum::Router,
+    host: &str,
+    port: u16,
+    on_bound: impl FnOnce(),
+) -> std::io::Result<()> {
+    let listener = tokio::net::TcpListener::bind((host, port)).await?;
+    on_bound();
+    axum::serve(listener, app).await
+}

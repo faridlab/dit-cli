@@ -35,7 +35,11 @@ const ALLOWED: &[(&str, &[&str])] = &[
             "dit-ai",
         ],
     ),
-    ("dit-cli", &["dit-core"]),
+    // `dit ui` runs the server's own router in-process — delivery calling
+    // delivery, never an adapter. Without this edge `dit ui` would have to
+    // spawn a second binary, and "one binary, no separate installation"
+    // (DESIGN.md §6.5) would quietly die.
+    ("dit-cli", &["dit-core", "dit-server"]),
     ("dit-server", &["dit-core"]),
     ("dit-wasm", &["dit-model", "dit-parse", "dit-query"]),
 ];
