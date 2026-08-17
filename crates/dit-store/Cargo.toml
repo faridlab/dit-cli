@@ -12,3 +12,11 @@ workspace = true
 dit-model = { workspace = true }
 dit-parse = { workspace = true }
 thiserror = { workspace = true }
+time      = { workspace = true }
+# The only entropy source in the workspace: minting ULIDs. Chosen over the
+# `ulid`/`rand` stack because it builds everywhere including wasm targets
+# without pulling a trait-system dependency graph into the pure core.
+getrandom = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -1,4 +1,10 @@
-//! Repo layout, atomic writes, transactions. The ONLY crate allowed to write files (invariant I1).
-//!
-//! Not implemented yet. See DESIGN.md and ARCHITECTURE.md before adding code
-//! here — this crate's allowed dependencies are pinned in `tests/architecture.rs`.
+//! Repo layout, atomic writes, and the write transaction. This is the only
+//! crate in the workspace that opens files for writing — every other crate
+//! reads.
+
+pub mod atomic;
+pub mod layout;
+mod store;
+
+pub use layout::Layout;
+pub use store::{Changeset, IssueFile, Store, StoreError, Transaction};
