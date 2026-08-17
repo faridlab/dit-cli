@@ -16,6 +16,22 @@ rust-version.workspace = true
 [lib]
 path = "src/lib.rs"
 
+# The guards exercise the real crates end to end: a workspace in a tempdir,
+# the merge driver on temp files, the HTTP stack through oneshot requests.
+[dev-dependencies]
+dit-core  = { workspace = true }
+dit-model = { workspace = true }
+dit-parse = { workspace = true }
+dit-vcs   = { workspace = true }
+dit-server = { workspace = true }
+tempfile  = { workspace = true }
+tokio     = { workspace = true }
+axum      = { workspace = true }
+tower     = { workspace = true }
+# Reading a response body through the http-body trait, the same tiny reader
+# the hyper project ships for its own tests.
+http-body-util = "0.1"
+
 [lints]
 workspace = true
 
@@ -35,11 +51,51 @@ dit-index = { path = "crates/dit-index" }
 dit-vcs   = { path = "crates/dit-vcs" }
 dit-ai    = { path = "crates/dit-ai" }
 dit-core  = { path = "crates/dit-core" }
+dit-server = { path = "crates/dit-server" }
 
 serde     = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = "2"
 
-# ARCHITECTURE.md §5.1 — enforced, not suggested.
+# RFC3339 parsing/formatting for the pure crates — usable from wasm, and
+# lighter than pulling in chrono for two functions.
+time = { version = "0.3", default-features = false, features = ["parsing", "formatting", "macros"] }
+
+# Markdown parser/formatter. Pinned to the exact version because it defines
+# the canonical file format: an upgrade can silently change formatting output,
+# which would create spurious diffs in every workspace on earth. Default
+# features are off: they pull in syntax highlighting (a C regex engine) and a
+# builder crate we never use.
+comrak  = { version = "=0.54.0", default-features = false }
+# Embedded SQLite — the index is disposable, so "bundled" avoids depending on
+# the user's system SQLite version.
+rusqlite = { version = "0.40", features = ["bundled"] }
+# Diff engine for the merge driver's three-way body merge.
+# Line-level three-way merges in the DIT merge driver. Pinned to the audited
+# 2.7 release; its diff-op ranges are what the driver's cluster walk consumes.
+similar = "2.7"
+getrandom = "0.4"
+
+# Delivery.
+clap = { version = "4", features = ["derive"] }
+axum = { version = "0.8" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# interpolate-folder-path: the UI lives outside this crate's directory, so
+# the embed path must be anchored to the workspace root, not the cwd.
+rust-embed = { version = "8", features = ["compression", "interpolate-folder-path"] }
+http = "1"
+tower = "0.5"
+# Splitting the WebSocket into a reader and a writer so the event loop can
+# select over both halves at once.
+futures-util = { version = "0.3", default-features = false }
+
+# Test-only, but declared here so every crate pins the same version.
+tempfile = "3"
+proptest = "1"
+
+# Lints are enforced across every member, not suggested per crate.
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_debug_implementations = "warn"

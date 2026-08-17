@@ -19,7 +19,9 @@ const ALLOWED: &[(&str, &[&str])] = &[
     ("dit-query", &["dit-model"]),
     ("dit-store", &["dit-model", "dit-parse"]),
     ("dit-index", &["dit-model", "dit-parse", "dit-query"]),
-    ("dit-vcs", &["dit-model"]),
+    // The merge driver parses the three file versions it is handed, so it
+    // needs the frontmatter reader alongside the domain types.
+    ("dit-vcs", &["dit-model", "dit-parse"]),
     ("dit-ai", &["dit-model"]),
     (
         "dit-core",
