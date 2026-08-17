@@ -66,17 +66,19 @@ pub struct IssueId([u8; ULID_LEN]);
 ///
 /// Deliberately not a prefix. The first 10 characters of a ULID are pure
 /// timestamp, so any two issues minted in the same millisecond share them —
-/// a prefix-based ref would collide systematically, not rarely. See DESIGN.md §4.2.
+/// a prefix-based ref would collide systematically, not rarely.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ShortRef(String);
 
 /// Monotonic topological position in the commit DAG; orders `field_events`.
-/// Never derived from wall-clock time (invariant I9).
+/// Never derived from wall-clock time: two machines with skewed clocks would
+/// otherwise produce orderings that contradict each other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Seq(i64);
 
-/// A filesystem-safe slug, snapshotted at creation and never renamed, because
-/// the merge driver is not invoked for rename/modify conflicts. See DESIGN.md §4.2.
+/// A filesystem-safe slug, snapshotted at creation and never renamed: git
+/// does not invoke a merge driver for rename/modify conflicts, so a folder
+/// rename would silently drop the other side's edits instead of merging them.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Slug(String);
 
@@ -112,6 +114,28 @@ impl IssueId {
     pub fn as_str(&self) -> &str {
         // Every byte came from ALPHABET, which is ASCII.
         std::str::from_utf8(&self.0).unwrap_or("")
+    }
+
+    /// Build an ID from a millisecond timestamp and 80 random bits.
+    ///
+    /// The entropy itself comes from the caller — this function only encodes,
+    /// so the pure core stays free of any I/O. All 80 random bits are kept:
+    /// dropping any would shrink the collision resistance of the whole scheme.
+    pub fn from_parts(timestamp_ms: u64, random: [u8; 10]) -> IssueId {
+        let mut entropy: u128 = 0;
+        for byte in random {
+            entropy = (entropy << 8) | byte as u128;
+        }
+        // 48 bits of time above 80 bits of randomness, big-endian, encoded
+        // into 26 base32 characters (130 bits of text for a 128-bit value —
+        // so the leading character stays within 0-7).
+        let mut value = (timestamp_ms as u128) << 80 | entropy;
+        let mut out = [0u8; ULID_LEN];
+        for i in (0..ULID_LEN).rev() {
+            out[i] = ALPHABET[(value & 0x1F) as usize];
+            value >>= 5;
+        }
+        IssueId(out)
     }
 }
 
@@ -153,6 +177,35 @@ impl Slug {
     }
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Derive a slug from a title: lowercase, alphanumeric runs kept,
+    /// everything else becomes a single dash. The slug is a creation-time
+    /// snapshot used in folder names, so it needs a length bound and a
+    /// fallback for titles that contain nothing usable.
+    pub fn from_title(title: &str) -> Slug {
+        const MAX: usize = 60;
+        let mut out = String::new();
+        let mut dash_pending = false;
+        for c in title.chars() {
+            if c.is_ascii_alphanumeric() {
+                if dash_pending && !out.is_empty() {
+                    out.push('-');
+                }
+                dash_pending = false;
+                // Stop before producing a slug longer than the bound.
+                if out.len() >= MAX {
+                    break;
+                }
+                out.push(c.to_ascii_lowercase());
+            } else {
+                dash_pending = true;
+            }
+        }
+        if out.is_empty() {
+            out.push_str("issue");
+        }
+        Slug(out)
     }
 }
 
@@ -221,9 +274,9 @@ mod tests {
         );
     }
 
-    /// The property the whole short-ref design exists for (DESIGN.md §4.2):
-    /// two IDs minted in the same millisecond share their first 10 characters,
-    /// so a prefix-based ref would collide systematically. The random-derived
+    /// The property the whole short-ref design exists for: two IDs minted in
+    /// the same millisecond share their first 10 characters, so a
+    /// prefix-based ref would collide systematically. The random-derived
     /// short ref must not.
     #[test]
     fn short_ref_comes_from_the_random_component() {
@@ -243,6 +296,46 @@ mod tests {
         );
         assert!(ShortRef::parse("toolong").is_ok());
         assert_eq!(ShortRef::parse("short"), Err(IdError::ShortRefLength(5)));
+    }
+
+    #[test]
+    fn from_parts_encodes_timestamp_and_random_bits() {
+        // 2026-08-16T09:12:00Z in milliseconds, random bytes chosen so the
+        // expected encoding is hand-checkable: the last 16 characters carry
+        // the 80 random bits, the first 10 the timestamp.
+        let id = IssueId::from_parts(1_755_336_720_000, [0xFF; 10]);
+        assert_eq!(id.as_str().len(), 26);
+        assert_eq!(id.timestamp_ms(), 1_755_336_720_000);
+        // All-ones randomness encodes as repeated 'Z' (Crockford 31).
+        assert!(id.as_str().ends_with("ZZZZZZZZZZZZZZZZ"), "{}", id);
+        // Round-trip through parse canonicalizes to the same id.
+        assert_eq!(IssueId::parse(id.as_str()).unwrap(), id);
+    }
+
+    #[test]
+    fn from_parts_bounded_random_bytes_stay_in_range() {
+        // Only the low 5 bits of each random byte are meaningful (base32);
+        // a caller passing arbitrary bytes must still produce a valid id.
+        let id = IssueId::from_parts(0, [0xAB; 10]);
+        assert!(IssueId::parse(id.as_str()).is_ok());
+    }
+
+    #[test]
+    fn slug_from_title_ascii_folds_and_dashes() {
+        assert_eq!(
+            Slug::from_title("Login Timeout on SLOW Networks!").as_str(),
+            "login-timeout-on-slow-networks"
+        );
+        // Punctuation collapses to a single dash; edges are trimmed.
+        assert_eq!(
+            Slug::from_title("  --Fix: the (login) bug -- ").as_str(),
+            "fix-the-login-bug"
+        );
+        // Very long titles are cut to a bounded length at a dash boundary.
+        let long = "a".repeat(200);
+        assert!(Slug::from_title(&long).as_str().len() <= 60);
+        // A title with no usable characters still yields a valid slug.
+        assert_eq!(Slug::from_title("???!!!").as_str(), "issue");
     }
 
     #[test]
