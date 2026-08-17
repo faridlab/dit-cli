@@ -3,7 +3,10 @@
 > Project management that lives in your repo. Git isn't just the sync layer —
 > it's the database, the audit log, and the permission system.
 
-**Status: pre-alpha scaffold.** Nothing works yet. See [`DESIGN.md`](DESIGN.md) §10 for the roadmap.
+**Status: v0.1 slice running.** The CLI, the merge driver, and the browser UI
+work end to end on real workspaces — dogfooding starts now. What is deliberately
+not built yet: git hooks, commit-trailer integration, `dit validate`, the AI
+layer, the block editor. See [`DESIGN.md`](DESIGN.md) §10 for the roadmap.
 
 ## What this is
 
@@ -36,6 +39,20 @@ cargo install just
 
 just check      # runs every gate: fmt, clippy, tests, architecture, invariants, wasm
 ```
+
+## Using it
+
+```bash
+cargo run -p dit-cli -- init              # make the current repo a workspace
+cargo run -p dit-cli -- issue new "Fix the login flow" -P 1 -a budi -l area:auth
+cargo run -p dit-cli -- list "status != done AND assignee = @me"
+cargo run -p dit-cli -- ui                # board, detail, DQL search — in the browser
+```
+
+`dit ui` serves on 127.0.0.1, authenticates with a per-session token it
+prints (and puts in the URL fragment once), and opens the browser. The same
+workspace can be worked from the terminal and the browser at once — both go
+through one `dit-core`.
 
 Open in VS Code and accept the recommended extensions.
 

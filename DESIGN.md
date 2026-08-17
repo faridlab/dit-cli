@@ -1077,9 +1077,9 @@ This is a change from the original draft, and the reasoning is strong in six dir
 
 **Stack:**
 
-- **Server**: `axum` v0.8 + `tower-http` + `tokio`; the UI is embedded into the binary with `rust-embed` v8 → genuinely a single file
+- **Server**: `axum` v0.8 + `tower` (service layers; no `tower-http` yet — nothing it provides is needed) + `tokio`; the UI is embedded into the binary with `rust-embed` v8 → genuinely a single file
 - **Framework**: React 19 + TypeScript + Vite
-- **Cross-language type safety**: `utoipa` (OpenAPI from axum handlers) → generate a TS client. The guarantee only becomes real if there is a CI job that regenerates the client and then **fails if `git diff` is not empty** — without that job this is just a convention.
+- **Cross-language type safety**: **`ts-rs` (pinned `=12.0.1`) derives the TS types straight off the wire DTOs** — chosen over `utoipa` + `openapi-typescript` because it is one step with no JSON intermediate, and the only consumer today is this web app. An OpenAPI schema becomes worth its pipeline the day an external consumer asks for one. The guarantee is real because the CI job exists: `cargo test` regenerates `apps/web/src/lib/schema/`, then **fails if `git diff` is not empty**.
 - **State**: TanStack Query on top of `fetch`, + a WebSocket subscription for live updates from the file watcher
 
 #### Security: this is the real cost of server mode
@@ -1962,7 +1962,7 @@ Reading code, asking "why is this line like this?", and immediately getting the 
 |---|---|---|
 | Frontmatter blame gutter (§14.3a) | **`field_events`, not blame** | `git blame` works per **line**, while `labels: [auth, frontend]` is a single line — adding one label makes blame report the entire field as changed by the last person. And the merge driver rewrites the file, which reattributes lines to the merge commit. `field_events` already has `author` and `commit_sha` **per field**. |
 | Code blame (§14.3d) | `gix-blame` v0.16 | Here per-line blame really is the right tool. Confirmed to be already implemented in gitoxide (§6.2). |
-| Text diff | `similar` v3.1.2 or `imara-diff` v0.2 | `imara-diff` is faster; `similar` has the nicer API. |
+| Text diff | `similar` v2.7 (pinned; chosen) or `imara-diff` v0.2 | `imara-diff` is faster; `similar` has the nicer API. |
 | Diff view in the UI | `@codemirror/merge` v6.12.2 (MIT) | Unified & side-by-side, ready-made. |
 | Blame gutter | CodeMirror 6 gutter extension | Written ourselves, small. |
 
@@ -2489,7 +2489,7 @@ Note: there is no desktop application to install, no "unidentified developer" di
 | Merge tiebreak | Git commit order, **not** the `updated` wall clock | An edit from Vim does not update `updated` |
 | **UI surface** | **`dit-server` (axum) + browser. Not Tauri.** | Zero installation, one render engine, removes signing/notarization, accessible from a phone |
 | **UI security** | Token in a header, `Host` validation, bind to 127.0.0.1, same-origin UI | This is the real cost of server mode — designed in v0.3 |
-| Cross-language types | OpenAPI (`utoipa` v5.5) → TS client + a CI gate | Replaces `tauri-specta`, which has been an RC for a long time |
+| Cross-language types | `ts-rs` (pinned `=12.0.1`) on the wire DTOs → TS client + a CI gate | Replaces `tauri-specta`, which has been an RC for a long time; chosen over OpenAPI until an external consumer asks for a schema |
 | **Block editor** | **TipTap (MIT) + CodeMirror 6 for source mode** | BlockNote's own API is named `blocksToMarkdownLossy`; a custom TipTap schema can be mapped 1:1 to CommonMark |
 | **Markdown serialization** | **Exactly one, in Rust (comrak), exposed to the UI via WASM** | A separate JS serializer = a spurious commit every time an issue is opened in the UI |
 | **Formatter** | **`dit fmt` mandatory, gofmt-style** (comrak, verified idempotent) | A single canonical form eliminates diff noise and body conflicts |
