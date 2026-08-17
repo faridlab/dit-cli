@@ -289,3 +289,62 @@ fn an_unparsable_workflow_falls_back_but_is_flagged() {
         .iter()
         .any(|d| d.code == "schema" && d.level == DiagnosticLevel::Error));
 }
+
+/// `dit init` in a directory that already holds a project must join it, not
+/// colonize it: the project's .gitignore keeps its lines (gaining only the
+/// cache entry) and its README is left alone. Found by dogfooding init in
+/// DIT's own repo — the first run rewrote both files and committed it.
+#[test]
+fn init_in_an_existing_project_preserves_gitignore_and_readme() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join(".gitignore"),
+        "/target\nnode_modules/\n.env\n",
+    )
+    .unwrap();
+    std::fs::write(tmp.path().join("README.md"), "# My Project\n\nReal docs.\n").unwrap();
+
+    Dit::init(tmp.path(), Path::new("/bin/true")).unwrap();
+
+    let gitignore = std::fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
+    assert!(
+        gitignore.contains("/target"),
+        "existing lines survive:\n{gitignore}"
+    );
+    assert!(gitignore.contains("node_modules/"));
+    assert!(
+        gitignore.contains(".dit-cache/"),
+        "the cache entry is added:\n{gitignore}"
+    );
+
+    let readme = std::fs::read_to_string(tmp.path().join("README.md")).unwrap();
+    assert_eq!(
+        readme, "# My Project\n\nReal docs.\n",
+        "the README is untouched"
+    );
+
+    // The bootstrap commit carries the appended entry, not a clobbered file.
+    let repo = Repo::open(tmp.path()).unwrap();
+    let committed = repo.show_text("HEAD:.gitignore").unwrap_or_default();
+    assert!(committed.contains("/target"), "history keeps the old lines");
+}
+
+/// A second init over an already-initialized workspace is a no-op on disk:
+/// the ignore entry is present and no empty commit is created.
+#[test]
+fn init_twice_appends_once_and_skips_the_empty_commit() {
+    let tmp = tempfile::tempdir().unwrap();
+    Dit::init(tmp.path(), Path::new("/bin/true")).unwrap();
+    let before = Repo::open(tmp.path()).unwrap().head().unwrap();
+    let gitignore = std::fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
+
+    Dit::init(tmp.path(), Path::new("/bin/true")).unwrap();
+
+    let after = Repo::open(tmp.path()).unwrap().head().unwrap();
+    assert_eq!(before, after, "re-init must not move history");
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join(".gitignore")).unwrap(),
+        gitignore,
+        "the ignore entry is not duplicated"
+    );
+}

@@ -135,10 +135,35 @@ impl Dit {
         }
         // Scaffolding files land through the atomic writer like everything
         // else: a half-written .gitignore is how the cache ends up committed.
-        dit_store::atomic::write(&path.join(".gitignore"), ".dit-cache/\n")?;
-        dit_store::atomic::write(&path.join("README.md"), INIT_README)?;
+        // But init also runs in directories that already hold a project —
+        // joining one must never colonize it, so existing files are amended,
+        // never replaced.
+        let ignore = path.join(".gitignore");
+        if ignore.exists() {
+            let mut text = std::fs::read_to_string(&ignore)?;
+            if !text.lines().any(|l| l.trim() == ".dit-cache/") {
+                if !text.is_empty() && !text.ends_with('\n') {
+                    text.push('\n');
+                }
+                text.push_str("\n# DIT's disposable index — never committed.\n.dit-cache/\n");
+                dit_store::atomic::write(&ignore, &text)?;
+            }
+        } else {
+            dit_store::atomic::write(&ignore, ".dit-cache/\n")?;
+        }
+        let readme = path.join("README.md");
+        let wrote_readme = !readme.exists();
+        if wrote_readme {
+            // Only for repos that would otherwise look empty — a project
+            // that wrote its own README keeps it.
+            dit_store::atomic::write(&readme, INIT_README)?;
+        }
         repo.add(".gitignore")?;
-        repo.add("README.md")?;
+        if wrote_readme {
+            repo.add("README.md")?;
+        }
+        // In an already-initialized workspace nothing changed, and commit
+        // treats "nothing to commit" as a skip, not a failure.
         repo.commit("dit init")?;
         repo.configure_merge_driver(&driver_command(driver))?;
         Dit::open(path)
