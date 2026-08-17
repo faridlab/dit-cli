@@ -196,12 +196,20 @@ async fn status_reports_the_workspace_it_serves() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(info["ok"], true);
     assert_eq!(info["me"], "tester");
-    // The repo root comes back canonicalized; the tempdir is not, on macOS.
+    // The repo root arrives in git's shape (forward slashes, sometimes an
+    // 8.3 user name) while the tempdir canonicalizes differently per platform
+    // (symlinked /tmp on macOS, a verbatim \\?\ prefix on Windows) — so both
+    // sides are canonicalized before comparing, which erases those shapes.
+    let repo = std::path::PathBuf::from(info["repo"].as_str().unwrap())
+        .canonicalize()
+        .unwrap();
     let root = tmp.path().canonicalize().unwrap();
-    assert!(info["repo"]
-        .as_str()
-        .unwrap()
-        .starts_with(root.display().to_string().as_str()));
+    assert!(
+        repo.starts_with(&root),
+        "{} vs {}",
+        repo.display(),
+        root.display()
+    );
     assert!(info["branch"].is_string());
 }
 
