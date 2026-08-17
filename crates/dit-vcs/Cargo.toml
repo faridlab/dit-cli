@@ -10,4 +10,10 @@ workspace = true
 
 [dependencies]
 dit-model = { workspace = true }
-thiserror = { workspace = true }
+dit-parse = { workspace = true }
+similar    = { workspace = true }
+thiserror  = { workspace = true }
+time       = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
