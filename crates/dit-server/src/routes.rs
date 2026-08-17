@@ -294,8 +294,9 @@ async fn create_issue(
             // The reporter is who clicked, not who the request claims —
             // identity is server-side state, not client input.
             reporter: (!me.is_empty()).then(|| me.clone()),
-            assignees: input.assignees,
-            labels: input.labels,
+            // Absent on the wire means empty, the same default serde applies.
+            assignees: input.assignees.unwrap_or_default(),
+            labels: input.labels.unwrap_or_default(),
             epic: None,
             estimate: input.estimate,
             sprint: None,

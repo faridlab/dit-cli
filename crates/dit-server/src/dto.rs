@@ -9,8 +9,16 @@ use dit_core::{
     StoredFieldEvent, Workflow, WorkflowStatus,
 };
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
-#[derive(Debug, Serialize)]
+// Every DTO derives TS and exports a .ts file into the web app (the target
+// directory is pinned in the repo's .cargo/config.toml). The generated
+// files are committed, and CI regenerates + diffs them, so a wire change
+// can never quietly leave the client behind — the drift is a red build,
+// not a runtime surprise.
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct StatusInfo {
     pub ok: bool,
     pub version: String,
@@ -22,19 +30,22 @@ pub struct StatusInfo {
     pub me: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct SchemaDto {
     pub workflow: WorkflowDto,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct WorkflowDto {
     pub statuses: Vec<StatusDto>,
     pub transitions: Vec<TransitionDto>,
     pub derived: Vec<DerivedDto>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct StatusDto {
     pub id: String,
     pub label: String,
@@ -43,30 +54,35 @@ pub struct StatusDto {
     pub wip_limit: Option<u32>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct TransitionDto {
     pub from: Vec<String>,
     pub to: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct DerivedDto {
     pub on: String,
     pub implies: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct IssueListDto {
     pub total: usize,
     pub items: Vec<IssueDto>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct IssueDto {
     pub id: String,
     pub short_ref: String,
     pub title: String,
     #[serde(rename = "type")]
+    #[ts(rename = "type")]
     pub kind: String,
     pub status: String,
     pub priority: Option<String>,
@@ -83,7 +99,8 @@ pub struct IssueDto {
     pub body_html: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct CommentDto {
     pub id: String,
     pub issue_id: String,
@@ -93,7 +110,8 @@ pub struct CommentDto {
     pub body_html: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct FieldEventDto {
     pub seq: i64,
     pub field: String,
@@ -104,7 +122,8 @@ pub struct FieldEventDto {
     pub commit_sha: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct BoardDto {
     pub columns: Vec<BoardColumnDto>,
 }
@@ -112,7 +131,8 @@ pub struct BoardDto {
 /// Flat on purpose: the stray "not in workflow" column has no workflow
 /// status behind it, so there is no `StatusDto` to nest — the client that
 /// wants categories already fetched `/api/schema`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct BoardColumnDto {
     pub id: String,
     pub label: String,
@@ -120,13 +140,15 @@ pub struct BoardColumnDto {
     pub issues: Vec<BoardIssueDto>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct BoardIssueDto {
     pub id: String,
     pub short_ref: String,
     pub title: String,
     pub priority: Option<String>,
     #[serde(rename = "type")]
+    #[ts(rename = "type")]
     pub kind: String,
     pub assignees: Vec<String>,
     pub labels: Vec<String>,
@@ -136,20 +158,27 @@ pub struct BoardIssueDto {
 
 /// The create request. Everything but the title is optional; the server
 /// stamps reporter and timestamps.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, TS)]
+#[ts(export)]
 pub struct NewIssueDto {
     pub title: String,
     #[serde(rename = "type", default)]
+    #[ts(rename = "type", optional)]
     pub kind: Option<String>,
     #[serde(default)]
+    #[ts(optional)]
     pub status: Option<String>,
     #[serde(default)]
+    #[ts(optional)]
     pub priority: Option<String>,
     #[serde(default)]
-    pub assignees: Vec<String>,
+    #[ts(optional)]
+    pub assignees: Option<Vec<String>>,
     #[serde(default)]
-    pub labels: Vec<String>,
+    #[ts(optional)]
+    pub labels: Option<Vec<String>>,
     #[serde(default)]
+    #[ts(optional)]
     pub estimate: Option<u32>,
     #[serde(default)]
     pub body: String,
@@ -158,51 +187,67 @@ pub struct NewIssueDto {
 /// The patch request: `{ "set": { ...fields } }`. Absent fields are
 /// untouched; there is no way to clear a field in v0.1 — that is a
 /// deliberate limit of the write surface, not an oversight.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, TS)]
+#[ts(export)]
 pub struct SetIssueDto {
     pub set: FieldPatchDto,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, TS)]
+#[ts(export)]
 pub struct FieldPatchDto {
     #[serde(default)]
+    #[ts(optional)]
     pub title: Option<String>,
     #[serde(rename = "type", default)]
+    #[ts(rename = "type", optional)]
     pub kind: Option<String>,
     #[serde(default)]
+    #[ts(optional)]
     pub status: Option<String>,
     #[serde(default)]
+    #[ts(optional)]
     pub priority: Option<String>,
     #[serde(default)]
+    #[ts(optional)]
     pub assignees: Option<Vec<String>>,
     #[serde(default)]
+    #[ts(optional)]
     pub labels: Option<Vec<String>>,
     #[serde(default)]
+    #[ts(optional)]
     pub reporter: Option<String>,
     #[serde(default)]
+    #[ts(optional)]
     pub estimate: Option<u32>,
     #[serde(default)]
+    #[ts(optional)]
     pub sprint: Option<String>,
     #[serde(default)]
+    #[ts(optional)]
     pub due: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, TS)]
+#[ts(export)]
 pub struct BodyDto {
     pub body: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, TS)]
+#[ts(export)]
 pub struct CommentInputDto {
     pub body: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, TS)]
+#[ts(export)]
 pub struct RenderInputDto {
     pub text: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct RenderOutputDto {
     pub html: String,
 }

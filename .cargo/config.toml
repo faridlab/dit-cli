@@ -1,0 +1,11 @@
+# Applied to every process cargo spawns in this repo, including test
+# binaries — which is where ts-rs does its work (DESIGN.md §6.5).
+
+[env]
+# Where the generated TS bindings land. `relative = true` makes cargo
+# resolve it against this file's directory, so it holds no matter which
+# crate's tests are running or what the CWD is.
+TS_RS_EXPORT_DIR = { value = "apps/web/src/lib/schema", relative = true }
+# seq/rowids arrive as JSON numbers, not BigInt — the web client must keep
+# treating them as plain numbers.
+TS_RS_LARGE_INT = "number"

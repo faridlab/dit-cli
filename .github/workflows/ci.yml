@@ -32,6 +32,16 @@ jobs:
       - name: Tests
         run: cargo test --workspace
 
+      # DESIGN.md §6.5 — the TS client is generated from the Rust DTOs.
+      # Regeneration ran as part of the Tests step (ts-rs exports during
+      # `cargo test`); any diff means a hand edit or a wire change that was
+      # never regenerated, and must fail the build instead of drifting.
+      # Ubuntu only: Windows checkout would rewrite line endings and turn
+      # every file into a diff.
+      - name: TS bindings in sync
+        if: matrix.os == 'ubuntu-latest'
+        run: git diff --exit-code -- apps/web/src/lib/schema
+
       # ARCHITECTURE.md §2 — dependency direction.
       - name: Architecture
         run: cargo test --test architecture

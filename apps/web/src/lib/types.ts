@@ -1,129 +1,76 @@
-// Types mirroring the server API one-to-one. Field names must never drift
-// from the wire format — renaming here silently breaks requests. The
-// vocabulary is the glossary: `assignees` (plural), `seq`, `short_ref`,
-// priorities p0..p4, types task/bug/story/spike/chore.
+// The wire shapes live in ./schema/ — generated from the Rust DTOs by
+// ts-rs (`cargo test -p dit-server` regenerates them; CI fails on drift).
+// This file keeps only what generation cannot express: the union aliases
+// for values the server deliberately sends as plain strings, and the
+// narrowings of those fields that consumers rely on. Field names still
+// follow the glossary — `assignees`, `seq`, `short_ref` — on both sides.
 
 export type IssueType = "task" | "bug" | "story" | "spike" | "chore";
 export type Priority = "p0" | "p1" | "p2" | "p3" | "p4";
 export type StatusCategory = "todo" | "doing" | "done";
 
-export interface IssueDto {
-  id: string;
-  short_ref: string;
-  title: string;
+import type { BoardColumnDto as WireBoardColumnDto } from "./schema/BoardColumnDto";
+import type { BoardDto as WireBoardDto } from "./schema/BoardDto";
+import type { BoardIssueDto as WireBoardIssueDto } from "./schema/BoardIssueDto";
+import type { CommentDto as WireCommentDto } from "./schema/CommentDto";
+import type { DerivedDto } from "./schema/DerivedDto";
+import type { FieldEventDto as WireFieldEventDto } from "./schema/FieldEventDto";
+import type { FieldPatchDto } from "./schema/FieldPatchDto";
+import type { IssueDto as WireIssueDto } from "./schema/IssueDto";
+import type { IssueListDto as WireIssueListDto } from "./schema/IssueListDto";
+import type { NewIssueDto } from "./schema/NewIssueDto";
+import type { SchemaDto as WireSchemaDto } from "./schema/SchemaDto";
+import type { StatusDto as WireStatusDto } from "./schema/StatusDto";
+import type { StatusInfo as WireStatusInfo } from "./schema/StatusInfo";
+import type { TransitionDto } from "./schema/TransitionDto";
+
+// The unions above narrow the generated `string` fields for consumers; the
+// generated base still pins every field name and shape, so a wire change
+// that touches anything else is a compile error here, not a runtime bug.
+export interface IssueDto extends WireIssueDto {
   type: IssueType;
-  status: string;
   priority: Priority | null;
-  reporter: string | null;
-  assignees: string[];
-  labels: string[];
-  epic: string | null;
-  estimate: number | null;
-  sprint: string | null;
-  due: string | null;
-  created: string;
-  updated: string;
-  body: string;
-  body_html: string;
 }
 
-export interface CommentDto {
-  id: string;
-  issue_id: string;
-  author: string;
-  created: string;
-  body: string;
-  body_html: string;
-}
+export type CommentDto = WireCommentDto;
+export type FieldEventDto = WireFieldEventDto;
 
-export interface FieldEventDto {
-  seq: number;
-  field: string;
-  old_value: string | null;
-  new_value: string | null;
-  author: string;
-  ts: string;
-  commit_sha: string;
-}
-
-export interface StatusDto {
-  id: string;
-  label: string;
+export interface StatusDto extends WireStatusDto {
   category: StatusCategory;
-  terminal?: boolean;
-  wip_limit?: number;
 }
 
-export interface SchemaDto {
+export interface SchemaDto extends WireSchemaDto {
   workflow: {
     statuses: StatusDto[];
-    transitions: Array<{ from: string[]; to: string }>;
-    derived: Array<{ on: string; implies: string }>;
+    transitions: TransitionDto[];
+    derived: DerivedDto[];
   };
 }
 
-export interface BoardIssueDto {
-  id: string;
-  short_ref: string;
-  title: string;
-  priority: Priority | null;
+export interface BoardIssueDto extends WireBoardIssueDto {
   type: IssueType;
-  assignees: string[];
-  labels: string[];
-  estimate: number | null;
-  updated: string;
+  priority: Priority | null;
 }
 
 // Flat on purpose: the stray "not in workflow" column has no StatusDto
 // behind it, so the wire sends the id and label directly. Categories live
 // in the schema this client already fetched.
-export interface BoardColumnDto {
-  id: string;
-  label: string;
-  wip_limit: number | null;
+export interface BoardColumnDto extends WireBoardColumnDto {
   issues: BoardIssueDto[];
 }
 
-export interface BoardDto {
+export interface BoardDto extends WireBoardDto {
   columns: BoardColumnDto[];
 }
 
-export interface StatusInfo {
-  ok: boolean;
-  version: string;
-  repo: string;
-  branch: string;
-  head: string | null;
-  dirty: boolean;
-  me: string | null;
-}
+export type StatusInfo = WireStatusInfo;
 
-export interface IssueListDto {
-  total: number;
+export interface IssueListDto extends WireIssueListDto {
   items: IssueDto[];
 }
 
 // The set of fields the PATCH endpoint accepts inside { set: ... }. Absent
 // fields are untouched — v0.1 has no way to clear a field, by design.
-export interface FieldPatch {
-  title?: string;
-  status?: string;
-  priority?: string;
-  type?: string;
-  assignees?: string[];
-  labels?: string[];
-  reporter?: string;
-  estimate?: number;
-  sprint?: string;
-  due?: string;
-}
+export type FieldPatch = FieldPatchDto;
 
-export interface NewIssueInput {
-  title: string;
-  type?: string;
-  status?: string;
-  priority?: string;
-  labels?: string[];
-  assignees?: string[];
-  body?: string;
-}
+export type NewIssueInput = NewIssueDto;

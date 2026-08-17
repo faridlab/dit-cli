@@ -21,10 +21,10 @@ import type {
 } from "./types";
 
 const STATUSES: SchemaDto["workflow"]["statuses"] = [
-  { id: "todo", label: "Todo", category: "todo" },
-  { id: "in_progress", label: "In progress", category: "doing", wip_limit: 5 },
-  { id: "review", label: "In review", category: "doing", wip_limit: 3 },
-  { id: "done", label: "Done", category: "done", terminal: true },
+  { id: "todo", label: "Todo", category: "todo", terminal: false, wip_limit: null },
+  { id: "in_progress", label: "In progress", category: "doing", terminal: false, wip_limit: 5 },
+  { id: "review", label: "In review", category: "doing", terminal: false, wip_limit: 3 },
+  { id: "done", label: "Done", category: "done", terminal: true, wip_limit: null },
 ];
 
 const PEOPLE = ["farid", "jane", "akira", "sam"];
