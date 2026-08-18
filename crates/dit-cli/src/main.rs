@@ -11,8 +11,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use dit_core::{
-    DiagnosticLevel, Dit, DitError, FieldPatch, IndexedIssue, IssueDraft, IssueId, IssueKind,
-    Priority, ReindexMode,
+    DataLayout, DiagnosticLevel, Dit, DitError, FieldPatch, IndexedIssue, IssueDraft, IssueId,
+    IssueKind, Priority, ReindexMode,
 };
 
 #[derive(Parser)]
@@ -33,7 +33,12 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Make the current directory a workspace: git init, merge driver, README.
-    Init,
+    Init {
+        /// Where issue content lives (ADR 0005): `root` keeps `issues/`
+        /// visible at the tree root, `dotdir` tucks everything under `.dit/`.
+        #[arg(long, default_value = "root")]
+        layout: LayoutArg,
+    },
     /// Create, read and edit issues.
     Issue {
         #[command(subcommand)]
@@ -71,6 +76,22 @@ enum Command {
     },
     /// Register this binary as the repository's merge driver.
     InstallDriver,
+    /// List and edit the issue templates `.dit/templates/` holds.
+    Templates {
+        #[command(subcommand)]
+        cmd: Templates,
+    },
+    /// Build generated documents (ADR 0008).
+    Docs {
+        #[command(subcommand)]
+        cmd: Docs,
+    },
+    /// Move the workspace's content between layouts (ADR 0005):
+    /// `git mv` + reindex, history intact.
+    MigrateLayout { to: LayoutArg },
+    /// Backfill `#numbers` onto issues created before numbering (ADR 0009):
+    /// append-only, one commit, existing numbers never move.
+    Renumber,
     /// Called by git during merges; humans never type this.
     #[command(hide = true)]
     MergeDriver {
@@ -108,6 +129,9 @@ enum Issue {
         estimate: Option<u32>,
         #[arg(long)]
         body: Option<String>,
+        /// Seed the body from `.dit/templates/<name>.md` instead of `--body`.
+        #[arg(long)]
+        template: Option<String>,
     },
     /// Show one issue: fields, body, comments, field history.
     Show { reference: String },
@@ -174,6 +198,40 @@ enum Mode {
     Events,
 }
 
+#[derive(Subcommand)]
+enum Templates {
+    /// Print the template names `issue new --template` accepts.
+    List,
+    /// Open a template in $EDITOR.
+    Edit { name: String },
+}
+
+#[derive(Subcommand)]
+enum Docs {
+    /// Regenerate `issues/README.md`, the human-browsable issue index.
+    Build {
+        /// Build the issue index README (the one target, named for the ones
+        /// that follow).
+        #[arg(long)]
+        index: bool,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum LayoutArg {
+    Root,
+    Dotdir,
+}
+
+impl From<LayoutArg> for DataLayout {
+    fn from(l: LayoutArg) -> DataLayout {
+        match l {
+            LayoutArg::Root => DataLayout::Root,
+            LayoutArg::Dotdir => DataLayout::DotDir,
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match run(cli) {
@@ -186,7 +244,7 @@ fn main() -> ExitCode {
                 ExitCode::from(3)
             // "You asked for something that isn't there" is its own code:
             // a script looping over refs can skip and continue on 2.
-            } else if matches!(e, DitError::NotFound(_)) {
+            } else if matches!(e, DitError::NotFound(_) | DitError::TemplateMissing(_)) {
                 ExitCode::from(2)
             } else {
                 ExitCode::from(1)
@@ -198,11 +256,32 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<ExitCode, DitError> {
     let me = alias(&cli);
     match cli.command {
-        Command::Init => {
+        Command::Init { layout } => {
             let cwd = std::env::current_dir()?;
             let exe = std::env::current_exe()?;
-            let dit = Dit::init(&cwd, &exe)?;
+            let dit = Dit::init_with_layout(&cwd, &exe, layout.into())?;
             println!("initialized workspace at {}", dit.root().display());
+            // Say where the files went — a workspace whose layout is a
+            // surprise is a workspace nobody trusts (ADR 0005).
+            match dit.layout() {
+                DataLayout::Root => println!(
+                    "layout: root — {} at the tree root, machinery in .dit/",
+                    dit_core::CONTENT_ROOTS.join("/")
+                ),
+                DataLayout::DotDir => println!("layout: dotdir — everything under .dit/"),
+            }
+            println!(
+                "numbering: {} — issues get a #number {}",
+                dit.config().numbering.as_str(),
+                match dit.config().numbering {
+                    dit_core::Numbering::Local => "when created",
+                    dit_core::Numbering::OnMerge => "when their branch merges",
+                },
+            );
+            println!(
+                "templates: {} (.dit/templates/)",
+                dit.templates().join(", ")
+            );
             Ok(ExitCode::SUCCESS)
         }
         Command::Issue { cmd } => issue(cmd, &me),
@@ -339,6 +418,47 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
             println!("merge driver registered: {}", exe.display());
             Ok(ExitCode::SUCCESS)
         }
+        Command::Templates { cmd } => templates(cmd),
+        Command::Docs { cmd } => match cmd {
+            Docs::Build { index } => {
+                if !index {
+                    eprintln!("dit: nothing to build — pass --index for the issue index README");
+                    return Ok(ExitCode::from(2));
+                }
+                let mut dit = open()?;
+                if dit.build_docs_index()? {
+                    println!("wrote the issue index (issues/README.md)");
+                } else {
+                    println!("issue index already current (issues/README.md)");
+                }
+                Ok(ExitCode::SUCCESS)
+            }
+        },
+        Command::MigrateLayout { to } => {
+            let mut dit = open()?;
+            let from = dit.layout();
+            let target = DataLayout::from(to);
+            let report = dit.migrate_layout(target)?;
+            println!("layout: {} -> {}", from.as_str(), target.as_str());
+            println!(
+                "moved {} content root{}, renamed {} legacy issue.md file{}",
+                report.roots_moved,
+                if report.roots_moved == 1 { "" } else { "s" },
+                report.bodies_renamed,
+                if report.bodies_renamed == 1 { "" } else { "s" },
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Renumber => {
+            let mut dit = open()?;
+            match dit.renumber()? {
+                0 => println!("every issue already has a number — nothing to do"),
+                n => println!(
+                    "assigned {n} number(s) in creation order, one commit; existing numbers untouched"
+                ),
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         Command::MergeDriver {
             base,
             ours,
@@ -371,6 +491,7 @@ fn issue(cmd: Issue, me: &str) -> Result<ExitCode, DitError> {
             label,
             estimate,
             body,
+            template,
         } => {
             let title = title.join(" ");
             if title.trim().is_empty() {
@@ -379,7 +500,7 @@ fn issue(cmd: Issue, me: &str) -> Result<ExitCode, DitError> {
             }
             let mut dit = open()?;
             let mut tx = dit.transaction(me)?;
-            let id = tx.create_issue(IssueDraft {
+            let draft = IssueDraft {
                 title: title.clone(),
                 kind: kind.into(),
                 status,
@@ -393,9 +514,24 @@ fn issue(cmd: Issue, me: &str) -> Result<ExitCode, DitError> {
                 due: None,
                 blocked_by: vec![],
                 body: body.unwrap_or_default(),
-            })?;
+                // The number is facade-owned (ADR 0007): numbering policy
+                // assigns it inside the transaction, never the caller.
+                number: None,
+            };
+            let id = match template {
+                Some(name) => tx.create_issue_from_template(draft, &name)?,
+                None => tx.create_issue(draft)?,
+            };
             tx.commit(&format!("create {title}"))?;
-            println!("{} {}", id.short_ref().as_str(), title);
+            // Read the stored issue back for the number the facade assigned;
+            // `#N` is the handle a human reads, the short ref the one a
+            // script can rely on forever.
+            let stored = dit.get(id.as_str())?;
+            let short = id.short_ref().as_str().to_owned();
+            match stored.and_then(|hit| hit.issue.number) {
+                Some(n) => println!("#{n} {short} {title}"),
+                None => println!("{short} {title}"),
+            }
             Ok(ExitCode::SUCCESS)
         }
         Issue::Show { reference } => {
@@ -471,6 +607,54 @@ fn issue(cmd: Issue, me: &str) -> Result<ExitCode, DitError> {
     }
 }
 
+/// The `templates` subcommand. Templates are plain files: `list` reads the
+/// directory the facade seeds, `edit` hands one to $EDITOR. The edit lands
+/// as an uncommitted working-tree change the user reviews — same as any
+/// other file they edit.
+fn templates(cmd: Templates) -> Result<ExitCode, DitError> {
+    match cmd {
+        Templates::List => {
+            let dit = open()?;
+            let names = dit.templates();
+            if names.is_empty() {
+                println!("(no templates in .dit/templates/)");
+            } else {
+                for name in names {
+                    println!("{name}");
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Templates::Edit { name } => {
+            let dit = open()?;
+            let Some(path) = dit.template_path(&name) else {
+                return Err(DitError::TemplateMissing(name));
+            };
+            let editor = std::env::var("EDITOR")
+                .or_else(|_| std::env::var("VISUAL"))
+                .unwrap_or_else(|_| "vi".to_owned());
+            let status = std::process::Command::new(&editor).arg(&path).status()?;
+            if !status.success() {
+                eprintln!("dit: editor ({editor}) failed");
+                return Ok(ExitCode::from(1));
+            }
+            println!(
+                "edited {} — commit it to share the template",
+                path.display()
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+/// The handle a human reads for an issue (ADR 0007): `#12` when the
+/// workspace numbered it, the short ref otherwise.
+fn handle(i: &dit_core::Issue) -> String {
+    match i.number {
+        Some(n) => format!("#{n}"),
+        None => i.id.short_ref().as_str().to_owned(),
+    }
+}
 /// Turn `field=value` strings into a patch. Values are validated here so the
 /// user gets the name of the offending field, not a store error from deep
 /// inside the write path.
@@ -575,8 +759,8 @@ fn print_list(hits: &[IndexedIssue]) {
     for hit in hits {
         let i = &hit.issue;
         println!(
-            "{}  {:<11} {:<4} {}",
-            i.id.short_ref().as_str(),
+            "{:<7}  {:<11} {:<4} {}",
+            handle(i),
             i.status,
             i.priority
                 .map(|p| p.as_str().to_owned())
@@ -590,7 +774,7 @@ fn print_board(board: &dit_core::Board) {
     for col in &board.columns {
         println!("{} ({})", col.label, col.issues.len());
         for i in &col.issues {
-            println!("  {}  {}", i.issue.id.short_ref().as_str(), i.issue.title,);
+            println!("  {}  {}", handle(&i.issue), i.issue.title);
         }
     }
 }
@@ -607,7 +791,12 @@ fn print_status(dit: &Dit) {
 
 fn print_issue(hit: &IndexedIssue) {
     let i = &hit.issue;
-    println!("{}  {}", i.id.short_ref().as_str(), i.title);
+    println!("{}  {}", handle(i), i.title);
+    if i.number.is_some() {
+        // The short ref is the permanent identifier; the number is only the
+        // display handle, so `show` is where both meet.
+        println!("ref: {}", i.id.short_ref().as_str());
+    }
     println!(
         "type: {}  status: {}  priority: {}",
         i.kind.as_str(),

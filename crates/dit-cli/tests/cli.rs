@@ -28,6 +28,20 @@ fn stderr(o: &Output) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
 }
 
+/// The short ref out of `issue new` output, which prints `#N <short> <title>`
+/// once the workspace numbers issues (ADR 0007) and `<short> <title>` when
+/// it does not.
+fn short_of(o: &Output) -> String {
+    let text = stdout(o);
+    let mut words = text.split_whitespace();
+    let first = words.next().unwrap().to_owned();
+    if first.starts_with('#') {
+        words.next().unwrap().to_owned()
+    } else {
+        first
+    }
+}
+
 #[test]
 fn init_new_list_and_show_form_the_basic_loop() {
     let tmp = tempfile::tempdir().unwrap();
@@ -37,6 +51,8 @@ fn init_new_list_and_show_form_the_basic_loop() {
         tmp.path().join("README.md").exists(),
         "init writes a README"
     );
+    // Init says where the files went — the layout must never be a surprise.
+    assert!(stdout(&init).contains("layout: root"), "{}", stdout(&init));
 
     let new = dit(
         tmp.path(),
@@ -46,16 +62,28 @@ fn init_new_list_and_show_form_the_basic_loop() {
         ],
     );
     assert!(new.status.success(), "{}", stderr(&new));
-    let short = stdout(&new).split_whitespace().next().unwrap().to_owned();
+    assert!(
+        stdout(&new).starts_with("#1 "),
+        "the first issue is #1: {}",
+        stdout(&new)
+    );
+    let short = short_of(&new);
     assert_eq!(short.len(), 7, "the created issue's short ref is printed");
 
     let list = dit(tmp.path(), &["list", "status", "=", "todo"]);
     assert!(stdout(&list).contains("Login timeout"));
-    assert!(stdout(&list).contains(&short));
+    assert!(stdout(&list).contains("#1"), "{}", stdout(&list));
 
-    let show = dit(tmp.path(), &["issue", "show", &short]);
-    assert!(stdout(&show).contains("status: todo"));
-    assert!(stdout(&show).contains("priority: p1"));
+    // #N is a first-class reference, not just display sugar.
+    let by_number = dit(tmp.path(), &["issue", "show", "#1"]);
+    assert!(by_number.status.success(), "{}", stderr(&by_number));
+    assert!(stdout(&by_number).contains("status: todo"));
+    assert!(stdout(&by_number).contains("priority: p1"));
+    assert!(
+        stdout(&by_number).contains(&format!("ref: {short}")),
+        "show names the permanent ref behind the number: {}",
+        stdout(&by_number)
+    );
 
     // Every write was committed: the tree the user sees is clean.
     assert!(stdout(&dit(tmp.path(), &["status"])).contains("(clean)"));
@@ -66,7 +94,7 @@ fn set_comment_and_history_are_all_visible_afterwards() {
     let tmp = tempfile::tempdir().unwrap();
     dit(tmp.path(), &["init"]);
     let new = dit(tmp.path(), &["--me", "farid", "issue", "new", "Crash"]);
-    let short = stdout(&new).split_whitespace().next().unwrap().to_owned();
+    let short = short_of(&new);
 
     let set = dit(
         tmp.path(),
@@ -194,7 +222,7 @@ fn reindex_rebuilds_after_the_cache_is_deleted() {
     let tmp = tempfile::tempdir().unwrap();
     dit(tmp.path(), &["init"]);
     let new = dit(tmp.path(), &["--me", "farid", "issue", "new", "Gone"]);
-    let short = stdout(&new).split_whitespace().next().unwrap().to_owned();
+    let short = short_of(&new);
 
     std::fs::remove_file(tmp.path().join(".dit-cache/index.sqlite")).unwrap();
     let empty = dit(tmp.path(), &["issue", "show", &short]);
@@ -260,4 +288,208 @@ fn ui_serves_the_workspace_over_http() {
     let _ = child.kill();
     let _ = child.wait();
     assert!(answered, "`dit ui` never answered on port {port}");
+}
+
+#[test]
+fn init_can_tuck_everything_under_dot_for_guest_repos() {
+    let tmp = tempfile::tempdir().unwrap();
+    let init = dit(tmp.path(), &["init", "--layout", "dotdir"]);
+    assert!(init.status.success(), "{}", stderr(&init));
+    assert!(
+        stdout(&init).contains("layout: dotdir"),
+        "{}",
+        stdout(&init)
+    );
+    assert!(
+        tmp.path().join(".dit/issues").is_dir(),
+        "content lives under .dit/"
+    );
+    assert!(
+        !tmp.path().join("issues").exists(),
+        "no issues/ colonizes the guest tree root"
+    );
+
+    let new = dit(tmp.path(), &["issue", "new", "Hidden"]);
+    assert!(new.status.success(), "{}", stderr(&new));
+    let show = dit(tmp.path(), &["issue", "show", "#1"]);
+    assert!(show.status.success(), "{}", stderr(&show));
+}
+
+#[test]
+fn a_template_seeds_the_body_and_the_names_are_listable() {
+    let tmp = tempfile::tempdir().unwrap();
+    dit(tmp.path(), &["init"]);
+
+    let list = dit(tmp.path(), &["templates", "list"]);
+    assert!(list.status.success(), "{}", stderr(&list));
+    let names = stdout(&list);
+    for expected in ["default", "bug", "story", "spike"] {
+        assert!(names.contains(expected), "templates list: {names}");
+    }
+
+    let new = dit(
+        tmp.path(),
+        &["issue", "new", "Crash", "on", "save", "--template", "bug"],
+    );
+    assert!(new.status.success(), "{}", stderr(&new));
+    let show = dit(tmp.path(), &["issue", "show", "#1"]);
+    assert!(
+        stdout(&show).contains("Steps to reproduce"),
+        "the bug template's sections seed the body: {}",
+        stdout(&show)
+    );
+
+    let missing = dit(tmp.path(), &["issue", "new", "X", "--template", "nope"]);
+    assert_eq!(
+        missing.status.code(),
+        Some(2),
+        "a missing template is a you-asked-for-something-absent exit"
+    );
+}
+
+#[test]
+fn docs_build_writes_the_index_readme_exactly_like_the_adr_says() {
+    let tmp = tempfile::tempdir().unwrap();
+    dit(tmp.path(), &["init"]);
+    dit(tmp.path(), &["--me", "farid", "issue", "new", "First"]);
+    dit(tmp.path(), &["--me", "farid", "issue", "new", "Second"]);
+
+    let build = dit(tmp.path(), &["docs", "build", "--index"]);
+    assert!(build.status.success(), "{}", stderr(&build));
+    let readme = std::fs::read_to_string(tmp.path().join("issues/README.md")).unwrap();
+    assert!(
+        readme.starts_with("<!-- generated by dit"),
+        "the marker leads: {readme}"
+    );
+    assert!(readme.contains("#1"), "{readme}");
+    assert!(readme.contains("[First]("), "{readme}");
+
+    // A second build is a no-op, not a churn commit.
+    let again = dit(tmp.path(), &["docs", "build", "--index"]);
+    assert!(
+        stdout(&again).contains("already current"),
+        "{}",
+        stdout(&again)
+    );
+    assert!(stdout(&dit(tmp.path(), &["status"])).contains("(clean)"));
+
+    let no_flag = dit(tmp.path(), &["docs", "build"]);
+    assert_eq!(no_flag.status.code(), Some(2));
+}
+
+#[test]
+fn migrate_layout_moves_a_dotdir_workspace_and_keeps_everything_readable() {
+    let tmp = tempfile::tempdir().unwrap();
+    dit(tmp.path(), &["init", "--layout", "dotdir"]);
+    let new = dit(tmp.path(), &["--me", "farid", "issue", "new", "Carried"]);
+    let short = short_of(&new);
+    assert!(dit(
+        tmp.path(),
+        &["--me", "budi", "issue", "comment", "#1", "Still here."],
+    )
+    .status
+    .success());
+
+    let migrate = dit(tmp.path(), &["migrate-layout", "root"]);
+    assert!(migrate.status.success(), "{}", stderr(&migrate));
+    assert!(
+        stdout(&migrate).contains("dotdir -> root"),
+        "{}",
+        stdout(&migrate)
+    );
+    assert!(
+        tmp.path().join("issues").is_dir(),
+        "content moved to the tree root"
+    );
+
+    // The issue, its comment and its history survive the move.
+    let show = dit(tmp.path(), &["issue", "show", &short]);
+    assert!(show.status.success(), "{}", stderr(&show));
+    assert!(stdout(&show).contains("Still here."), "{}", stdout(&show));
+    assert!(
+        stdout(&show).contains("ref:"),
+        "the numbered handle still resolves to the same issue"
+    );
+    assert!(stdout(&dit(tmp.path(), &["status"])).contains("(clean)"));
+
+    // And the workspace keeps working in its new shape: the next issue is
+    // created under the visible root, and the old home is gone.
+    assert!(dit(tmp.path(), &["issue", "new", "After"]).status.success());
+    let after = dit(tmp.path(), &["issue", "show", "#2"]);
+    assert!(after.status.success(), "{}", stderr(&after));
+    assert!(
+        !tmp.path().join(".dit/issues").exists(),
+        "the dotdir content root is gone, not left behind as a fork"
+    );
+}
+
+#[test]
+fn renumber_backfills_legacy_issues_without_moving_existing_numbers() {
+    let tmp = tempfile::tempdir().unwrap();
+    dit(tmp.path(), &["init"]);
+    assert!(dit(tmp.path(), &["--me", "farid", "issue", "new", "Kept"])
+        .status
+        .success());
+
+    // Two "legacy" issues: the workspace spent time on `on-merge`, where
+    // issues wait for the bot. Flip the policy by editing config, the way a
+    // user without the settings panel would.
+    let config = tmp.path().join(".dit/config.yaml");
+    let git = |msg: &str| {
+        let _ = Command::new("git")
+            .args(["add", ".dit"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", msg])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap()
+    };
+    std::fs::write(
+        &config,
+        "schema_version: 1\nlayout: root\nnumbering: on-merge\n",
+    )
+    .unwrap();
+    assert!(git("switch to on-merge").status.success());
+    assert!(dit(tmp.path(), &["issue", "new", "Legacy older"])
+        .status
+        .success());
+    assert!(dit(tmp.path(), &["issue", "new", "Legacy newer"])
+        .status
+        .success());
+    std::fs::write(
+        &config,
+        "schema_version: 1\nlayout: root\nnumbering: local\n",
+    )
+    .unwrap();
+    assert!(git("switch back to local").status.success());
+
+    // Doctor points at the way out first.
+    assert!(
+        stdout(&dit(tmp.path(), &["doctor"])).contains("dit renumber"),
+        "the warn names the command"
+    );
+
+    let r = dit(tmp.path(), &["renumber"]);
+    assert!(r.status.success(), "{}", stderr(&r));
+    assert!(
+        stdout(&r).contains("assigned 2 number(s)"),
+        "{}",
+        stdout(&r)
+    );
+
+    // #1 keeps pointing where it always did; the legacy pair lands after it
+    // in creation order.
+    assert!(stdout(&dit(tmp.path(), &["issue", "show", "#1"])).contains("Kept"));
+    assert!(stdout(&dit(tmp.path(), &["issue", "show", "#2"])).contains("Legacy older"),);
+    assert!(stdout(&dit(tmp.path(), &["issue", "show", "#3"])).contains("Legacy newer"),);
+
+    // Idempotent, and the whole backfill is one clean commit.
+    assert!(
+        stdout(&dit(tmp.path(), &["renumber"])).contains("nothing to do"),
+        "a second run has nothing to do"
+    );
+    assert!(stdout(&dit(tmp.path(), &["status"])).contains("(clean)"));
 }
