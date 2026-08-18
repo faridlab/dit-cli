@@ -7,9 +7,9 @@
 //! creation time, so no separate lookup is needed to find an issue's folder.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use dit_model::{IssueId, Slug};
+use dit_model::{DataLayout, IssueId, Slug, ISSUE_BODY_FILE, LEGACY_ISSUE_BODY_FILE};
 use time::OffsetDateTime;
 
 use crate::store::StoreError;
@@ -31,14 +31,54 @@ pub(crate) fn datetime_to_ms(t: OffsetDateTime) -> i64 {
 pub struct Layout {
     /// The workspace root: the git repository that contains `.dit/`.
     root: PathBuf,
+    /// Where the content roots sit (ADR 0005). Resolved once at open from
+    /// `config.yaml` — every path below derives from this one bit.
+    kind: DataLayout,
 }
 
 impl Layout {
-    pub fn new(root: impl Into<PathBuf>) -> Layout {
-        Layout { root: root.into() }
+    /// Resolve the layout for a workspace root.
+    ///
+    /// Precedence: an explicit `layout:` in `.dit/config.yaml` wins. Absent
+    /// that, a `.dit/issues/` directory on disk means a workspace created
+    /// before ADR 0005 — it stays `dotdir` until migrated. Everything else
+    /// (including a workspace with no `.dit/` yet, i.e. `dit init`) is `root`.
+    pub fn detect(root: impl Into<PathBuf>) -> Layout {
+        let root = root.into();
+        let config = root.join(".dit").join("config.yaml");
+        let text = fs::read_to_string(&config).unwrap_or_default();
+        if config_states_layout(&text) {
+            if let Ok(cfg) = dit_parse::parse_config(&text) {
+                return Layout {
+                    root,
+                    kind: cfg.layout,
+                };
+            }
+        }
+        let legacy = root.join(".dit").join("issues").is_dir();
+        Layout {
+            root,
+            kind: if legacy {
+                DataLayout::DotDir
+            } else {
+                DataLayout::Root
+            },
+        }
     }
 
-    pub fn root(&self) -> &std::path::Path {
+    /// Tests and `dit init` (which has not written config yet) pin the kind.
+    pub fn with_kind(root: impl Into<PathBuf>, kind: DataLayout) -> Layout {
+        Layout {
+            root: root.into(),
+            kind,
+        }
+    }
+
+    pub fn kind(&self) -> DataLayout {
+        self.kind
+    }
+
+    pub fn root(&self) -> &Path {
         &self.root
     }
 
@@ -46,8 +86,39 @@ impl Layout {
         self.root.join(".dit")
     }
 
+    /// A visible content root (`issues`, `docs`, `notes`, …) at the place
+    /// this layout puts it: the tree root, or under `.dit/` in `dotdir`.
+    pub fn content_dir(&self, name: &str) -> PathBuf {
+        match self.kind {
+            DataLayout::Root => self.root.join(name),
+            DataLayout::DotDir => self.dit_dir().join(name),
+        }
+    }
+
+    /// Repo-relative form of a content root, as git paths spell it (`/`,
+    /// no leading `./`) — for tree walks and diff pathspecs.
+    pub fn content_root_rel(&self, name: &str) -> String {
+        self.kind.content_root(name)
+    }
+
     pub fn issues_dir(&self) -> PathBuf {
-        self.dit_dir().join("issues")
+        self.content_dir("issues")
+    }
+
+    pub fn epics_dir(&self) -> PathBuf {
+        self.content_dir("epics")
+    }
+
+    pub fn docs_dir(&self) -> PathBuf {
+        self.content_dir("docs")
+    }
+
+    pub fn notes_dir(&self) -> PathBuf {
+        self.content_dir("notes")
+    }
+
+    pub fn changelogs_dir(&self) -> PathBuf {
+        self.content_dir("changelogs")
     }
 
     pub fn people_dir(&self) -> PathBuf {
@@ -62,8 +133,19 @@ impl Layout {
         self.dit_dir().join("config.yaml")
     }
 
+    /// `.dit/templates/` — issue-body templates seeded by `dit init`.
+    pub fn templates_dir(&self) -> PathBuf {
+        self.dit_dir().join("templates")
+    }
+
+    /// The merge-driver attributes file sits where this layout's tree root
+    /// is: the tree root itself when DIT owns it, `.dit/` when it is a guest
+    /// (ADR 0005).
     pub fn gitattributes(&self) -> PathBuf {
-        self.dit_dir().join(".gitattributes")
+        match self.kind {
+            DataLayout::Root => self.root.join(".gitattributes"),
+            DataLayout::DotDir => self.dit_dir().join(".gitattributes"),
+        }
     }
 
     pub fn cache_dir(&self) -> PathBuf {
@@ -121,11 +203,29 @@ impl Layout {
         Ok(None)
     }
 
-    /// Path of an existing issue's `issue.md`.
-    pub fn issue_md(&self, id: &IssueId) -> Result<PathBuf, StoreError> {
-        self.issue_dir_for(id)?
-            .map(|d| d.join("issue.md"))
-            .ok_or_else(|| StoreError::NotFound(id.as_str().to_owned()))
+    /// Path of an existing issue's body file. `README.md` since ADR 0006;
+    /// folders created before then keep their `issue.md` until migrated —
+    /// reads prefer the new name, writes leave the old one in place.
+    pub fn issue_body(&self, id: &IssueId) -> Result<PathBuf, StoreError> {
+        let dir = self
+            .issue_dir_for(id)?
+            .ok_or_else(|| StoreError::NotFound(id.as_str().to_owned()))?;
+        Self::body_file_in(&dir).ok_or_else(|| StoreError::NotFound(id.as_str().to_owned()))
+    }
+
+    /// The body file inside a known issue folder: `README.md` when present
+    /// (or when the folder is new and has neither), the legacy `issue.md`
+    /// when that is all there is.
+    pub fn body_file_in(dir: &Path) -> Option<PathBuf> {
+        let readme = dir.join(ISSUE_BODY_FILE);
+        if readme.is_file() {
+            return Some(readme);
+        }
+        let legacy = dir.join(LEGACY_ISSUE_BODY_FILE);
+        if legacy.is_file() {
+            return Some(legacy);
+        }
+        Some(readme)
     }
 
     /// File name for a comment: 14 id characters (timestamp + 4 random —
@@ -161,10 +261,24 @@ impl Layout {
     }
 }
 
+/// True when the config text carries an explicit `layout:` key. Only the
+/// canonical single-line form is recognized — the file is `write_config`'s
+/// output or a hand edit of it, never arbitrary YAML.
+fn config_states_layout(text: &str) -> bool {
+    text.lines().any(|l| l.trim_start().starts_with("layout:"))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    fn tmp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("dit-layout-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
     #[test]
     fn comment_names_reject_path_characters() {
@@ -173,5 +287,81 @@ mod tests {
         assert!(Layout::comment_file_name(&cid, "../escape").is_err());
         assert!(Layout::comment_file_name(&cid, "").is_err());
         assert!(Layout::comment_file_name(&cid, "Farid").is_err());
+    }
+
+    #[test]
+    fn detect_defaults_to_root_when_nothing_exists() {
+        let dir = tmp("root-default");
+        assert_eq!(Layout::detect(&dir).kind(), DataLayout::Root);
+    }
+
+    #[test]
+    fn detect_honors_an_explicit_layout_key() {
+        let dir = tmp("explicit");
+        std::fs::create_dir_all(dir.join(".dit")).unwrap();
+        std::fs::write(
+            dir.join(".dit").join("config.yaml"),
+            "schema_version: 1\nlayout: dotdir\nnumbering: local\n",
+        )
+        .unwrap();
+        assert_eq!(Layout::detect(&dir).kind(), DataLayout::DotDir);
+    }
+
+    #[test]
+    fn detect_treats_a_legacy_dotdir_workspace_as_dotdir() {
+        // A workspace created before ADR 0005: config carries no `layout:`,
+        // and its data already lives under `.dit/issues/`.
+        let dir = tmp("legacy");
+        std::fs::create_dir_all(dir.join(".dit/issues")).unwrap();
+        std::fs::write(dir.join(".dit").join("config.yaml"), "schema_version: 1\n").unwrap();
+        assert_eq!(Layout::detect(&dir).kind(), DataLayout::DotDir);
+    }
+
+    #[test]
+    fn content_roots_follow_the_layout() {
+        let root = Layout::with_kind("/tmp/ws", DataLayout::Root);
+        assert_eq!(root.issues_dir(), PathBuf::from("/tmp/ws/issues"));
+        assert_eq!(root.notes_dir(), PathBuf::from("/tmp/ws/notes"));
+        assert_eq!(
+            root.templates_dir(),
+            PathBuf::from("/tmp/ws/.dit/templates")
+        );
+        assert_eq!(
+            root.gitattributes(),
+            PathBuf::from("/tmp/ws/.gitattributes")
+        );
+
+        let dot = Layout::with_kind("/tmp/ws", DataLayout::DotDir);
+        assert_eq!(dot.issues_dir(), PathBuf::from("/tmp/ws/.dit/issues"));
+        assert_eq!(
+            dot.gitattributes(),
+            PathBuf::from("/tmp/ws/.dit/.gitattributes")
+        );
+        // Machinery never moves.
+        assert_eq!(dot.config_yaml(), PathBuf::from("/tmp/ws/.dit/config.yaml"));
+    }
+
+    #[test]
+    fn body_file_prefers_readme_and_falls_back_to_legacy() {
+        let dir = tmp("body-file");
+        let folder = dir.join("01K3M9ZXQ2-R7VN-x");
+        std::fs::create_dir_all(&folder).unwrap();
+
+        // Neither file: a new folder gets README.md.
+        assert_eq!(
+            Layout::body_file_in(&folder),
+            Some(folder.join("README.md"))
+        );
+
+        // Legacy only: keep editing the file that exists.
+        std::fs::write(folder.join("issue.md"), "---\nid: x\n---\n").unwrap();
+        assert_eq!(Layout::body_file_in(&folder), Some(folder.join("issue.md")));
+
+        // Both: the new name wins.
+        std::fs::write(folder.join("README.md"), "---\nid: x\n---\n").unwrap();
+        assert_eq!(
+            Layout::body_file_in(&folder),
+            Some(folder.join("README.md"))
+        );
     }
 }

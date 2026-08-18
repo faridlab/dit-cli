@@ -398,3 +398,52 @@ fn commit_with_nothing_staged_but_dirty_tree_is_not_an_error() {
     let before = repo.head().unwrap();
     assert_eq!(repo.head().unwrap(), before);
 }
+
+/// `dit migrate-layout` moves whole content roots with `git mv`, and the
+/// reason it uses git mv (not write-delete) is rename detection: a move must
+/// keep `-M` seeing it as a rename so field history survives. Verified here
+/// rather than assumed — `--follow` across the move is the observable proof.
+#[test]
+fn mv_moves_a_tracked_directory_and_keeps_it_followable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = hermetic_repo(tmp.path());
+    dit_file(tmp.path(), "2026/08/one/issue.md", "base\n");
+    repo.add(".dit").unwrap();
+    repo.commit("base").unwrap();
+
+    repo.mv(".dit/issues", "issues").unwrap();
+    repo.add("issues").unwrap();
+    repo.commit("move to the root").unwrap();
+
+    assert!(
+        tmp.path().join("issues/2026/08/one/issue.md").is_file(),
+        "the directory moved on disk"
+    );
+    assert!(
+        !tmp.path().join(".dit/issues").exists(),
+        "the old location is gone"
+    );
+    let log = repo
+        .git(&[
+            "log",
+            "--oneline",
+            "--follow",
+            "issues/2026/08/one/issue.md",
+        ])
+        .unwrap();
+    assert!(log.lines().count() >= 2, "history follows the move:\n{log}");
+}
+
+/// The destination's parent may not exist yet (`issues/` before the first
+/// move): mv creates it instead of failing.
+#[test]
+fn mv_creates_the_destination_parent_when_missing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = hermetic_repo(tmp.path());
+    write(&tmp.path().join("a/b.txt"), "x\n");
+    repo.add("a").unwrap();
+    repo.commit("base").unwrap();
+
+    repo.mv("a/b.txt", "deep/nested/b.txt").unwrap();
+    assert!(tmp.path().join("deep/nested/b.txt").is_file());
+}

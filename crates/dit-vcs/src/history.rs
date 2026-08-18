@@ -24,7 +24,7 @@
 //! stamps them with `seq` in exactly the order received, which is what makes
 //! a rebuild reproduce the same numbering.
 
-use dit_model::{EventSource, FieldEvent};
+use dit_model::{looks_like_issue_body, DataLayout, EventSource, FieldEvent};
 use dit_parse::frontmatter::{Document, Value};
 
 use crate::git::{Repo, VcsError};
@@ -37,7 +37,16 @@ pub const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 /// Walk commits reachable from HEAD (optionally only those after `since`,
 /// exclusive — pass the previously recorded watermark) and produce one event
 /// per changed frontmatter field per parent diff.
-pub fn walk_field_events(repo: &Repo, since: Option<&str>) -> Result<Vec<FieldEvent>, VcsError> {
+///
+/// `layout` decides which paths are DIT data (ADR 0005): it narrows the diff
+/// to the roots this workspace actually uses and classifies issue bodies by
+/// shape, so `README.md` bodies under `issues/` are read and doc pages are
+/// not. The layout is injected — this crate never reads config itself.
+pub fn walk_field_events(
+    repo: &Repo,
+    since: Option<&str>,
+    layout: DataLayout,
+) -> Result<Vec<FieldEvent>, VcsError> {
     let range = match since {
         Some(watermark) => format!("{watermark}..HEAD"),
         None => "HEAD".to_owned(),
@@ -83,7 +92,7 @@ pub fn walk_field_events(repo: &Repo, since: Option<&str>) -> Result<Vec<FieldEv
             parents.split_whitespace().collect()
         };
         for base in bases {
-            diff_one(repo, sha, base, author, date, &mut events)?;
+            diff_one(repo, sha, base, author, date, &mut events, layout)?;
         }
     }
     Ok(events)
@@ -97,10 +106,22 @@ fn diff_one(
     author: &str,
     date: &str,
     events: &mut Vec<FieldEvent>,
+    layout: DataLayout,
 ) -> Result<(), VcsError> {
     // -M notices folder moves and reports them as renames; the handler reads
-    // each side from its own path either way.
-    let diff = repo.git(&["diff", "--name-status", "-M", base, sha, "--", ".dit/"])?;
+    // each side from its own path either way. The pathspec keeps code-repo
+    // commits (Mode C) out of the walk.
+    let mut argv = vec![
+        "diff".to_owned(),
+        "--name-status".to_owned(),
+        "-M".to_owned(),
+        base.to_owned(),
+        sha.to_owned(),
+        "--".to_owned(),
+    ];
+    argv.extend(layout.diff_pathspecs().iter().map(|s| s.to_string()));
+    let argv_ref: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
+    let diff = repo.git(&argv_ref)?;
     for line in diff.lines() {
         // <status>\t<path>[\t<new path> for renames/copies]
         let mut fields = line.split('\t');
@@ -116,7 +137,7 @@ fn diff_one(
         };
         let Some(old_path) = old_path else { continue };
         let Some(new_path) = new_path else { continue };
-        if !old_path.ends_with("issue.md") && !new_path.ends_with("issue.md") {
+        if !looks_like_issue_body(old_path, layout) && !looks_like_issue_body(new_path, layout) {
             continue;
         }
         // A file appearing or vanishing is handled by the same None-aware

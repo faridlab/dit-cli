@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
-use dit_model::{format_rfc3339, Comment, FieldPatch, Issue, IssueDraft, IssueId};
+use dit_model::{format_rfc3339, Comment, FieldPatch, Issue, IssueDraft, IssueId, ISSUE_BODY_FILE};
 use dit_parse::Document;
 use time::OffsetDateTime;
 
@@ -63,7 +63,7 @@ impl Store {
     /// or missing `.dit/` is legal here because transactions may bootstrap.
     pub fn open(root: impl Into<PathBuf>) -> Store {
         Store {
-            layout: Layout::new(root),
+            layout: Layout::detect(root),
         }
     }
 
@@ -108,7 +108,7 @@ impl Store {
 
     /// Read one issue's file from disk (write path / bootstrap only).
     pub fn read_issue(&self, id: &IssueId) -> Result<IssueFile, StoreError> {
-        let path = self.layout.issue_md(id)?;
+        let path = self.layout.issue_body(id)?;
         let text = fs::read_to_string(&path)?;
         let (issue, doc) = dit_parse::parse_issue(&text)?;
         Ok(IssueFile { path, issue, doc })
@@ -152,7 +152,7 @@ impl Store {
     pub fn transaction(&self, now: OffsetDateTime, author: &str) -> Transaction {
         Transaction {
             store: Store {
-                layout: Layout::new(self.layout.root()),
+                layout: self.layout.clone(),
             },
             now,
             author: author.to_owned(),
@@ -161,9 +161,11 @@ impl Store {
         }
     }
 
-    /// Visit every `issue.md` under `.dit/issues/`, cheapest-first.
-    /// Unparsable files are skipped here — walking is for discovery, and one
-    /// broken hand-edited file should not hide every other issue.
+    /// Visit every issue body under the issues root, cheapest-first. The walk
+    /// only descends `year/month/folder`, so the generated `issues/README.md`
+    /// index (ADR 0008) is never visited — shape excludes it. Unparsable
+    /// files are skipped here — walking is for discovery, and one broken
+    /// hand-edited file should not hide every other issue.
     fn walk_issue_files(&self, mut visit: impl FnMut(String)) -> Result<(), StoreError> {
         let years = match fs::read_dir(self.layout.issues_dir()) {
             Ok(e) => e,
@@ -181,9 +183,10 @@ impl Store {
                 let month = month?;
                 for dir in fs::read_dir(month.path())? {
                     let dir = dir?;
-                    let md = dir.path().join("issue.md");
-                    if let Ok(text) = fs::read_to_string(&md) {
-                        visit(text);
+                    if let Some(md) = Layout::body_file_in(&dir.path()) {
+                        if let Ok(text) = fs::read_to_string(&md) {
+                            visit(text);
+                        }
                     }
                 }
             }
@@ -299,6 +302,16 @@ impl Transaction {
             .ok_or_else(|| StoreError::NotFound(id.as_str().to_owned()))
     }
 
+    /// Resolve an issue's body file. Issues created in this transaction hold
+    /// `README.md`; pre-existing ones keep whatever they have on disk (the
+    /// legacy `issue.md` until migrated).
+    fn issue_body(&self, id: &IssueId) -> Result<PathBuf, StoreError> {
+        if let Some(d) = self.dirs.get(id) {
+            return Ok(d.join(ISSUE_BODY_FILE));
+        }
+        self.store.layout.issue_body(id)
+    }
+
     pub fn create_issue(&mut self, draft: IssueDraft) -> Result<IssueId, StoreError> {
         if let Some(s) = &draft.status {
             validate_value("status", s)?;
@@ -307,7 +320,7 @@ impl Transaction {
         let slug = dit_model::Slug::from_title(&draft.title);
         let contents = dit_parse::serialize_new_issue(&id, &draft, &format_rfc3339(self.now))?;
         let dir = self.store.layout.issue_dir(&id, &slug);
-        self.push_staged(dir.join("issue.md"), contents);
+        self.push_staged(dir.join(ISSUE_BODY_FILE), contents);
         self.dirs.insert(id, dir);
         Ok(id)
     }
@@ -316,7 +329,7 @@ impl Transaction {
         if let Some(s) = &patch.status {
             validate_value("status", s)?;
         }
-        let path = self.issue_dir(id)?.join("issue.md");
+        let path = self.issue_body(id)?;
         let current = self.current_bytes(&path)?;
         let mut doc = Document::parse(&current)?;
         dit_parse::apply_patch(&mut doc, &patch, &format_rfc3339(self.now))?;
@@ -327,7 +340,7 @@ impl Transaction {
     /// Replace the markdown body (formatted canonically), leaving frontmatter
     /// untouched down to the byte.
     pub fn set_body(&mut self, id: &IssueId, body: &str) -> Result<(), StoreError> {
-        let path = self.issue_dir(id)?.join("issue.md");
+        let path = self.issue_body(id)?;
         let current = self.current_bytes(&path)?;
         let mut doc = Document::parse(&current)?;
         let body = dit_parse::fmt::format_body(body)?;

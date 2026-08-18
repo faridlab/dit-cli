@@ -151,6 +151,24 @@ impl Repo {
         Ok(())
     }
 
+    /// Move or rename a tracked path. Repo-relative, forward-slash — the same
+    /// convention as [`Repo::add`]. The layout migration uses this rather than
+    /// write-plus-delete precisely because `git mv` keeps the change a rename:
+    /// rename detection (`-M`) is what lets field history follow a moved file.
+    pub fn mv(&self, from: &str, to: &str) -> Result<(), VcsError> {
+        // git refuses when the destination's parent is missing; the caller
+        // names where data should land, not the directories around it.
+        if let Some(parent) = Path::new(to).parent() {
+            let dir = self.root.join(parent);
+            std::fs::create_dir_all(&dir).map_err(|e| VcsError::Git {
+                args: format!("mv {from} {to}"),
+                stderr: format!("cannot create {}: {e}", dir.display()),
+            })?;
+        }
+        self.run(&["mv", from, to])?;
+        Ok(())
+    }
+
     /// Commit staged changes. `Ok(None)` when there was nothing to commit —
     /// callers treat that as success, not failure.
     pub fn commit(&self, message: &str) -> Result<Option<String>, VcsError> {

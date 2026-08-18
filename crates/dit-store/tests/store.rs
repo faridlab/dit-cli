@@ -18,6 +18,7 @@ fn now() -> OffsetDateTime {
 
 fn draft(title: &str) -> IssueDraft {
     IssueDraft {
+        number: None,
         title: title.to_owned(),
         kind: IssueKind::Bug,
         status: None,
@@ -36,17 +37,27 @@ fn draft(title: &str) -> IssueDraft {
 
 #[test]
 fn layout_derives_monthly_shard_from_the_id_timestamp() {
-    let layout = Layout::new("/tmp/ws");
+    let dot = Layout::with_kind("/tmp/ws", dit_model::DataLayout::DotDir);
     // A ULID encodes its creation time, so the folder path needs no extra
     // data. This sample id decodes to 2025-08-26 (verified independently) —
     // the shard is whatever the id actually says, not what prose claims.
     let id = IssueId::parse("01K3M9ZXQ2R7VN8P4TDBCEFGHJ").unwrap();
-    let dir = layout.issue_dir(&id, &dit_model::Slug::parse("login-timeout").unwrap());
+    let dir = dot.issue_dir(&id, &dit_model::Slug::parse("login-timeout").unwrap());
     let s = dir.to_string_lossy().replace('\\', "/");
     assert!(
         s.ends_with(".dit/issues/2025/08/01K3M9ZXQ2-R7VN-login-timeout"),
         "{s}"
     );
+
+    // The default (ADR 0005) puts the same folder at the visible root.
+    let root = Layout::with_kind("/tmp/ws", dit_model::DataLayout::Root);
+    let dir = root.issue_dir(&id, &dit_model::Slug::parse("login-timeout").unwrap());
+    let s = dir.to_string_lossy().replace('\\', "/");
+    assert!(
+        s.ends_with("issues/2025/08/01K3M9ZXQ2-R7VN-login-timeout"),
+        "{s}"
+    );
+    assert!(!s.contains(".dit/issues"), "{s}");
 }
 
 #[test]
@@ -59,7 +70,7 @@ fn create_issue_writes_a_parsable_file_in_the_right_place() {
         .unwrap();
     let applied = tx.finish().unwrap();
 
-    let path = store.layout().issue_md(&id).unwrap();
+    let path = store.layout().issue_body(&id).unwrap();
     assert!(path.exists(), "{}", path.display());
     let on_disk = fs::read_to_string(&path).unwrap();
     let (issue, doc) = dit_parse::parse_issue(&on_disk).unwrap();
@@ -114,7 +125,7 @@ fn set_fields_rewrites_only_the_touched_lines() {
     let id = tx.create_issue(draft("Login timeout")).unwrap();
     tx.finish().unwrap();
 
-    let path = store.layout().issue_md(&id).unwrap();
+    let path = store.layout().issue_body(&id).unwrap();
     let before = fs::read_to_string(&path).unwrap();
 
     // Two hours later: `updated` moves, and nothing else may.
@@ -185,7 +196,7 @@ fn finish_is_all_or_nothing_and_rollback_restores_the_previous_state() {
     let mut tx = store.transaction(now(), "farid");
     let id = tx.create_issue(draft("Login timeout")).unwrap();
     tx.finish().unwrap();
-    let path = store.layout().issue_md(&id).unwrap();
+    let path = store.layout().issue_body(&id).unwrap();
     let original = fs::read_to_string(&path).unwrap();
 
     // Modify it (two hours later on the clock, so `updated` visibly moves),
@@ -251,9 +262,10 @@ fn two_writes_to_the_same_file_in_one_transaction_apply_once() {
     // create + patch in one transaction = exactly one write to issue.md.
     assert_eq!(applied.paths().count(), 1);
 
-    let (issue, _) =
-        dit_parse::parse_issue(&fs::read_to_string(store.layout().issue_md(&id).unwrap()).unwrap())
-            .unwrap();
+    let (issue, _) = dit_parse::parse_issue(
+        &fs::read_to_string(store.layout().issue_body(&id).unwrap()).unwrap(),
+    )
+    .unwrap();
     assert_eq!(issue.priority, Some(Priority::P0));
 }
 
@@ -304,4 +316,72 @@ fn status_must_be_plain_ascii_for_folder_safety() {
         )
         .unwrap_err();
     assert!(err.to_string().contains("status"), "{err}");
+}
+
+#[test]
+fn a_fresh_issue_lands_at_the_visible_root_as_readme_md() {
+    // ADR 0005 + 0006 fixture: `issues/YYYY/MM/<folder>/README.md`, never
+    // `.dit/issues/…/issue.md`.
+    let tmp = tempfile::tempdir().unwrap();
+    assert_eq!(
+        Store::open(tmp.path()).layout().kind(),
+        dit_model::DataLayout::Root,
+        "a fresh workspace detects as root layout"
+    );
+    let store = Store::open(tmp.path());
+    let mut tx = store.transaction(now(), "farid");
+    let id = tx.create_issue(draft("Login timeout")).unwrap();
+    tx.finish().unwrap();
+
+    let path = store.layout().issue_body(&id).unwrap();
+    let s = path.to_string_lossy().replace('\\', "/");
+    // The ULID is minted at `now()` — 2026-08 — so that is the shard.
+    assert!(s.contains("/issues/2026/08/"), "{s}");
+    assert!(s.ends_with("/README.md"), "{s}");
+    assert!(!s.contains(".dit/issues"), "{s}");
+    assert!(!s.ends_with("issue.md"), "{s}");
+}
+
+#[test]
+fn a_legacy_dotdir_workspace_keeps_writing_where_it_already_writes() {
+    // A workspace created before ADR 0005/0006: data under `.dit/issues/`,
+    // bodies named `issue.md`. New issues follow the detected layout; edits
+    // to the legacy issue keep its file name until `dit migrate-layout`.
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path());
+    let mut tx = store.transaction(now(), "farid");
+    let id = tx.create_issue(draft("Old shape")).unwrap();
+    tx.finish().unwrap();
+    let written = store.layout().issue_body(&id).unwrap();
+    let legacy_dir = written.parent().unwrap();
+
+    // Move the tree to the legacy shape on disk, body name included.
+    let dot_issues = tmp.path().join(".dit").join("issues");
+    fs::create_dir_all(dot_issues.parent().unwrap()).unwrap();
+    fs::rename(tmp.path().join("issues"), &dot_issues).unwrap();
+    let rel = legacy_dir.strip_prefix(tmp.path().join("issues")).unwrap();
+    let legacy_folder = dot_issues.join(rel);
+    fs::rename(
+        legacy_folder.join("README.md"),
+        legacy_folder.join("issue.md"),
+    )
+    .unwrap();
+    let store = Store::open(tmp.path());
+    assert_eq!(store.layout().kind(), dit_model::DataLayout::DotDir);
+
+    // The body file resolves to the legacy name, and an edit lands there.
+    let legacy_body = legacy_folder.join("issue.md");
+    assert_eq!(store.layout().issue_body(&id).unwrap(), legacy_body);
+    let mut tx = store.transaction(now(), "farid");
+    tx.set_fields(
+        &id,
+        FieldPatch {
+            status: Some("in_progress".to_owned()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    tx.finish().unwrap();
+    let text = fs::read_to_string(&legacy_body).unwrap();
+    assert!(text.contains("status: in_progress"), "{text}");
 }
