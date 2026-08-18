@@ -87,6 +87,12 @@ impl Priority {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Issue {
     pub id: IssueId,
+    /// Human-friendly number (ADR 0007). Assigned — at creation under
+    /// `numbering: local`, by dit-bot on merge under `on-merge` — never chosen
+    /// by hand and never part of the folder name. Optional: issues created
+    /// before the field existed, and freshly filed branches in `on-merge`
+    /// repos, carry None until assigned.
+    pub number: Option<u32>,
     pub title: String,
     #[serde(rename = "type")]
     pub kind: IssueKind,
@@ -114,6 +120,9 @@ pub struct Issue {
 /// by the store, never trusted from the caller.
 #[derive(Debug, Clone)]
 pub struct IssueDraft {
+    /// Set by the facade from the index (max + 1), not by the caller — the
+    /// CLI and API have no `--number` flag on purpose.
+    pub number: Option<u32>,
     pub title: String,
     pub kind: IssueKind,
     pub status: Option<String>,
@@ -136,6 +145,10 @@ pub struct IssueDraft {
 /// patch only speaks the fields DIT knows.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FieldPatch {
+    /// Repair hatch for duplicate numbers flagged by `dit doctor` — not a
+    /// normal edit surface. Merge-relevant: two sides assigning different
+    /// numbers to the same issue is a real conflict.
+    pub number: Option<u32>,
     pub title: Option<String>,
     pub kind: Option<IssueKind>,
     pub status: Option<String>,
@@ -161,6 +174,7 @@ impl FieldPatch {
     pub fn touched_keys(&self) -> Vec<&'static str> {
         let mut keys = Vec::new();
         for (present, key) in [
+            (self.number.is_some(), "number"),
             (self.title.is_some(), "title"),
             (self.kind.is_some(), "type"),
             (self.status.is_some(), "status"),
@@ -187,6 +201,9 @@ impl Issue {
     /// method's — `updated` is bumped by the transaction, so that a Vim edit
     /// and a DIT edit bump it through the same single path.
     pub fn apply(&mut self, patch: &FieldPatch) -> Result<(), IdError> {
+        if let Some(n) = patch.number {
+            self.number = Some(n);
+        }
         if let Some(t) = &patch.title {
             self.title = t.clone();
         }
@@ -235,6 +252,7 @@ mod tests {
     fn sample_issue() -> Issue {
         Issue {
             id: IssueId::parse("01K3M9ZXQ2R7VN8P4TDBCEFGHJ").unwrap(),
+            number: None,
             title: "Login timeout on slow networks".into(),
             kind: IssueKind::Bug,
             status: "in_progress".into(),
@@ -288,5 +306,31 @@ mod tests {
     #[test]
     fn priority_orders_p0_first() {
         assert!(Priority::P0 < Priority::P4);
+    }
+
+    #[test]
+    fn number_is_patchable_and_touches_its_key() {
+        let mut issue = sample_issue();
+        assert_eq!(
+            issue.number, None,
+            "issues created before ADR 0007 have no number"
+        );
+        let patch = FieldPatch {
+            number: Some(12),
+            ..FieldPatch::default()
+        };
+        issue.apply(&patch).unwrap();
+        assert_eq!(issue.number, Some(12));
+        assert_eq!(patch.touched_keys(), vec!["number"]);
+    }
+
+    #[test]
+    fn number_survives_a_round_trip_through_json() {
+        let mut issue = sample_issue();
+        issue.number = Some(12);
+        let json = serde_json::to_value(&issue).unwrap();
+        assert_eq!(json.get("number").and_then(|n| n.as_u64()), Some(12));
+        let back: Issue = serde_json::from_value(json).unwrap();
+        assert_eq!(back.number, Some(12));
     }
 }

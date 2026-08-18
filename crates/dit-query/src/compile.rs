@@ -285,6 +285,7 @@ fn column(field: &Field) -> &'static str {
         Field::Assignee | Field::Label => "issues.id", // handled via EXISTS
         Field::Epic => "issues.epic",
         Field::Estimate => "issues.estimate",
+        Field::Number => "issues.number",
         Field::Sprint => "issues.sprint",
         Field::Created => "issues.created",
         Field::Updated => "issues.updated",
@@ -438,6 +439,16 @@ mod tests {
         let c = compile_str("estimate >= 3");
         assert_eq!(c.where_sql, "issues.estimate >= ?1");
         assert_eq!(c.params, vec![SqlVal::Real(3.0)]);
+    }
+
+    #[test]
+    fn number_compiles_against_the_number_column() {
+        let c = compile_str("number = 12");
+        assert_eq!(c.where_sql, "issues.number = ?1");
+        assert_eq!(c.params, vec![SqlVal::Real(12.0)]);
+        // `number` resolves like every documented field; unknown names still
+        // fail at parse time.
+        assert!(parse("no = 12").is_err());
     }
 
     #[test]

@@ -6,6 +6,7 @@
 pub enum Field {
     Id,
     ShortRef,
+    Number,
     Title,
     Kind,
     Status,
@@ -28,6 +29,7 @@ impl Field {
         let f = match name.to_ascii_lowercase().as_str() {
             "id" => Field::Id,
             "short_ref" | "short" | "key" => Field::ShortRef,
+            "number" => Field::Number,
             "title" => Field::Title,
             "type" | "kind" => Field::Kind,
             "status" => Field::Status,
@@ -51,6 +53,7 @@ impl Field {
         match self {
             Field::Id => "id",
             Field::ShortRef => "short_ref",
+            Field::Number => "number",
             Field::Title => "title",
             Field::Kind => "type",
             Field::Status => "status",

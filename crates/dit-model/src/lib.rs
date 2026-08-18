@@ -18,15 +18,20 @@ mod config;
 mod events;
 mod ids;
 mod issue;
+mod layout;
 mod status;
 mod time;
 mod workflow;
 
 pub use comment::{Author, Comment};
-pub use config::{Config, RepoLink, SCHEMA_MAX};
+pub use config::{Config, Numbering, RepoLink, SCHEMA_MAX};
 pub use events::{EventSource, FieldEvent, StoredFieldEvent};
 pub use ids::{IdError, IssueId, Seq, ShortRef, Slug};
 pub use issue::{FieldPatch, Issue, IssueDraft, IssueKind, Priority};
+pub use layout::{
+    generated_index_paths, is_comment, is_generated_index, is_issue_body, looks_like_issue_body,
+    DataLayout, CONTENT_ROOTS, GENERATED_INDEX_MARKER, ISSUE_BODY_FILE, LEGACY_ISSUE_BODY_FILE,
+};
 pub use status::{Status, StatusCategory};
 pub use time::{format_rfc3339, parse_rfc3339, validate_date, TimeError};
 pub use workflow::{

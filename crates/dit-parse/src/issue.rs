@@ -51,6 +51,7 @@ pub fn issue_from_document(doc: &Document) -> Result<Issue, IssueParseError> {
     };
 
     let id = IssueId::parse(&required_str("id")?).map_err(|e: IdError| bad("id", e.to_string()))?;
+    let number = parse_positive(doc, "number")?;
     let title = required_str("title")?;
     let kind_raw = required_str("type")?;
     let kind = IssueKind::parse(&kind_raw).ok_or_else(|| {
@@ -104,6 +105,7 @@ pub fn issue_from_document(doc: &Document) -> Result<Issue, IssueParseError> {
 
     Ok(Issue {
         id,
+        number,
         title,
         kind,
         status,
@@ -132,6 +134,17 @@ fn scalar(doc: &Document, key: &'static str) -> Result<Option<String>, IssuePars
     }
 }
 
+/// Read a positive whole number (`number:` is 1-based — ADR 0007).
+fn parse_positive(doc: &Document, key: &'static str) -> Result<Option<u32>, IssueParseError> {
+    match scalar(doc, key)?.filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some(raw) => match raw.parse::<u32>() {
+            Ok(n) if n > 0 => Ok(Some(n)),
+            _ => Err(bad(key, format!("`{raw}` is not a positive whole number"))),
+        },
+    }
+}
+
 /// Serialize a brand-new issue file with the canonical key order;
 /// `created`/`updated` are the same instant. Only the store calls this (it
 /// mints the id and the timestamp); nothing else may create files.
@@ -145,6 +158,9 @@ pub fn serialize_new_issue(
     parse_rfc3339(now_rfc3339).map_err(|e| bad("created", e.to_string()))?;
     let mut doc = Document::parse("---\nid:\n---\n")?;
     doc.set_raw("id", &serialize_scalar(id.as_str()));
+    if let Some(n) = draft.number {
+        doc.set_raw("number", &n.to_string());
+    }
     doc.set_raw("title", &serialize_scalar(&draft.title));
     doc.set_raw("type", draft.kind.as_str());
     doc.set_raw(
@@ -208,6 +224,13 @@ pub fn apply_patch(
 ) -> Result<Vec<&'static str>, IssueParseError> {
     parse_rfc3339(updated_rfc3339).map_err(|e| bad("updated", e.to_string()))?;
     let mut touched = Vec::new();
+    if let Some(n) = patch.number {
+        if n == 0 {
+            return Err(bad("number", "numbers are 1-based — 0 is a bug, not an id"));
+        }
+        doc.set_raw("number", &n.to_string());
+        touched.push("number");
+    }
     if let Some(t) = &patch.title {
         if t.is_empty() {
             return Err(bad("title", "cannot be empty"));
@@ -340,6 +363,7 @@ mod tests {
     fn new_issue_is_canonical_and_reparseable() {
         let id = IssueId::parse("01K3M9ZXQ2R7VN8P4TDBCEFGHJ").unwrap();
         let draft = IssueDraft {
+            number: None,
             title: "Fix login timeout".into(),
             kind: IssueKind::Bug,
             status: Some("todo".into()),
@@ -416,5 +440,90 @@ mod tests {
         apply_patch(&mut doc, &patch, "2026-08-16T12:00:00Z").unwrap();
         assert!(doc.to_string().contains("labels: []"));
         assert_eq!(doc.get_list("labels").unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn number_parses_and_must_be_positive() {
+        let numbered = FILE.replace(
+            "id: 01K3M9ZXQ2R7VN8P4TDBCEFGHJ",
+            "number: 12\nid: 01K3M9ZXQ2R7VN8P4TDBCEFGHJ",
+        );
+        let (issue, _) = parse_issue(&numbered).unwrap();
+        assert_eq!(issue.number, Some(12));
+
+        let zero = FILE.replace(
+            "id: 01K3M9ZXQ2R7VN8P4TDBCEFGHJ",
+            "number: 0\nid: 01K3M9ZXQ2R7VN8P4TDBCEFGHJ",
+        );
+        assert!(
+            matches!(
+                parse_issue(&zero).unwrap_err(),
+                IssueParseError::BadField {
+                    field: "number",
+                    ..
+                }
+            ),
+            "numbers are 1-based — 0 is a bug, not an id"
+        );
+
+        let word = FILE.replace(
+            "id: 01K3M9ZXQ2R7VN8P4TDBCEFGHJ",
+            "number: twelve\nid: 01K3M9ZXQ2R7VN8P4TDBCEFGHJ",
+        );
+        assert!(matches!(
+            parse_issue(&word).unwrap_err(),
+            IssueParseError::BadField {
+                field: "number",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn new_issue_with_a_number_serializes_it_after_id() {
+        let id = IssueId::parse("01K3M9ZXQ2R7VN8P4TDBCEFGHJ").unwrap();
+        let draft = IssueDraft {
+            number: Some(12),
+            title: "Fix login timeout".into(),
+            kind: IssueKind::Bug,
+            status: None,
+            priority: None,
+            reporter: None,
+            assignees: vec![],
+            labels: vec![],
+            epic: None,
+            estimate: None,
+            sprint: None,
+            due: None,
+            blocked_by: vec![],
+            body: String::new(),
+        };
+        let file = serialize_new_issue(&id, &draft, "2026-08-16T09:12:00Z").unwrap();
+        assert!(
+            file.starts_with(
+                "---\nid: 01K3M9ZXQ2R7VN8P4TDBCEFGHJ\nnumber: 12\ntitle: Fix login timeout\n"
+            ),
+            "unexpected serialization:\n{file}"
+        );
+        // Unnumbered drafts carry no `number:` line at all.
+        let unnumbered = IssueDraft {
+            number: None,
+            ..draft
+        };
+        let file = serialize_new_issue(&id, &unnumbered, "2026-08-16T09:12:00Z").unwrap();
+        assert!(!file.contains("number:"));
+    }
+
+    #[test]
+    fn patching_a_number_is_surgical() {
+        let (_, mut doc) = parse_issue(FILE).unwrap();
+        let patch = FieldPatch {
+            number: Some(13),
+            ..FieldPatch::default()
+        };
+        let touched = apply_patch(&mut doc, &patch, "2026-08-16T12:00:00Z").unwrap();
+        assert_eq!(touched, vec!["number", "updated"]);
+        let issue = issue_from_document(&doc).unwrap();
+        assert_eq!(issue.number, Some(13));
     }
 }

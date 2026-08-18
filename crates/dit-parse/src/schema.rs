@@ -2,8 +2,8 @@
 //! and emit canonically for `dit init`.
 
 use dit_model::{
-    Config, DerivedRule, DerivedSignal, RepoLink, StatusCategory, Transition, Workflow,
-    WorkflowStatus,
+    Config, DataLayout, DerivedRule, DerivedSignal, Numbering, RepoLink, StatusCategory,
+    Transition, Workflow, WorkflowStatus,
 };
 
 use crate::yaml::{self, Yaml, YamlError};
@@ -232,6 +232,8 @@ pub fn parse_config(text: &str) -> Result<Config, SchemaError> {
             hint: "must be a whole number".into(),
         })?,
     };
+    let layout = enum_value(&root, "layout", DataLayout::parse)?.unwrap_or_default();
+    let numbering = enum_value(&root, "numbering", Numbering::parse)?.unwrap_or_default();
     let mut repos = Vec::new();
     if let Some(rn) = root.get("repos") {
         for node in rn.as_seq().ok_or(SchemaError::NotAList("repos".into()))? {
@@ -252,8 +254,47 @@ pub fn parse_config(text: &str) -> Result<Config, SchemaError> {
     }
     Ok(Config {
         schema_version,
+        layout,
+        numbering,
         repos,
     })
+}
+
+/// Read a closed-set enum key: absent or null → `None` (caller applies the
+/// default), a value outside the set → `BadValue` naming the legal values.
+/// Two-value enums only — a free-form path here would be a config surface
+/// every consumer has to branch on (ADR 0005).
+fn enum_value<T>(
+    root: &Yaml,
+    key: &str,
+    parse: fn(&str) -> Option<T>,
+) -> Result<Option<T>, SchemaError> {
+    match root.get(key) {
+        None | Some(Yaml::Null) => Ok(None),
+        Some(v) => {
+            let raw = v.as_str().ok_or_else(|| SchemaError::BadValue {
+                key: key.into(),
+                value: type_name(v).to_owned(),
+                hint: "must be one of the documented values".into(),
+            })?;
+            match parse(raw) {
+                Some(parsed) => Ok(Some(parsed)),
+                None => Err(SchemaError::BadValue {
+                    key: key.into(),
+                    value: raw.to_owned(),
+                    hint: format!("not one of the two legal values ({})", legal_values(key)),
+                }),
+            }
+        }
+    }
+}
+
+fn legal_values(key: &str) -> &'static str {
+    match key {
+        "layout" => "root | dotdir",
+        "numbering" => "local | on-merge",
+        _ => "see DESIGN.md",
+    }
 }
 
 // ---- canonical emitters (used by `dit init` to seed the files) ----
@@ -315,9 +356,12 @@ pub fn write_workflow(wf: &Workflow) -> String {
     out
 }
 
-/// Emit `.dit/config.yaml`.
+/// Emit `.dit/config.yaml`. `layout` and `numbering` are always written —
+/// the file doubles as the answer to "where do my files go?" (ADR 0005).
 pub fn write_config(cfg: &Config) -> String {
     let mut out = format!("schema_version: {}\n", cfg.schema_version);
+    out.push_str(&format!("layout: {}\n", cfg.layout.as_str()));
+    out.push_str(&format!("numbering: {}\n", cfg.numbering.as_str()));
     if cfg.repos.is_empty() {
         return out;
     }
@@ -354,6 +398,8 @@ mod tests {
     fn config_round_trips() {
         let cfg = Config {
             schema_version: 1,
+            layout: DataLayout::DotDir,
+            numbering: Numbering::OnMerge,
             repos: vec![RepoLink {
                 name: "backend".into(),
                 remote: "git@github.com:acme/backend.git".into(),
@@ -367,8 +413,28 @@ mod tests {
     #[test]
     fn empty_config_is_minimal() {
         let text = write_config(&Config::default());
-        assert_eq!(text, "schema_version: 1\n");
+        assert_eq!(
+            text, "schema_version: 1\nlayout: root\nnumbering: local\n",
+            "layout and numbering are always explicit — the config answers \
+             'where do my files go?' (ADR 0005)"
+        );
         assert_eq!(parse_config(&text).unwrap(), Config::default());
+    }
+
+    #[test]
+    fn a_config_written_before_the_layout_key_still_parses() {
+        let legacy = "schema_version: 1\n";
+        let cfg = parse_config(legacy).unwrap();
+        assert_eq!(cfg.layout, DataLayout::Root);
+        assert_eq!(cfg.numbering, Numbering::Local);
+    }
+
+    #[test]
+    fn a_free_form_layout_path_is_refused() {
+        let err = parse_config("schema_version: 1\nlayout: /home/me/data\n").unwrap_err();
+        assert!(err.to_string().contains("root | dotdir"), "{err}");
+        let err = parse_config("schema_version: 1\nnumbering: whenever\n").unwrap_err();
+        assert!(err.to_string().contains("local | on-merge"), "{err}");
     }
 
     #[test]
