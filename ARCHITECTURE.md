@@ -116,8 +116,8 @@ We take **the way of thinking**, not the catalog of patterns. In Rust, some DDD 
 |---|---|---|
 | **Value Object** | `newtype` + a validating constructor. **Parse, don't validate** — once the type exists, it is guaranteed valid. | `IssueId(Ulid)`, `ShortRef`, `Slug`, `RepoId`, `Seq(i64)` |
 | **Entity** | A struct with explicit identity | `Issue { id: IssueId, .. }` |
-| **Aggregate** | **The issue folder** — `issue.md` + `comments/` + `attachments/`. The boundary is the folder. | `.dit/issues/2026/08/<id>-<rnd>-<slug>/` |
-| **Aggregate root** | `issue.md`. Comments have no life outside their issue. | — |
+| **Aggregate** | **The issue folder** — `README.md` + `comments/` + `attachments/`. The boundary is the folder. | `issues/2026/08/<id>-<rnd>-<slug>/` (Mode A & B; `.dit/issues/…` in Mode C — ADR 0005) |
+| **Aggregate root** | The issue's `README.md`. Comments have no life outside their issue. | — |
 | **Ubiquitous language** | The `DESIGN.md` Appendix D glossary. Code **must** use those terms exactly. | `field_events`, not `history_log`; `seq`, not `order`; `short ref`, not `slug_id` |
 | **Domain service** | Free functions in `dit-model`. Not a struct. | `resolve_status(file, derived) -> Status` |
 | **Anti-corruption layer** | `dit-vcs` is the only thing that speaks git (I3) | — |
@@ -354,7 +354,7 @@ The same applies to humans and to AI.
 - Changing the format in the source of truth (triggers §18 versioning)
 - Choosing between approaches that are equally reasonable, where the next person will ask "why like this?"
 
-ADRs live in `.dit/docs/adr/` — dogfooding, using DIT to build DIT.
+ADRs live in `docs/adr/` — dogfooding, using DIT to build DIT.
 
 ---
 
@@ -367,7 +367,7 @@ A change is done when **all** of these hold:
 - [ ] The bug fix has a fixture that reproduces it
 - [ ] No invariant I1–I10 violated without an ADR
 - [ ] New terms added to the `DESIGN.md` glossary
-- [ ] User-visible changes added to `.dit/changelogs/unreleased/`
+- [ ] User-visible changes added to `changelogs/unreleased/`
 - [ ] If it touches the schema: `schema_version` considered (§18.1)
 - [ ] If it touches an untrusted input path: fuzz targets updated
 - [ ] The PR description cites the relevant part of `DESIGN.md`

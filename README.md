@@ -50,8 +50,9 @@ dit list "status != done AND assignee = @me"
 dit ui                               # board, detail, DQL search — in the browser
 ```
 
-Everything you just made is Markdown in `.dit/`, one commit per change. Push it,
-clone it elsewhere, and the workspace travels with the repo.
+Everything you just made is Markdown — `issues/`, `docs/`, `notes/`, `changelogs/` at the
+root, machinery in `.dit/` — one commit per change. Push it, clone it elsewhere, and the
+workspace travels with the repo.
 
 ## Merging is the product
 

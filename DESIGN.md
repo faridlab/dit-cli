@@ -252,35 +252,42 @@ This is a low-cost decision to reverse — because the index is disposable, swap
 ### 4.1 Directory structure
 
 ```
-<repo>/
-└── .dit/                              ← all DIT data (see §5.1 about branches)
-    ├── .gitattributes                 merge driver registration
+<repo>/                                ← Mode A & B: DIT owns the tree (ADR 0005)
+├── README.md                          ← written by dit init; links into the index
+├── .gitattributes                     merge driver registration (Mode C: .dit/.gitattributes)
+├── issues/
+│   └── 2026/08/                       monthly sharding
+│       └── 01K3M9ZXQ2-R7VN-fix-login-timeout/
+│           ├── README.md              frontmatter + body — the issue (ADR 0006)
+│           ├── comments/
+│           │   ├── 01K3MA1F7X-farid.md
+│           │   └── 01K3MB7T2P-budi.md
+│           ├── suggestions.md         AI suggestions (separate file — Principle 4)
+│           └── attachments/
+├── epics/
+├── docs/                              document layer — spaces are plain folders (§13)
+│   ├── .templates/                    adr.md, flow.md
+│   ├── flows/<slug>/README.md         business flow (one folder per page — §13)
+│   └── adr/                           architecture decision records
+├── notes/                             a first-class docs space (§13): dated + topic pages
+│   ├── 2026-08-17.md
+│   └── learning-dsa.md
+├── changelogs/
+│   ├── unreleased/                    changeset fragments, one file per change
+│   └── v0.1.0.md
+└── .dit/                              machinery — never browsing content
     ├── config.yaml                    project config
     ├── schema/
     │   ├── workflow.yaml              statuses, allowed transitions, colors
     │   ├── fields.yaml                custom field definitions + merge policy
     │   └── automation.yaml            automation rules (e.g. trailer → transition)
-    ├── issues/
-    │   └── 2026/08/                   monthly sharding
-    │       └── 01K3M9ZXQ2-R7VN-fix-login-timeout/
-    │           ├── issue.md           frontmatter + body
-    │           ├── comments/
-    │           │   ├── 01K3MA1F7X-farid.md
-    │           │   └── 01K3MB7T2P-budi.md
-    │           ├── suggestions.md     AI suggestions (separate file — Principle 4)
-    │           └── attachments/
-    ├── epics/
-    ├── docs/
-    │   ├── flows/<slug>/page.md       business flow (one folder per page — §13)
-    │   └── adr/                       architecture decision records
-    ├── changelogs/
-    │   ├── unreleased/                changeset fragments, one file per change
-    │   └── v0.1.0.md
+    ├── people/                        one file per person — NOT a single people.yaml
+    │   ├── farid.yaml
+    │   └── budi.yaml
     ├── views/                         saved boards & queries
     │   └── sprint-board.yaml
-    └── people/                        one file per person — NOT a single people.yaml
-        ├── farid.yaml
-        └── budi.yaml
+    ├── releases/                      release plans (§15)
+    └── archive/                       `dit archive` destination (§9)
 
 .dit-cache/                            ← GITIGNORED, disposable
 ├── index.sqlite                       lexical: fast to parse, rebuilds in seconds
@@ -290,8 +297,15 @@ This is a low-cost decision to reverse — because the index is disposable, swap
 └── state.json                         last_indexed_commit, fields.yaml hash, etc.
 ```
 
-Two notes that are easy to miss:
+**Mode C is the exception**: embedded same-branch is a guest inside a code repo that
+may already have its own `docs/`, so *everything* goes under `.dit/` — `.dit/issues/`,
+`.dit/docs/`, `.dit/notes/`, `.dit/epics/`, `.dit/changelogs/`, and the attributes file
+stays `.dit/.gitattributes` (ADR 0005).
 
+Four notes that are easy to miss:
+
+- **Content is visible, machinery is hidden** (ADR 0005). In Modes A & B the five content roots — `issues/`, `epics/`, `docs/`, `notes/`, `changelogs/` — are reserved names at the tree root; `dit init` refuses to lay out into a tree where one of them already exists and is not DIT-shaped. The layout is one boolean, not a path: `config.yaml` records `layout: root | dotdir` (`root` is the A/B default, `dotdir` the C default). `dit init` prints the exact tree it is about to write and asks for confirmation when the target is non-empty; `dit ui` → Settings exposes the field, and flipping it offers a guided migration (`git mv` + reindex + attributes-file move). Arbitrary custom roots are refused on purpose.
+- **`issues/README.md` is generated, never hand-written** (ADR 0008): CI/dit-bot regenerates the index on push; the indexer skips it — an output, never an input.
 - **`people/` is a directory, not `people.yaml`.** One file per person is Principle 4 in action. A single `people.yaml` that has to be edited for every new member is a structural conflict hotspot — and in a public open source project, it gets touched by **every new contributor**.
 - **(Mode B & C only) `.gitignore` is per-branch.** Because §5.1 uses two branches, `dit init` has to write a `.gitignore` on both: `.dit-cache/` and `.dit-worktree/` on the code branch, `.dit-cache/` on the data branch.
 
@@ -314,16 +328,19 @@ Sequential numbers (`DIT-123`) read nicely but need a central coordinator. Two p
 
 **Folder naming rule: a folder name never changes after it's created.** The slug is a snapshot of the title at creation time; the canonical title lives in the frontmatter. If the folder were renamed whenever the title changed, every title edit would move every comment file → rename/modify conflicts, and the merge driver is **never invoked** for rename/modify or delete/modify conflicts (verified). A slightly stale slug is far cheaper than a class of conflicts you can't handle.
 
-Optional: `dit-bot` in CI can attach `number: 123` to the frontmatter on merge into the main branch, for teams that really do want short numbers. Because it's assigned after merge serialization, the number is guaranteed unique.
+Human-friendly numbers exist, but **only in frontmatter, never in folder names** (ADR 0007). `number:` is assigned at creation in single-writer repos (`numbering: local`, the Mode A default) or by `dit-bot` on merge into the main branch (`numbering: on-merge`, the team default — assigned after merge serialization, so guaranteed unique). The asymmetry that makes this safe where sequential folder names are not: **a number collision is an ambiguity you repair with a field edit; a folder collision forces a rename — and the merge driver is never invoked for rename/modify conflicts.** Display shows `#12 Fix login timeout`; the ULID short ref remains the offline-unique handle. Ordering is never by `number` — `field_events` stays ordered by `seq` (§14).
+
+Issues that predate numbering (or a workspace that switched `on-merge` → `local`) get numbers via **`dit renumber`** (ADR 0009): append-only, so an existing number never moves and nothing already pointing at `#N` re-points; unnumbered issues take `max+1, max+2, …` in creation order (ULID ascending — the same encoding order the month shards rely on), in one commit over a clean tree. It refuses on `numbering: on-merge`, where merge serialization owns assignment.
 
 ### 4.3 Anatomy of an issue
 
-`.dit/issues/2026/08/01K3M9ZXQ2-R7VN-login-timeout-on-slow-networks/issue.md`:
+`issues/2026/08/01K3M9ZXQ2-R7VN-login-timeout-on-slow-networks/README.md` (Mode C: same path under `.dit/`):
 
 ```markdown
 ---
 id: 01K3M9ZXQ2R7VN8P4TDBCEFGHJ
 schema: 1
+number: 12                      # optional — ADR 0007; assigned, never chosen by hand
 title: Login timeout on slow networks
 type: bug                    # task | bug | story | spike | chore
 status: in_progress          # must exist in schema/workflow.yaml
@@ -357,9 +374,41 @@ Suspect it's in `src/auth/session.rs:142`.
 
 **What is deliberately NOT in this file** (Principle 3): the list of related commits, PR links, activity log, status change history, comment counts. All of it is computed from git during indexing. If it were stored, every code commit would touch the issue file → constant conflicts and noisy diffs.
 
+**Issue templates.** `dit issue new` does not start from a blank page — it seeds the body from a template. Templates are machinery (they shape content, they are not content), so they live in `.dit/templates/`:
+
+```
+.dit/templates/
+├── default.md          ← used when no type matches
+├── bug.md              ← selected automatically for `-t bug`
+├── story.md
+└── spike.md
+```
+
+`default.md` ships with the sections a well-formed issue needs — description, acceptance criteria, and the user acceptance test as **separate** sections (criteria = what must be true; UAT = how a human verifies it), plus optional technical notes:
+
+```markdown
+## Description
+
+What is happening, for whom, and why it matters. Repro steps if it's a bug.
+
+## Acceptance criteria
+
+- [ ] Given/When/Then or plain checklist — what must be true to call it done
+
+## User acceptance test
+
+How a human verifies it by hand: the exact steps and the expected observation.
+
+## Technical notes
+
+Optional. Suspected files, links to [[docs/flows/...]], constraints.
+```
+
+`--template <name>` overrides, `dit templates edit` opens them, and the AI triage/draft flows (§7) use the same templates so human and AI authors produce the same shape. Doc-page templates are the same mechanism at `docs/.templates/` (§13).
+
 ### 4.4 Comments = one file per comment
 
-This is a direct application of Principle 4. If comments were written by *appending* to `issue.md`, two people commenting at the same time **will** clash — both add lines at exactly the same position. If each comment is its own file named ULID+author, conflicts are mathematically impossible.
+This is a direct application of Principle 4. If comments were written by *appending* to the issue body, two people commenting at the same time **will** clash — both add lines at exactly the same position. If each comment is its own file named ULID+author, conflicts are mathematically impossible.
 
 ```markdown
 ---
@@ -373,6 +422,8 @@ Already reproduced on an iPhone 12, iOS 18. Not just Android.
 ```
 
 The same applies to changelog fragments and event logs — every *append-only* pattern becomes one-file-per-entry.
+
+**Numbered comment files (`001-comment.md`, `001-reply-001-comment.md`) are rejected on purpose.** Inserting a comment mid-thread means renumbering, renumbering means renames, and the merge driver is never invoked for rename/modify conflicts (§4.2). Ordering comes from the ULID (`seq`, §14); threading lives in `reply_to`, not in the filename.
 
 ### 4.5 Configurable workflow
 
@@ -426,7 +477,7 @@ Your initial instinct — that DIT has its own git repo, separate from the proje
 
 | | **Mode A — Standalone** ← default | **Mode B — Embedded, orphan branch** | **Mode C — Embedded, same branch** |
 |---|---|---|---|
-| Data location | Separate repo (`myapp-dit`) | `dit-data` branch in the code repo | `.dit/` on `main` |
+| Data location | Separate repo (`myapp-dit`) — content at root, machinery in `.dit/` (ADR 0005) | `dit-data` branch in the code repo — same layout at the branch root | `.dit/` on `main` — everything, guest mode |
 | Risk to the code repo | **Zero** | Low (new branch) | Medium (touches `main`) |
 | Setup | `dit init [<name>] [--track <path>]` | `dit init --embedded` | `dit init --same-branch` |
 | Code CI triggered? | Never | Needs `branches-ignore` | Yes, on every card move |
@@ -439,7 +490,7 @@ Your initial instinct — that DIT has its own git repo, separate from the proje
 Two consequences of Mode A must be stated frankly, because neither shows up in the table:
 
 - **Contributors clone two repos.** That is an extra setup step, two `dit doctor` runs, and two places that can fall out of sync. The mitigation: `dit init --track` is idempotent and `dit doctor` detects a missing link — but the burden is still there.
-- **Everything in the DIT repo lives under the hidden `.dit/` directory.** `ls` on a fresh clone shows what looks like an empty directory. This is deliberate so that paths are identical across all three modes (§5.1), but it surprises anyone opening the repo for the first time. `dit init` writes a `README.md` at the root explaining the contents.
+- **Content is visible, machinery is hidden (ADR 0005).** In Modes A & B, `ls` on a fresh clone shows `issues/`, `docs/`, `notes/`, `changelogs/` — the repo reads like the project it tracks, and a forge browse reaches a rendered issue in three clicks. Only machinery (config, schema, people, views) lives under `.dit/`. This deliberately gives up §5.1's old "paths identical across all three modes" for "identical across A & B; C prefixes" — the fork follows ownership: DIT-owned tree vs guest in a code repo.
 
 Mode A unlocks one thing Modes B and C cannot do: **one DIT repo tracking many code repos**. For polyrepo organizations, that is exactly the Jira model (one project ↔ many repositories), and it is a real case that comes up often. Mode A also makes DIT usable for projects that are not software at all — research, marketing, personal — which widens its market considerably.
 
@@ -633,7 +684,7 @@ git worktree add .dit-worktree dit-data
 
 #### Layout inside the data branch
 
-The `dit-data` branch contains `.dit/` as a **subdirectory**, not as the worktree root. This is deliberate: it makes paths exactly identical in both modes (`--same-branch` as well as orphan), `.dit/.gitattributes` becomes a valid path in both, and `dit-store` only needs one path abstraction with no branching.
+The `dit-data` branch mirrors **Mode A's layout at the branch root** (ADR 0005): the five content roots (`issues/`, `epics/`, `docs/`, `notes/`, `changelogs/`) sit at the top of the branch, machinery under `.dit/`, and `.gitattributes` lives at the branch root. An earlier design kept `.dit/` as a subdirectory here so paths would be identical across *all three* modes and `dit-store` would need zero branching; that benefit was traded for the forge-readable tree in ADR 0005. What remains is one branch point, on ownership: **DIT-owned tree** (Modes A & B — content at root) vs **guest** (Mode C — everything under `.dit/`, `.gitattributes` included). `dit-store` resolves all paths through that single data-root abstraction.
 
 The original design used a symlink `.dit` → `.dit-worktree/`. Dropped: directory symlinks on Windows need Developer Mode or admin rights, and the symlink itself would be visible to git on the code branch, so it would have to be gitignored too.
 
@@ -728,7 +779,7 @@ This is the cheapest defense, and it's already built into the §4 layout:
 - Derived data isn't stored. Code commits never touch issue files.
 - Sharding by month. Changes spread out instead of piling into one directory.
 
-That leaves one remaining conflict surface: **two people changing the same frontmatter in the same `issue.md` file.** That's what Layer 3 handles.
+That leaves one remaining conflict surface: **two people changing the same frontmatter in the same issue `README.md` file.** That's what Layer 3 handles.
 
 #### Layer 3 — A merge driver that understands frontmatter
 
@@ -736,7 +787,7 @@ This is DIT's main technical differentiator, and the part most worth being proud
 
 Git can use a custom merge driver per file pattern. We register one that understands YAML, so merging happens **per-field**, not per-line.
 
-`.dit/.gitattributes`:
+`.gitattributes` at the tree root in Modes A & B, `.dit/.gitattributes` in Mode C (ADR 0005):
 ```
 *.md                merge=dit-md
 **/comments/*.md    merge=dit-md
@@ -744,7 +795,7 @@ Git can use a custom merge driver per file pattern. We register one that underst
 
 > **A gitattributes pattern pitfall.** The original design wrote `comments/* merge=union`. Two mistakes at once.
 >
-> First, a pattern containing a slash is anchored to the directory where `.gitattributes` lives. `comments/*` only matches `.dit/comments/*` — **not** `.dit/issues/2026/08/<id>/comments/*`. Verified: the actual comment files never matched. You need `**/comments/*.md`.
+> First, a pattern containing a slash is anchored to the directory where `.gitattributes` lives. `comments/*` only matches `comments/*` next to the attributes file — **not** `issues/2026/08/<id>/comments/*`. Verified: the actual comment files never matched. You need `**/comments/*.md`. Re-verified after the ADR 0005 move to a root-level attributes file: `git check-attr merge` confirms `**/comments/*.md` from the root still reaches the deep comment files and leaves the issue `README.md` untouched (ADR 0005, Verification).
 >
 > Second, `merge=union` on a file with YAML frontmatter is **data corruption**, not resolution — the result is a file with two stacked `---` blocks. And union was never needed here anyway: comments are already one-file-per-entry (§4.4), so there is nothing that can clash.
 
@@ -994,7 +1045,7 @@ Two derived problems that also have to be handled: git operations that DIT runs 
 
 The rules:
 
-- Watch only the `.dit/` root non-recursively + the current month's shard directory. For the rest, rely on `git status` polling when the window gains focus.
+- Watch only the tree root and `.dit/` non-recursively + the current month's shard directory. For the rest, rely on `git status` polling when the window gains focus.
 - Turn the watcher off during git operations that DIT runs.
 - Handle `Error::MaxFilesWatch` **explicitly** and degrade to polling mode. Do not fail silently.
 
@@ -1237,7 +1288,7 @@ This is the most immediately useful one, and it is designed to be **deterministi
 Input
 ├── git log <from>..<to> on the code branch
 ├── issues closed in that range (from commit trailers)
-├── fragments in .dit/changelogs/unreleased/  (the changeset pattern)
+├── fragments in changelogs/unreleased/  (the changeset pattern)
 └── PR titles (if host credentials exist)
 
 Stage 1 — DETERMINISTIC (no LLM)
@@ -1255,7 +1306,7 @@ Stage 2 — LLM (only for what is left)
 └── Detect unmarked breaking changes
 
 Stage 3 — OUTPUT
-├── Write .dit/changelogs/v0.2.0.md with provenance frontmatter
+├── Write changelogs/v0.2.0.md with provenance frontmatter
 ├── Assemble CHANGELOG.md
 └── Open a PR (when run in CI)
 ```
@@ -1289,7 +1340,7 @@ Sources (combined)
 ├── Commit history on the relevant paths
 └── Existing flow documents (if updating, not creating new)
 
-Output → .dit/docs/flows/<slug>/page.md
+Output → docs/flows/<slug>/README.md
 ├── Narrative: what this flow does and for whom
 ├── Mermaid diagram (sequence or flowchart)
 ├── Decision points and error handling
@@ -1315,7 +1366,7 @@ Two small details that matter. `freshness: stale` is **not** in the file — the
 
 `dit docs check` compares the recorded `commit` against the current HEAD for each source path. If `src/auth/**` has changed 14 commits since the document was created, the document is marked **stale**, and DIT can offer a diff-based update:
 
-> `docs/flows/auth-session/page.md` has gone stale — `src/auth/**` has changed 14 commits since this document was created.
+> `docs/flows/auth-session/README.md` has gone stale — `src/auth/**` has changed 14 commits since this document was created.
 > Run `dit docs sync auth-session` to see the proposed update.
 
 Run in CI, this becomes an **automated rotten-documentation check** — and that is a real problem with no tool for it yet. This is a strong candidate for the "hook" feature that makes people install DIT even if they are still using Jira.
@@ -1331,7 +1382,7 @@ Local embeddings (`fastembed` multilingual, ~470 MB, runs on CPU) over all issue
 
 ### 7.6 Feature 4 — Triage assistant
 
-For new issues from external contributors, the AI suggests labels, priority, epic, and estimate. Suggestions land as a **separate file** inside the issue folder — `suggestions.md`, not a block inside `issue.md`:
+For new issues from external contributors, the AI suggests labels, priority, epic, and estimate. Suggestions land as a **separate file** inside the issue folder — `suggestions.md`, not a block inside the issue `README.md`:
 
 ```yaml
 ---
@@ -1343,7 +1394,7 @@ possible_duplicate_of: 01K3M5QQQQ0000000000ZZZZ   # confidence 0.87
 ---
 ```
 
-A separate file, not a nested block, for two reasons. Principle 4: AI suggestions are written by a different process than the human editor, so they are their own write unit. And Principle 3: if it lived in `issue.md`, it would become derived data stored in the canonical file — and the merge driver would have to handle it as a nested `MAP` which, if treated as a `SCALAR`, would throw away the entire suggestion block from one side during a merge.
+A separate file, not a nested block, for two reasons. Principle 4: AI suggestions are written by a different process than the human editor, so they are their own write unit. And Principle 3: if it lived in the issue `README.md`, it would become derived data stored in the canonical file — and the merge driver would have to handle it as a nested `MAP` which, if treated as a `SCALAR`, would throw away the entire suggestion block from one side during a merge.
 
 `dit triage accept Q2R7VN8 --labels --epic` moves it into the main frontmatter and deletes `suggestions.md`. Never automatic (Principle 5).
 
@@ -1733,16 +1784,16 @@ You are right that §7.4 already touches on this. Here is the complete shape of 
 
 | Confluence concept | DIT equivalent | Mechanism |
 |---|---|---|
-| Space | A top-level directory in `.dit/docs/` | An ordinary folder |
+| Space | A top-level directory in `docs/` (Mode A & B; `.dit/docs/` in Mode C) | An ordinary folder |
 | Page tree / hierarchy | Folder structure + `order:` in frontmatter | An ordinary folder |
-| Page | A markdown file | An ordinary file |
-| Child page | A file in a subfolder | An ordinary folder |
+| Page | `README.md` inside the page folder (ADR 0006) | An ordinary file |
+| Child page | A folder in a subfolder | An ordinary folder |
 | Page versions & history | `git log` on that file | **Free** — §14 |
 | Restore an old version | `git checkout <sha> -- <file>` | **Free** |
-| Page comments | `<slug>/page.md` + `<slug>/comments/` — a page becomes a folder, just like an issue | One file per comment. §4.4 defines `comments/` as a subfolder **inside the issue folder**; document pages must follow the same pattern, otherwise `comments/` would be shared by every page in that directory and comments could not be attributed. |
+| Page comments | `<slug>/README.md` + `<slug>/comments/` — a page becomes a folder, just like an issue | One file per comment. §4.4 defines `comments/` as a subfolder **inside the issue folder**; document pages must follow the same pattern, otherwise `comments/` would be shared by every page in that directory and comments could not be attributed. |
 | Mentions & notifications | `@alias` → `.dit/people/<alias>.yaml` | Index + `dit sync --watch` |
 | Labels | `labels:` in frontmatter | Index |
-| Page templates | `.dit/docs/.templates/*.md` | Copy + fill in the placeholders |
+| Page templates | `docs/.templates/*.md` | Copy + fill in the placeholders |
 | Macros / dynamic content | `dit-query`, `dit-issues` blocks (§12.5) | Live in `dit ui` (the server has SQLite). In static publication: **pre-render in CI** via `dit docs export --resolve-queries`, producing a timestamped snapshot — not live, because §6.4 decided that WASM does not execute queries. |
 | Jira issue macro | `[[Q2R7VN8]]` or a `dit-issues` block | Wiki-link + index |
 | Diagrams | `mermaid` blocks | Rendered in the UI and on GitHub |
@@ -1751,25 +1802,28 @@ You are right that §7.4 already touches on this. Here is the complete shape of 
 | Export to PDF/Word | `dit docs export` (v1.x, optional) | Detects pandoc/typst on PATH and degrades gracefully — both are large external binaries, so neither may become a mandatory dependency |
 | Publishing to the web | CI artifact → GitHub Pages | §6.4 |
 
-Structure — **spaces are optional**, and that matters so that the paths in §4.1, §7.4, and the wiki-link `[[docs/flows/auth-session]]` in §4.3 stay correct:
+Structure — **spaces are optional**, and that matters so that the paths in §4.1, §7.4, and the wiki-link `[[docs/flows/auth-session]]` in §4.3 stay correct. `notes/` is a first-class space mounted at the tree root (ADR 0005): dated pages (`notes/2026-08-17.md`) and topic pages (`notes/learning-dsa.md`), resolvable as `[[notes/learning-dsa]]`. Inside a space, loose files are pages too — a folder-per-page is only required once a page needs `comments/` or `attachments/`:
 
 ```
-.dit/docs/
+docs/
 ├── .templates/
 │   ├── adr.md
 │   └── flow.md
 ├── flows/                       ← default: no space, per §4.1
 │   └── auth-session/
-│       ├── page.md
+│       ├── README.md
 │       └── comments/
 ├── adr/
-│   └── 0001-choose-sqlite/page.md
+│   └── 0001-choose-sqlite/README.md
 └── product/                     ← a space, if the team really needs one
     ├── _index.md
     └── prd/
+notes/
+├── 2026-08-17.md                ← dated page
+└── learning-dsa.md              ← topic page
 ```
 
-**Wiki-link resolution rule** (mandatory, otherwise links break the moment someone creates a space): `[[docs/flows/auth-session]]` is resolved via a **unique suffix** search across all of `.dit/docs/`. If more than one matches, `dit validate` fails it as ambiguous. With this rule, moving a page into a space breaks not a single existing link.
+**Wiki-link resolution rule** (mandatory, otherwise links break the moment someone creates a space): `[[docs/flows/auth-session]]` is resolved via a **unique suffix** search across all doc spaces (`docs/` and `notes/`). If more than one matches, `dit validate` fails it as ambiguous. With this rule, moving a page into a space breaks not a single existing link.
 
 Two things make DIT's version better than Confluence, and both come from git:
 
@@ -2147,6 +2201,12 @@ impl Dit {
     pub fn transaction(&mut self, author: Author) -> Result<Transaction<'_>>;
     pub fn sync(&mut self, opts: SyncOptions) -> Result<SyncReport>;
     pub fn reindex(&mut self, mode: ReindexMode) -> Result<IndexReport>;
+
+    // Guided bulk writes — each takes the write lock, refuses a dirty tree,
+    // and lands as exactly one commit (ADR 0005 / 0007 / 0009).
+    pub fn migrate_layout(&mut self, to: DataLayout) -> Result<MigrationReport>;
+    pub fn set_numbering(&mut self, numbering: Numbering) -> Result<()>;
+    pub fn renumber(&mut self) -> Result<usize>;  // count numbered; 0 = nothing to do
 }
 
 pub struct Transaction<'a> { /* ... */ }
@@ -2267,7 +2327,7 @@ Companion measure: `dit validate` flags changes to `.dit/.gitattributes` and `.d
 
 | Threat | Defense |
 |---|---|
-| Path traversal via the wiki-link `[[../../../etc/passwd]]` | Resolution is confined inside `.dit/`; reject `..` and absolute paths; `dit validate` fails on it |
+| Path traversal via the wiki-link `[[../../../etc/passwd]]` | Resolution is confined inside the DIT data roots (content roots + `.dit/`); reject `..` and absolute paths; `dit validate` fails on it |
 | YAML bomb (anchors/aliases, "billion laughs") | Disable anchors & aliases in the frontmatter parser; cap document size and nesting depth |
 | Giant files / pathological nesting that hangs the parser | Per-file size limits and a per-file timeout in the indexer; files over the limit are skipped and reported, not left to kill the process |
 | Decompression bomb in an attachment | Size limits; **never** extract archives automatically |
@@ -2413,8 +2473,8 @@ $ cd ~ && dit init myapp-dit --track ~/projects/myapp
 
 $ cd ~/myapp-dit
 $ dit issue new "Login timeout on slow networks" -t bug -l auth -p p1
-  ✓ Created #Q2R7VN8
-    .dit/issues/2026/08/01K3M9ZXQ2-R7VN-login-timeout-on-slow-networks/
+  ✓ Created #12  (short ref #Q2R7VN8)
+    issues/2026/08/01K3M9ZXQ2-R7VN-login-timeout-on-slow-networks/README.md
 ```
 
 The code work still happens in the code repo. `dit` recognizes that it is in a linked repo and routes operations to the right place:
@@ -2448,10 +2508,10 @@ $ dit changelog gen --from v0.1.0 --to HEAD
   Analyzing 47 commits, 12 closed issues...
   Deterministic: 41 commits classified automatically
   LLM: 6 ambiguous commits (anthropic, est. ~$0.03, limit 200k tokens) — continue? [y/N] y
-  ✓ Written to .dit/changelogs/v0.2.0.md
+  ✓ Written to changelogs/v0.2.0.md
 
 $ dit docs check
-  ⚠ docs/flows/auth-session/page.md is stale
+  ⚠ docs/flows/auth-session/README.md is stale
     src/auth/** has changed in 14 commits since the document was created
     Run: dit docs sync auth-session
 
@@ -2473,6 +2533,10 @@ Note: there is no desktop application to install, no "unidentified developer" di
 |---|---|---|
 | Language | Rust | Speed, a single binary, compiles to WASM |
 | **Deployment mode** | **Standalone DIT repo (default)**; embedded orphan branch & same-branch optional | Adoption with no risk to the production repo; opens up polyrepo 1:N |
+| **Data layout** | **Modes A & B: content at the tree root, machinery in `.dit/`; Mode C: everything under `.dit/`** (ADR 0005) | The repo reads like the project it tracks on a forge; only the guest mode needs the prefix |
+| **Issue body file** | **`README.md`** inside the aggregate folder; comments keep `<ulid>-<author>.md` (ADR 0006) | Forges auto-render it below the listing, frontmatter as a table — a free read-only board |
+| **Human numbers** | **`number:` in frontmatter — at creation (single-writer) or by dit-bot on merge (teams); never in folder names** (ADR 0007) | A number collision is a field edit; a folder collision is a rename the merge driver never sees |
+| **Generated index** | **`issues/README.md`, CI-regenerated, never hand-edited, never indexed** (ADR 0008) | Principle 3 yields in writing for one contained, regenerable file class |
 | **Access to code** | **Read via ref (`git show <ref>:<path>`), never merge** | Merging `main` into the data branch drags the entire codebase in |
 | Source of truth | Markdown + YAML frontmatter | Reviewable in a PR, durable, already NoSQL |
 | Lexical index | SQLite + FTS5 (triggers, not updates from Rust), gitignored | A query engine + mature FTS in a single file |
@@ -2565,7 +2629,7 @@ Terms used across sections that easily confuse new contributors.
 
 | Term | Meaning | Reference |
 |---|---|---|
-| **Mode A / B / C** | Deployment topology. **A** = a standalone DIT repo (the default). **B** = an orphan `dit-data` branch in the code repo. **C** = `.dit/` on the same code branch. | §5.0 |
+| **Mode A / B / C** | Deployment topology. **A** = a standalone DIT repo (the default). **B** = an orphan `dit-data` branch in the code repo. **C** = `.dit/` on the same code branch. A & B put content at the tree root, machinery in `.dit/`; C keeps everything under `.dit/` (ADR 0005). | §5.0 |
 | **Source of truth** | The Markdown + YAML files in the repo. The only canonical data. | §3.1 |
 | **Index** | SQLite in `.dit-cache/`, gitignored, always disposable and rebuildable. | §3.1, Principle 2 |
 | **Index tier** | Three levels: **state** (seconds, mandatory) · **history/`field_events`** (minutes, mandatory for analytics) · **vectors** (minutes to tens of minutes, optional). | §6.3 |
