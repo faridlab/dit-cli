@@ -33,8 +33,9 @@ pub use error::DitError;
 // second dependency — the facade is the only crate delivery names.
 pub use dit_index::IndexedIssue;
 pub use dit_model::{
-    Comment, Config, DerivedSignal, FieldPatch, Issue, IssueDraft, IssueId, IssueKind, Priority,
-    StoredFieldEvent, Workflow, WorkflowStatus,
+    Comment, Config, DataLayout, DerivedSignal, FieldPatch, Issue, IssueDraft, IssueId, IssueKind,
+    Numbering, Priority, StoredFieldEvent, Workflow, WorkflowStatus, CONTENT_ROOTS,
+    GENERATED_INDEX_MARKER,
 };
 pub use dit_vcs::{SyncOptions, SyncReport};
 
@@ -113,16 +114,60 @@ impl Dit {
         Ok(dit)
     }
 
-    /// Turn an empty directory into a workspace: git init, the ignore entry
-    /// that keeps the index database out of history, a README so the hidden
-    /// `.dit/` folder does not look like an empty repo, the merge driver
-    /// pointed at `driver` (the absolute path of this binary), and one
-    /// bootstrap commit so the first real write is never a root commit.
+    /// Turn an empty directory into a workspace with the visible layout
+    /// (ADR 0005): content roots at the tree root, machinery under `.dit/`.
+    /// Delegates to [`Dit::init_with_layout`].
+    pub fn init(path: &Path, driver: &Path) -> Result<Dit, DitError> {
+        Self::init_with_layout(path, driver, DataLayout::Root)
+    }
+
+    /// `init` with an explicit layout — `dotdir` keeps everything under
+    /// `.dit/` for guest repos (Mode C) and anyone who prefers the hidden
+    /// style.
+    ///
+    /// Scaffolding: git init, the ignore entry that keeps the index database
+    /// out of history, a README so a fresh workspace does not look empty, the
+    /// merge-driver routing at the mode-correct place, the config that states
+    /// where data goes, seeded issue templates, the five content roots, and
+    /// the merge driver pointed at `driver` (the absolute path of this
+    /// binary), all in one bootstrap commit so the first real write is never
+    /// a root commit.
     ///
     /// `driver` is passed in rather than read from `current_exe()` because a
     /// test process is not the binary users run — the caller knows which
     /// executable actually serves `merge-driver`.
-    pub fn init(path: &Path, driver: &Path) -> Result<Dit, DitError> {
+    pub fn init_with_layout(
+        path: &Path,
+        driver: &Path,
+        layout: DataLayout,
+    ) -> Result<Dit, DitError> {
+        // The guards run before `Repo::init` so a refusal leaves the
+        // directory exactly as it was — not even a .git/ behind.
+        let re_init = path.join(".dit").join("config.yaml").exists();
+        if !re_init {
+            if path.join(".dit").join("issues").is_dir() {
+                return Err(DitError::Refuse(
+                    "this workspace already has DIT data under .dit/issues/ — run \
+                     `dit migrate-layout root` to move it to the tree root"
+                        .into(),
+                ));
+            }
+            if layout == DataLayout::Root {
+                let clash: Vec<String> = CONTENT_ROOTS
+                    .iter()
+                    .filter(|root| path.join(*root).exists())
+                    .map(|root| format!("`{root}/`"))
+                    .collect();
+                if !clash.is_empty() {
+                    return Err(DitError::Refuse(format!(
+                        "{} already exist here and DIT reserves those names for its \
+                         content roots — use `dit init --layout dotdir` to keep data \
+                         under .dit/ instead",
+                        clash.join(", ")
+                    )));
+                }
+            }
+        }
         let repo = Repo::init(path)?;
         // Commits fail outright without an identity. A machine-local default
         // keeps init working on a fresh computer; anyone who cares replaces
@@ -136,8 +181,13 @@ impl Dit {
         // Scaffolding files land through the atomic writer like everything
         // else: a half-written .gitignore is how the cache ends up committed.
         // But init also runs in directories that already hold a project —
-        // joining one must never colonize it, so existing files are amended,
-        // never replaced.
+        // joining one must never colonize it, so every piece is written only
+        // when missing, never replaced.
+        let dit_dir = path.join(".dit");
+        let content_dir = |name: &str| match layout {
+            DataLayout::Root => path.join(name),
+            DataLayout::DotDir => dit_dir.join(name),
+        };
         let ignore = path.join(".gitignore");
         if ignore.exists() {
             let mut text = std::fs::read_to_string(&ignore)?;
@@ -158,9 +208,56 @@ impl Dit {
             // that wrote its own README keeps it.
             dit_store::atomic::write(&readme, INIT_README)?;
         }
+        // The config states where data goes (ADR 0005) — it is also what
+        // `Layout::detect` resolves on every later open.
+        let config_path = dit_dir.join("config.yaml");
+        if !config_path.exists() {
+            let config = Config {
+                layout,
+                ..Config::default()
+            };
+            dit_store::atomic::write(&config_path, &dit_parse::write_config(&config))?;
+        }
+        // Merge-driver routing at the mode-correct place (ADR 0005).
+        let attrs_path = match layout {
+            DataLayout::Root => path.join(".gitattributes"),
+            DataLayout::DotDir => dit_dir.join(".gitattributes"),
+        };
+        if !attrs_path.exists() {
+            dit_store::atomic::write(&attrs_path, GIT_ATTRIBUTES)?;
+        }
+        // Issue templates (description / criteria / user acceptance test):
+        // seeded once; hand edits survive every later init.
+        let templates = [
+            ("default", TEMPLATE_DEFAULT),
+            ("bug", TEMPLATE_BUG),
+            ("story", TEMPLATE_STORY),
+            ("spike", TEMPLATE_SPIKE),
+        ];
+        for (name, text) in templates {
+            let file = dit_dir.join("templates").join(format!("{name}.md"));
+            if !file.exists() {
+                dit_store::atomic::write(&file, text)?;
+            }
+        }
+        // The five content roots exist locally from the first `ls` — git has
+        // no empty directories, so a clone regrows them on first write.
+        for name in CONTENT_ROOTS {
+            let dir = content_dir(name);
+            if !dir.is_dir() {
+                std::fs::create_dir_all(&dir)?;
+            }
+        }
         repo.add(".gitignore")?;
         if wrote_readme {
             repo.add("README.md")?;
+        }
+        // `.dit` carries config, templates, and — in dotdir — the roots and
+        // the attributes file. In root layout the attributes file is staged
+        // on its own; the empty content roots have nothing to stage.
+        repo.add(".dit")?;
+        if layout == DataLayout::Root && attrs_path.exists() {
+            repo.add(".gitattributes")?;
         }
         // In an already-initialized workspace nothing changed, and commit
         // treats "nothing to commit" as a skip, not a failure.
@@ -225,6 +322,53 @@ impl Dit {
         &self.config
     }
 
+    /// Where this workspace's content roots live (ADR 0005) — the one bit
+    /// every consumer branches on.
+    pub fn layout(&self) -> DataLayout {
+        self.store.layout().kind()
+    }
+
+    /// The workspace's issue-template names, alphabetical — what `dit
+    /// templates list` shows and the UI offers.
+    pub fn templates(&self) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(self.store.layout().templates_dir())
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .filter_map(|e| {
+                        let name = e.file_name().to_string_lossy().into_owned();
+                        name.strip_suffix(".md").map(str::to_owned)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort_unstable();
+        names
+    }
+
+    /// Path of a named issue template. None when the name could not be a
+    /// template file (shape check only — existence is the caller's question).
+    pub fn template_path(&self, name: &str) -> Option<std::path::PathBuf> {
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            return None;
+        }
+        Some(
+            self.store
+                .layout()
+                .templates_dir()
+                .join(format!("{name}.md")),
+        )
+    }
+
+    /// A template's body text, when it exists.
+    fn template_text(&self, name: &str) -> Option<String> {
+        std::fs::read_to_string(self.template_path(name)?).ok()
+    }
+
     /// Branch, head and dirtiness for status displays. Best effort: an
     /// unborn branch (no commits yet) still reports, with an empty head.
     pub fn status(&self) -> RepoStatus {
@@ -243,11 +387,21 @@ impl Dit {
         }
     }
 
-    /// One issue by full id or 7-character short ref. Answers from the index
+    /// One issue by full id, 7-character short ref, or `#N` number handle
+    /// (ADR 0007 — `#12` is display sugar over the frontmatter number, and
+    /// `#Q2R7VN8` the same sugar over a short ref). Answers from the index
     /// like every read; the filesystem is never consulted.
     pub fn get(&self, needle: &str) -> Result<Option<IndexedIssue>, DitError> {
-        if needle.len() == 26 {
-            if let Ok(id) = IssueId::parse(needle) {
+        let stripped = needle.strip_prefix('#').unwrap_or(needle);
+        if needle.starts_with('#') {
+            if let Ok(n) = stripped.parse::<u32>() {
+                if n > 0 {
+                    return Ok(self.index.issues_with_number(n)?.into_iter().next());
+                }
+            }
+        }
+        if stripped.len() == 26 {
+            if let Ok(id) = IssueId::parse(stripped) {
                 return self.index.get_issue(&id).map_err(DitError::Index);
             }
         }
@@ -257,7 +411,7 @@ impl Dit {
             filter: Some(dit_query::Expr::Cmp {
                 field: dit_query::Field::ShortRef,
                 op: dit_query::Op::Eq,
-                value: dit_query::Val::Str(needle.to_owned()),
+                value: dit_query::Val::Str(stripped.to_owned()),
             }),
             order: vec![],
             limit: Some(2),
@@ -405,6 +559,68 @@ impl Dit {
                 "uncommitted changes — the index reflects HEAD, not the working tree",
             ));
         }
+        // Duplicate numbers are an ambiguity in the human handle (ADR 0007):
+        // repairable by a field edit, but only once somebody can see it.
+        match self.index.duplicate_numbers() {
+            Ok(dupes) if dupes.is_empty() => {
+                // Unnumbered issues are by design under `on-merge` (the bot
+                // assigns at merge); under `local` they are legacy and
+                // backfillable (ADR 0009) — degraded display, not data risk.
+                let backfillable = matches!(self.config.numbering, Numbering::Local)
+                    && self.index.unnumbered_count().unwrap_or(0) > 0;
+                if backfillable {
+                    out.push(Diagnostic::warn(
+                        "numbers",
+                        "some issues have no number — run `dit renumber` to backfill them",
+                    ));
+                } else {
+                    out.push(Diagnostic::ok("numbers", "issue numbers are unique"));
+                }
+            }
+            Ok(dupes) => {
+                for (n, ids) in dupes {
+                    let refs: Vec<String> = ids
+                        .iter()
+                        .filter_map(|id| {
+                            IssueId::parse(id)
+                                .ok()
+                                .map(|parsed| format!("#{}", parsed.short_ref().as_str()))
+                        })
+                        .collect();
+                    out.push(Diagnostic::error(
+                        "numbers",
+                        format!(
+                            "#{n} is held by {} — renumber all but one (`dit edit`)",
+                            refs.join(", ")
+                        ),
+                    ));
+                }
+            }
+            Err(_) => out.push(Diagnostic::warn(
+                "numbers",
+                "cannot check issue numbers — run `dit reindex`",
+            )),
+        }
+        // A stale generated index is a publication artifact lying about the
+        // data (ADR 0008) — visible, never fatal. Absent means never built:
+        // the file is optional, not owed.
+        let docs_index = self.store.layout().content_dir("issues").join("README.md");
+        if docs_index.is_file() {
+            if let Ok(rendered) = self.render_issue_index() {
+                let on_disk = std::fs::read_to_string(&docs_index).unwrap_or_default();
+                if on_disk == rendered {
+                    out.push(Diagnostic::ok(
+                        "docs-index",
+                        "the generated issues index is current",
+                    ));
+                } else {
+                    out.push(Diagnostic::warn(
+                        "docs-index",
+                        "issues/README.md is stale — run `dit docs build --index`",
+                    ));
+                }
+            }
+        }
         // Both `.dit-cache` and `.dit-cache/` ignore the directory; matching
         // either keeps the check in step with what init writes.
         let ignored = std::fs::read_to_string(self.repo.root().join(".gitignore"))
@@ -432,19 +648,7 @@ impl Dit {
     /// clicked — attribution must follow the action, not the machine.
     pub fn transaction(&mut self, author: &str) -> Result<Transaction<'_>, DitError> {
         let lock_path = self.store.layout().write_lock();
-        let lock = match atomic::acquire_lock(&lock_path, author) {
-            Ok(lock) => lock,
-            Err(_) => {
-                // The error text is a sentence for logs; callers want the bare
-                // name to show ("locked by farid"), and the lock file holds
-                // exactly that.
-                let held_by = std::fs::read_to_string(&lock_path)
-                    .unwrap_or_default()
-                    .trim()
-                    .to_owned();
-                return Err(DitError::Busy { held_by });
-            }
-        };
+        let lock = acquire_lock_or_busy(&lock_path, author)?;
         let prev_head = self.repo.head().ok();
         let store_tx = self.store.transaction(OffsetDateTime::now_utc(), author);
         Ok(Transaction {
@@ -452,6 +656,7 @@ impl Dit {
             store_tx,
             lock,
             prev_head,
+            number_cursor: None,
         })
     }
 
@@ -497,11 +702,19 @@ impl Dit {
         };
         if matches!(mode, ReindexMode::State | ReindexMode::All) {
             self.index.wipe_state()?;
-            for (path, blob) in self.repo.ls_tree(".dit/")? {
+            // The issues root is everything the index reads: bodies and
+            // comments both live under it, whichever side of `.dit/` the
+            // layout puts it (ADR 0005).
+            let layout = self.store.layout().kind();
+            let issues_root = self.store.layout().content_root_rel("issues");
+            for (path, blob) in self.repo.ls_tree(&issues_root)? {
                 let Some(text) = self.repo.show_text(&format!("HEAD:{path}")) else {
                     continue;
                 };
-                if path.ends_with("issue.md") {
+                // Loose on purpose: a moved or archived issue is still an
+                // issue, and the generated index is excluded by the same
+                // classification (ADR 0008 — an output, never an input).
+                if dit_model::looks_like_issue_body(&path, layout) {
                     match dit_parse::parse_issue(&text) {
                         Ok((issue, _)) => {
                             self.index.upsert_issue(&issue, &path, &blob)?;
@@ -526,16 +739,18 @@ impl Dit {
         }
         if matches!(mode, ReindexMode::Events | ReindexMode::All) {
             let watermark = self.index.watermark("events")?;
-            let events = dit_vcs::walk_field_events(&self.repo, watermark.as_deref())?;
+            let layout = self.store.layout().kind();
+            let events = dit_vcs::walk_field_events(&self.repo, watermark.as_deref(), layout)?;
             report.events = self.index.record_field_events(&events)?;
             self.index.set_watermark("events", &head)?;
         }
         Ok(report)
     }
 
-    /// The issue a comment file belongs to: the `issue.md` living in the
-    /// folder above `comments/`. Derived from the tree, never stored, so a
-    /// moved folder cannot orphan a comment.
+    /// The issue a comment file belongs to: the body file living in the
+    /// folder above `comments/` — `README.md` since ADR 0006, the legacy
+    /// `issue.md` for folders that predate it. Derived from the tree, never
+    /// stored, so a moved folder cannot orphan a comment.
     fn issue_owning(&self, comment_path: &str) -> Result<Option<IssueId>, DitError> {
         let Some(marker) = comment_path.find("/comments/") else {
             return Ok(None);
@@ -544,13 +759,18 @@ impl Dit {
         if dir.is_empty() {
             return Ok(None);
         }
-        let Some(text) = self.repo.show_text(&format!("HEAD:{dir}/issue.md")) else {
-            return Ok(None);
-        };
-        match dit_parse::parse_issue(&text) {
-            Ok((issue, _)) => Ok(Some(issue.id)),
-            Err(_) => Ok(None),
+        for name in [
+            dit_model::ISSUE_BODY_FILE,
+            dit_model::LEGACY_ISSUE_BODY_FILE,
+        ] {
+            if let Some(text) = self.repo.show_text(&format!("HEAD:{dir}/{name}")) {
+                return match dit_parse::parse_issue(&text) {
+                    Ok((issue, _)) => Ok(Some(issue.id)),
+                    Err(_) => Ok(None),
+                };
+            }
         }
+        Ok(None)
     }
 }
 
@@ -565,6 +785,11 @@ pub struct Transaction<'a> {
     /// HEAD is exactly what this transaction did, which is what the index
     /// needs to absorb.
     prev_head: Option<String>,
+    /// The last number this transaction assigned (ADR 0007). The index knows
+    /// nothing about staged-but-uncommitted issues, so a second `create`
+    /// inside the same transaction counts up from here instead of re-reading
+    /// a stale max.
+    number_cursor: Option<u32>,
 }
 
 impl std::fmt::Debug for Transaction<'_> {
@@ -576,8 +801,64 @@ impl std::fmt::Debug for Transaction<'_> {
 }
 
 impl<'a> Transaction<'a> {
-    pub fn create_issue(&mut self, draft: IssueDraft) -> Result<IssueId, DitError> {
+    /// Create an issue. An empty body is seeded from the workspace's template
+    /// for the draft's kind (falling back to `default.md`), so every delivery
+    /// surface — CLI, server, bot — writes the same shape. Under
+    /// `numbering: local` (ADR 0007) a missing number is assigned
+    /// `max(existing) + 1` from the index; callers never choose it.
+    pub fn create_issue(&mut self, mut draft: IssueDraft) -> Result<IssueId, DitError> {
+        self.assign_number(&mut draft)?;
+        if draft.body.trim().is_empty() {
+            let kind = draft.kind.as_str().to_owned();
+            if let Some(text) = self
+                .dit
+                .template_text(&kind)
+                .or_else(|| self.dit.template_text("default"))
+            {
+                draft.body = text;
+            }
+        }
         Ok(self.store_tx.create_issue(draft)?)
+    }
+
+    /// [`Transaction::create_issue`] with an explicit template name (`dit
+    /// issue new --template bug`). A missing template is an error, not a
+    /// silent fallback — the user asked for a shape by name.
+    pub fn create_issue_from_template(
+        &mut self,
+        mut draft: IssueDraft,
+        template: &str,
+    ) -> Result<IssueId, DitError> {
+        match self.dit.template_path(template) {
+            Some(path) if path.is_file() => {
+                if draft.body.trim().is_empty() {
+                    draft.body = std::fs::read_to_string(&path)?;
+                }
+            }
+            _ => return Err(DitError::TemplateMissing(template.to_owned())),
+        }
+        self.assign_number(&mut draft)?;
+        Ok(self.store_tx.create_issue(draft)?)
+    }
+
+    /// Fill in `number` per the workspace's numbering policy. Explicitly-set
+    /// numbers and `on-merge` workspaces are left alone — the bot owns
+    /// assignment there (ADR 0007).
+    fn assign_number(&mut self, draft: &mut IssueDraft) -> Result<(), DitError> {
+        if draft.number.is_some() || !matches!(self.dit.config.numbering, Numbering::Local) {
+            return Ok(());
+        }
+        let next = match self.number_cursor {
+            Some(n) => n + 1,
+            None => self
+                .dit
+                .index
+                .max_number()?
+                .map_or(1, |n| n.saturating_add(1)),
+        };
+        self.number_cursor = Some(next);
+        draft.number = Some(next);
+        Ok(())
     }
 
     pub fn set_fields(&mut self, id: &IssueId, patch: FieldPatch) -> Result<(), DitError> {
@@ -602,6 +883,7 @@ impl<'a> Transaction<'a> {
             store_tx,
             lock,
             prev_head,
+            number_cursor: _,
         } = self;
         let changeset = store_tx.finish()?;
         if changeset.paths().next().is_none() {
@@ -678,9 +960,10 @@ impl Dit {
     /// which keeps deletions from old commits out of the work.
     fn absorb_commit(&mut self, prev_head: Option<&str>, head: &str) -> Result<(), DitError> {
         let base = prev_head.unwrap_or(EMPTY_TREE);
-        let diff = self
-            .repo
-            .git(&["diff", "--name-status", "-M", base, head, "--", ".dit/"])?;
+        let layout = self.store.layout().kind();
+        let mut argv = vec!["diff", "--name-status", "-M", base, head, "--"];
+        argv.extend(layout.diff_pathspecs());
+        let diff = self.repo.git(&argv)?;
         for line in diff.lines() {
             let mut fields = line.split('\t');
             let Some(status) = fields.next() else {
@@ -700,7 +983,7 @@ impl Dit {
             let blob = self
                 .repo
                 .git(&["rev-parse", &format!("{head}:{new_path}")])?;
-            if new_path.ends_with("issue.md") {
+            if dit_model::looks_like_issue_body(new_path, layout) {
                 if let Ok((issue, _)) = dit_parse::parse_issue(&text) {
                     self.index.upsert_issue(&issue, new_path, &blob)?;
                 }
@@ -712,10 +995,334 @@ impl Dit {
                 }
             }
         }
-        let events = dit_vcs::walk_field_events(&self.repo, prev_head)?;
+        let events = dit_vcs::walk_field_events(&self.repo, prev_head, layout)?;
         self.index.record_field_events(&events)?;
         self.index.set_watermark("events", head)?;
         Ok(())
+    }
+
+    /// The generated `issues/README.md` content (ADR 0008): every issue
+    /// grouped by workflow column, ordered by number, linking into the
+    /// folder that holds its `README.md` body. The offline-unique short ref
+    /// stands in for issues with no number yet. A pure function of the index
+    /// and this build's version — an unchanged repo renders byte-identically,
+    /// so CI never commits churn.
+    fn render_issue_index(&self) -> Result<String, DitError> {
+        let mut issues = self.query("", None)?;
+        // Numbers are identifiers, not sequence (ADR 0007) — but a listing
+        // for humans reads best counted up, with unnumbered issues last in
+        // stable id order.
+        issues.sort_by(|a, b| {
+            match (&a.issue.number, &b.issue.number) {
+                (Some(x), Some(y)) => x.cmp(y),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+            .then_with(|| a.issue.id.as_str().cmp(b.issue.id.as_str()))
+        });
+
+        let columns: Vec<&WorkflowStatus> = self.workflow.board_columns().collect();
+        let mut groups: Vec<(&str, Vec<&IndexedIssue>)> = columns
+            .iter()
+            .map(|s| (s.label.as_str(), Vec::new()))
+            .collect();
+        let mut strays: Vec<&IndexedIssue> = Vec::new();
+        for hit in &issues {
+            match columns.iter().position(|s| s.id == hit.issue.status) {
+                Some(i) => groups[i].1.push(hit),
+                None => strays.push(hit),
+            }
+        }
+        if !strays.is_empty() {
+            groups.push(("not in workflow", strays));
+        }
+
+        let mut out = format!(
+            "{GENERATED_INDEX_MARKER} {VERSION} — do not edit; run dit docs build --index -->\n\n\
+             # Issues\n"
+        );
+        for (label, group) in groups {
+            if group.is_empty() {
+                continue;
+            }
+            out.push_str(&format!("\n## {label}\n\n"));
+            for hit in group {
+                // The hash belongs to numbers alone — prefixing it to a short
+                // ref would read as a number handle (every pre-ADR-0007
+                // workspace would render `#06M5683`).
+                let handle = match hit.issue.number {
+                    Some(n) => format!("#{n}"),
+                    None => hit.issue.id.short_ref().as_str().to_owned(),
+                };
+                let link = folder_link(&hit.path);
+                out.push_str(&format!("- **{handle}** [{}]({link})\n", hit.issue.title));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Write the generated issues index (ADR 0008). `Ok(false)` means the
+    /// file was already current — the caller's "nothing to do" is already
+    /// true. CI/dit-bot is the intended writer; nothing else writes it as a
+    /// side effect of issue writes.
+    pub fn build_docs_index(&mut self) -> Result<bool, DitError> {
+        let rendered = self.render_issue_index()?;
+        let path = self.store.layout().content_dir("issues").join("README.md");
+        let prior = std::fs::read_to_string(&path).ok();
+        if prior.as_deref() == Some(rendered.as_str()) {
+            return Ok(false);
+        }
+        let lock_path = self.store.layout().write_lock();
+        let lock = acquire_lock_or_busy(&lock_path, "")?;
+        let result = (|| {
+            dit_store::atomic::write(&path, &rendered)?;
+            let rel = rel_to_root(self.repo.root(), &path);
+            if let Err(e) = self
+                .repo
+                .add(&rel)
+                .and_then(|_| self.repo.commit("dit docs build --index").map(|_| ()))
+            {
+                // The tree goes back to exactly what it was — a failed
+                // generation must not leave a stray file for the next writer
+                // to commit by accident.
+                match &prior {
+                    Some(old) => dit_store::atomic::write(&path, old)?,
+                    None => {
+                        let _ = std::fs::remove_file(&path);
+                    }
+                }
+                return Err(e.into());
+            }
+            Ok(true)
+        })();
+        drop(lock);
+        result
+    }
+
+    /// Change the numbering policy (ADR 0007). A config-only write: it takes
+    /// the single-writer lock, rewrites `.dit/config.yaml`, and commits —
+    /// no issue file moves and no number is assigned or taken away. The
+    /// in-memory config flips too, so the very next transaction obeys the
+    /// new policy without a reopen.
+    pub fn set_numbering(&mut self, numbering: Numbering) -> Result<(), DitError> {
+        if self.config.numbering == numbering {
+            return Ok(());
+        }
+        let lock_path = self.store.layout().write_lock();
+        let lock = acquire_lock_or_busy(&lock_path, "set-numbering")?;
+        let result = (|| {
+            let mut config = self.config.clone();
+            config.numbering = numbering;
+            dit_store::atomic::write(
+                &self.store.layout().config_yaml(),
+                &dit_parse::write_config(&config),
+            )?;
+            self.repo.add(".dit")?;
+            self.repo
+                .commit(&format!("dit set numbering: {}", numbering.as_str()))?;
+            self.config = config;
+            Ok(())
+        })();
+        drop(lock);
+        result
+    }
+
+    /// Backfill numbers onto unnumbered issues (ADR 0009): append-only —
+    /// unnumbered issues take `max+1, max+2, …` in creation order, so an
+    /// existing number never moves and nothing already pointing at `#N`
+    /// re-points. One commit over a clean tree; returns how many issues
+    /// gained a number (`Ok(0)` = nothing to do, no commit). Refused on
+    /// `numbering: on-merge`, where merge serialization owns assignment.
+    pub fn renumber(&mut self) -> Result<usize, DitError> {
+        if !matches!(self.config.numbering, Numbering::Local) {
+            return Err(DitError::Refuse(format!(
+                "numbers are assigned on merge here (`numbering: {}`) — merge \
+                 serialization owns assignment, so this command is for `local` \
+                 workspaces",
+                self.config.numbering.as_str()
+            )));
+        }
+        if !self.repo.is_clean().unwrap_or(false) {
+            return Err(DitError::Refuse(
+                "the working tree is not clean — commit or stash before renumbering".into(),
+            ));
+        }
+        // Creation order is ULID order (ADR 0001: Crockford base32 preserves
+        // time order); same-millisecond ties break by random bits — either
+        // way the id string decides, never a wall clock.
+        let mut hits = self.query("", None)?;
+        hits.sort_by(|a, b| a.issue.id.as_str().cmp(b.issue.id.as_str()));
+        let targets: Vec<IssueId> = hits
+            .iter()
+            .filter(|h| h.issue.number.is_none())
+            .map(|h| h.issue.id)
+            .collect();
+        if targets.is_empty() {
+            return Ok(0);
+        }
+        let mut next = self.index.max_number()?.map_or(1, |n| n.saturating_add(1));
+        let count = targets.len();
+        let mut tx = self.transaction("dit")?;
+        for id in &targets {
+            tx.set_fields(
+                id,
+                FieldPatch {
+                    number: Some(next),
+                    ..FieldPatch::default()
+                },
+            )?;
+            next = next.saturating_add(1);
+        }
+        tx.commit(&format!("dit renumber: {count} issue(s)"))?;
+        Ok(count)
+    }
+
+    /// Move a workspace between layouts (ADR 0005): `git mv` every content
+    /// root, rename legacy `issue.md` bodies to `README.md` (ADR 0006), put
+    /// the merge-driver routing at the mode-correct place, flip
+    /// `config.yaml`, and rebuild the index — one commit. Rename detection
+    /// is what keeps field history alive across the move, so anything but a
+    /// clean tree is refused.
+    pub fn migrate_layout(&mut self, to: DataLayout) -> Result<MigrationReport, DitError> {
+        let from = self.store.layout().kind();
+        if from == to {
+            return Err(DitError::Refuse(format!(
+                "this workspace is already on the `{}` layout",
+                to.as_str()
+            )));
+        }
+        if !self.repo.is_clean().unwrap_or(false) {
+            return Err(DitError::Refuse(
+                "the working tree is not clean — commit or stash before migrating".into(),
+            ));
+        }
+        let lock_path = self.store.layout().write_lock();
+        let lock = acquire_lock_or_busy(&lock_path, "migrate-layout")?;
+        let result = self.migrate_layout_locked(from, to);
+        drop(lock);
+        result
+    }
+
+    fn migrate_layout_locked(
+        &mut self,
+        from: DataLayout,
+        to: DataLayout,
+    ) -> Result<MigrationReport, DitError> {
+        let mut report = MigrationReport::default();
+
+        // 1. Content roots move first; everything else keys off their new
+        //    location. Tracked trees go through `git mv` so the move stays a
+        //    rename; empty untracked roots (init leftovers) just rename.
+        for name in CONTENT_ROOTS {
+            let old_rel = from.content_root(name);
+            let new_rel = to.content_root(name);
+            let old_dir = self.repo.root().join(&old_rel);
+            if !old_dir.is_dir() {
+                continue;
+            }
+            let new_dir = self.repo.root().join(&new_rel);
+            if new_dir.exists() {
+                return Err(DitError::Refuse(format!(
+                    "`{new_rel}` already exists — move it aside before migrating"
+                )));
+            }
+            if self.repo.ls_tree(&old_rel)?.is_empty() {
+                if let Some(parent) = new_dir.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::rename(&old_dir, &new_dir)?;
+            } else {
+                self.repo.mv(&old_rel, &new_rel)?;
+            }
+            report.roots_moved += 1;
+        }
+
+        // 2. Legacy `issue.md` bodies become `README.md` in their new home
+        //    (ADR 0006). Scanned on disk, not from HEAD — the move above is
+        //    staged but uncommitted, so the tree at HEAD still shows the old
+        //    paths. Folders holding both keep both; reads prefer the new
+        //    name either way.
+        let issues_dir = self.repo.root().join(to.content_root("issues"));
+        let mut stack = vec![issues_dir];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.file_name() != Some(std::ffi::OsStr::new(dit_model::LEGACY_ISSUE_BODY_FILE))
+                {
+                    continue;
+                }
+                let readme = path.with_file_name(dit_model::ISSUE_BODY_FILE);
+                if readme.exists() {
+                    continue;
+                }
+                self.repo.mv(
+                    &rel_to_root(self.repo.root(), &path),
+                    &rel_to_root(self.repo.root(), &readme),
+                )?;
+                report.bodies_renamed += 1;
+            }
+        }
+
+        // 3. The merge-driver routing follows the tree it protects. Most
+        //    workspaces predate the file entirely — the migration is the
+        //    moment it appears, at the mode-correct path.
+        let attrs_rel = |kind: DataLayout| match kind {
+            DataLayout::Root => ".gitattributes",
+            DataLayout::DotDir => ".dit/.gitattributes",
+        };
+        let old_attrs = self.repo.root().join(attrs_rel(from));
+        let new_attrs_rel = attrs_rel(to);
+        let new_attrs = self.repo.root().join(new_attrs_rel);
+        let mut attrs_needs_staging = false;
+        if !new_attrs.exists() {
+            if !self.repo.ls_tree(attrs_rel(from))?.is_empty() {
+                self.repo.mv(attrs_rel(from), new_attrs_rel)?;
+            } else if old_attrs.exists() {
+                if let Some(parent) = new_attrs.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::rename(&old_attrs, &new_attrs)?;
+                attrs_needs_staging = true;
+            } else {
+                dit_store::atomic::write(&new_attrs, GIT_ATTRIBUTES)?;
+                attrs_needs_staging = true;
+            }
+        }
+
+        // 4. The config flips last — this is what a re-opened Store detects.
+        let mut config = self.config.clone();
+        config.layout = to;
+        dit_store::atomic::write(
+            &self.store.layout().config_yaml(),
+            &dit_parse::write_config(&config),
+        )?;
+
+        // 5. One commit: everything above is staged by the moves themselves
+        //    plus `.dit` for the config (and, in dotdir, the routing file).
+        self.repo.add(".dit")?;
+        if to == DataLayout::Root && attrs_needs_staging {
+            self.repo.add(".gitattributes")?;
+        }
+        self.repo.commit(&format!(
+            "dit migrate layout: {} -> {}",
+            from.as_str(),
+            to.as_str()
+        ))?;
+
+        // 6. The store re-opens on the new layout, and the index rebuilds
+        //    from the moved tree.
+        self.store = Store::open(self.repo.root());
+        self.reload_schema();
+        self.reindex(ReindexMode::All)?;
+        Ok(report)
     }
 }
 
@@ -726,6 +1333,122 @@ fn rel_to_root(root: &Path, path: &Path) -> String {
     let rel = path.strip_prefix(root).unwrap_or(path);
     rel.to_string_lossy().replace('\\', "/")
 }
+
+/// Take the single-writer lock, or say who holds it. The lock file's content
+/// is the holder's name — the exact thing a "workspace is busy" message
+/// wants to show.
+fn acquire_lock_or_busy(lock_path: &Path, author: &str) -> Result<LockGuard, DitError> {
+    atomic::acquire_lock(lock_path, author).map_err(|_| {
+        let held_by = std::fs::read_to_string(lock_path)
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        DitError::Busy { held_by }
+    })
+}
+
+/// What a layout migration did — the receipt `dit migrate-layout` prints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MigrationReport {
+    pub roots_moved: usize,
+    pub bodies_renamed: usize,
+}
+
+/// Relative link from the generated `issues/README.md` to an issue's folder:
+/// strip the issues-root prefix and the body file name, keep the trailing
+/// slash so a forge renders the folder's `README.md` body (ADR 0006/0008).
+fn folder_link(repo_path: &str) -> String {
+    let Some((_, rest)) = repo_path.split_once("issues/") else {
+        return repo_path.to_owned();
+    };
+    let Some((dir, _)) = rest.rsplit_once('/') else {
+        return rest.to_owned();
+    };
+    format!("{dir}/")
+}
+
+/// This build's version, stamped into the generated index marker so a reader
+/// can tell which dit wrote the file (ADR 0008).
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The merge-driver routing `init` writes and `migrate-layout` places
+/// (ADR 0005). Both patterns are load-bearing: `*.md` routes the bodies, and
+/// the anchored `**/comments/*.md` reaches the per-comment files a single
+/// star would miss (§5.3, re-verified in ADR 0005's throwaway repo).
+const GIT_ATTRIBUTES: &str = "\
+# DIT: route markdown through the frontmatter-aware merge driver.
+*.md merge=dit-md
+**/comments/*.md merge=dit-md
+";
+
+/// The default issue template: the three sections every issue owes a reader
+/// — what is going on, what "done" means, and how a human verifies it.
+const TEMPLATE_DEFAULT: &str = "\
+## Description
+
+<!-- What is going on? What did you expect instead? -->
+
+## Criteria
+
+<!-- What must be true when this is done? One bullet each. -->
+
+- [ ]
+
+## User acceptance test
+
+<!-- How does a user verify this? Steps a real person can follow. -->
+
+1.
+";
+
+/// A bug adds the reproduction steps that turn "it's broken" into a report.
+const TEMPLATE_BUG: &str = "\
+## Description
+
+<!-- What is broken? What did you expect instead? -->
+
+## Steps to reproduce
+
+1.
+
+## Criteria
+
+- [ ]
+
+## User acceptance test
+
+1.
+";
+
+/// A story states the want in the user's words before the criteria.
+const TEMPLATE_STORY: &str = "\
+## Story
+
+As a … , I want … , so that … .
+
+## Criteria
+
+- [ ]
+
+## User acceptance test
+
+1.
+";
+
+/// A spike is a question with a deadline, not a deliverable.
+const TEMPLATE_SPIKE: &str = "\
+## Question
+
+<!-- What must this spike answer before time runs out? -->
+
+## Findings
+
+<!-- What was learned, with links to the evidence. -->
+
+## Recommendation
+
+<!-- What should happen next. -->
+";
 
 /// Render markdown to safe HTML — the only rendering path the UI uses, so
 /// the sanitizer and the wire format can never drift apart.
@@ -769,13 +1492,21 @@ pub fn run_merge_driver(args: &[String]) -> i32 {
     }
 }
 
-/// Written at the root by `init`: a fresh clone of a DIT workspace looks
-/// like an empty repository, and the first thing anyone runs is `ls`.
+/// Written at the root by `init`: a fresh clone of a DIT workspace greets
+/// its reader with a map of what they are looking at (ADR 0005). Hand-owned
+/// and hand-editable — never generated (ADR 0008 keeps that class to the
+/// issues index alone).
 const INIT_README: &str = "\
 # This repository is a DIT workspace
 
-Project data lives as Markdown files under `.dit/` — issues in
-`.dit/issues/`, the workflow definition in `.dit/schema/workflow.yaml`.
+Project data lives as plain Markdown: issues under `issues/` (grouped by
+year and month, one folder per issue with its `README.md` body), longer
+documents under `docs/`, notes under `notes/`, changelogs under
+`changelogs/`, epics under `epics/`. Machinery — the workflow definition,
+config, people, templates — stays under `.dit/`.
+
+`issues/README.md` is generated by `dit docs build --index`; do not edit it.
+
 Git is the source of truth; everything under `.dit-cache/` is a local,
 disposable index and is never committed.
 

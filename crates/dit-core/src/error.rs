@@ -34,6 +34,15 @@ pub enum DitError {
     /// "you asked for something that isn't there" signal (404, exit 2).
     #[error("no issue matches `{0}`")]
     NotFound(String),
+    /// The action would take over something DIT does not own (e.g. `dit init`
+    /// into a tree that already has an `issues/` directory). Nothing was
+    /// written — the message names the way out.
+    #[error("{0}")]
+    Refuse(String),
+    /// A named issue template is not in `.dit/templates/`. Distinct from
+    /// `NotFound` (an issue ref) so the CLI can hint at `dit templates list`.
+    #[error("no template named `{0}` in .dit/templates/")]
+    TemplateMissing(String),
     #[error(transparent)]
     Schema(#[from] SchemaError),
     #[error(transparent)]

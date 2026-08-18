@@ -147,6 +147,7 @@ fn workspace_with_issue(title: &str) -> (dit_core::Dit, tempfile::TempDir) {
         kind: dit_model::IssueKind::Task,
         status: None,
         priority: Some(dit_model::Priority::P1),
+        number: None,
         reporter: None,
         assignees: vec!["budi".to_owned()],
         labels: vec!["guard".to_owned()],
@@ -164,8 +165,10 @@ fn workspace_with_issue(title: &str) -> (dit_core::Dit, tempfile::TempDir) {
     (dit, tmp)
 }
 
-/// Every Markdown file under `.dit/` — the files a git operation would
-/// touch. Returns the paths, so callers can assert the sweep was real.
+/// Every issue Markdown file the workspace owns — `issues/` at the root
+/// (ADR 0005's default) and `.dit/issues/` (dotdir and pre-migration
+/// history). Templates and generated docs are machinery, not issue data,
+/// so they are deliberately outside the sweep.
 fn dit_markdown(root: &Path) -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         let Ok(entries) = fs::read_dir(dir) else {
@@ -181,7 +184,8 @@ fn dit_markdown(root: &Path) -> Vec<PathBuf> {
         }
     }
     let mut out = Vec::new();
-    walk(&root.join(".dit"), &mut out);
+    walk(&root.join("issues"), &mut out);
+    walk(&root.join(".dit").join("issues"), &mut out);
     out
 }
 
@@ -220,6 +224,9 @@ fn i2_reads_survive_worktree_wipe() {
 /// frontmatter means a derived fact leaked into the source of truth.
 const KNOWN_ISSUE_KEYS: &[&str] = &[
     "id",
+    // The human handle (ADR 0007): assigned, stored, and read — but never
+    // derived, so it belongs in the file, unlike everything i5 bans.
+    "number",
     "title",
     "type",
     "status",
@@ -330,6 +337,10 @@ const KNOWN_SCHEMA_KEYS: &[&str] = &[
     "on",
     "implies",
     "schema_version",
+    // `layout` and `numbering` are closed enums (ADR 0005 / 0007), never
+    // free-form paths or commands — exactly the shape this invariant allows.
+    "layout",
+    "numbering",
     "repos",
     "name",
     "remote",
