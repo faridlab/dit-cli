@@ -47,6 +47,7 @@ pub struct IndexedIssue {
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS issues (
   id        TEXT PRIMARY KEY,
+  number    INTEGER,
   path      TEXT NOT NULL,
   blob_sha  TEXT NOT NULL,
   short_ref TEXT NOT NULL,
@@ -124,6 +125,11 @@ CREATE TRIGGER IF NOT EXISTS issues_fts_au AFTER UPDATE OF title, body ON issues
 END;
 "#;
 
+/// Bumped whenever the schema below changes shape. The index is disposable —
+/// an on-disk file stamped with an older version is dropped and rebuilt from
+/// git rather than migrated in place (§6: SQLite is only an index).
+const INDEX_VERSION: i64 = 2;
+
 /// The default row cap when a query names no limit. A cap exists because the
 /// API serves people, not exports; a workspace that genuinely holds more
 /// matching issues pages with an explicit limit.
@@ -166,7 +172,34 @@ impl Index {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "busy_timeout", 5000)?;
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        // A stamp can lie: a binary that adopted an old table and stamped it
+        // current (the pre-probe guard) leaves version == INDEX_VERSION over
+        // a stale shape. Probe the one column every schema bump so far has
+        // touched, so the check is over what the table IS, not what a
+        // previous writer claimed. `prepare`, not `query_row`: compiling the
+        // statement fails exactly when the table or column is absent, while
+        // an executed probe would also fail on an empty (healthy) table.
+        let stale_shape = conn.prepare("SELECT number FROM issues").is_err();
+        if version != INDEX_VERSION || stale_shape {
+            // A cache this binary did not write: older (pre-`number`), from
+            // before version stamps existed at all (version 0 with tables),
+            // falsely stamped, or newer (a binary we cannot out-guess). Drop
+            // everything and let the caller reindex from git — cheaper and
+            // safer than ALTER TABLE on a file whose whole reason to exist is
+            // being rebuildable. On a fresh database the drops are no-ops.
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS issues_fts;
+                 DROP TABLE IF EXISTS issue_assignees;
+                 DROP TABLE IF EXISTS issue_labels;
+                 DROP TABLE IF EXISTS comments;
+                 DROP TABLE IF EXISTS field_events;
+                 DROP TABLE IF EXISTS state;
+                 DROP TABLE IF EXISTS issues;",
+            )?;
+        }
         conn.execute_batch(SCHEMA)?;
+        conn.pragma_update(None, "user_version", INDEX_VERSION)?;
         Ok(Index { conn })
     }
 
@@ -191,11 +224,12 @@ impl Index {
             params![issue.id.as_str()],
         )?;
         tx.execute(
-            "INSERT INTO issues (id, path, blob_sha, short_ref, title, type, status, priority, \
-             reporter, epic, estimate, sprint, due, created, updated, body) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+            "INSERT INTO issues (id, number, path, blob_sha, short_ref, title, type, status, \
+             priority, reporter, epic, estimate, sprint, due, created, updated, body) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
             params![
                 issue.id.as_str(),
+                issue.number,
                 path,
                 blob_sha,
                 issue.id.short_ref().as_str(),
@@ -358,7 +392,7 @@ impl Index {
             .conn
             .query_row(
                 "SELECT path, blob_sha, title, type, status, priority, reporter, epic, estimate, \
-                 sprint, due, created, updated, body FROM issues WHERE id = ?1",
+                 sprint, due, created, updated, body, number FROM issues WHERE id = ?1",
                 params![id.as_str()],
                 issue_columns,
             )
@@ -377,7 +411,7 @@ impl Index {
         let limit = compiled.limit.unwrap_or(DEFAULT_LIMIT) as i64;
         let mut sql = format!(
             "SELECT id, path, blob_sha, title, type, status, priority, reporter, epic, estimate, \
-             sprint, due, created, updated, body FROM issues WHERE {}",
+             sprint, due, created, updated, body, number FROM issues WHERE {}",
             compiled.where_sql
         );
         if compiled.order_sql.is_empty() {
@@ -421,6 +455,70 @@ impl Index {
         let compiled = compile(query, me, now)
             .map_err(|e| IndexError::Corrupt(format!("query rejected: {e}")))?;
         self.list_issues(&compiled)
+    }
+
+    /// The highest assigned `number:` — the next number under
+    /// `numbering: local` is this + 1 (ADR 0007).
+    pub fn max_number(&self) -> Result<Option<u32>, IndexError> {
+        let max = self
+            .conn
+            .query_row("SELECT MAX(number) FROM issues", [], |r| {
+                r.get::<_, Option<i64>>(0)
+            })?;
+        Ok(max.map(|m| m as u32))
+    }
+
+    /// How many indexed issues carry no `number` — the backfillable set
+    /// (ADR 0009). What `dit doctor` counts before suggesting `dit renumber`.
+    pub fn unnumbered_count(&self) -> Result<usize, IndexError> {
+        let n = self.conn.query_row(
+            "SELECT COUNT(*) FROM issues WHERE number IS NULL",
+            [],
+            |r| r.get::<_, i64>(0),
+        )?;
+        Ok(n as usize)
+    }
+
+    /// Issues holding a given `#number`. 0 or 1 entries in a healthy
+    /// workspace; more than one is the duplicate `dit doctor` reports.
+    pub fn issues_with_number(&self, number: u32) -> Result<Vec<IndexedIssue>, IndexError> {
+        let ids: Vec<String> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id FROM issues WHERE number = ?1 ORDER BY id")?;
+            let rows = stmt.query_map(params![i64::from(number)], |r| r.get::<_, String>(0))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        ids.iter()
+            .map(|id_str| {
+                let id = IssueId::parse(id_str)
+                    .map_err(|e| IndexError::Corrupt(format!("issue id `{id_str}`: {e}")))?;
+                self.get_issue(&id)?
+                    .ok_or_else(|| IndexError::Corrupt(format!("issue `{id_str}` vanished")))
+            })
+            .collect()
+    }
+
+    /// Every number held by more than one issue, with the holders' ids —
+    /// the raw material for `dit doctor`'s duplicate-number diagnostic.
+    pub fn duplicate_numbers(&self) -> Result<Vec<(u32, Vec<String>)>, IndexError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT number, id FROM issues WHERE number IS NOT NULL AND number IN \
+             (SELECT number FROM issues WHERE number IS NOT NULL \
+              GROUP BY number HAVING COUNT(*) > 1) ORDER BY number, id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, i64>(0)? as u32, r.get::<_, String>(1)?))
+        })?;
+        let mut out: Vec<(u32, Vec<String>)> = Vec::new();
+        for row in rows {
+            let (number, id) = row?;
+            match out.last_mut() {
+                Some((n, holders)) if *n == number => holders.push(id),
+                _ => out.push((number, vec![id])),
+            }
+        }
+        Ok(out)
     }
 
     fn set_for(&self, table: &str, col: &str, id: &IssueId) -> Result<Vec<String>, IndexError> {
@@ -602,6 +700,8 @@ struct IssueCols {
     created: String,
     updated: String,
     body: String,
+    /// Selected last in every read shape. `None` = unassigned (ADR 0007).
+    number: Option<u32>,
 }
 
 /// Row mapper when `path` is the first selected column.
@@ -621,6 +721,7 @@ fn issue_columns(r: &rusqlite::Row<'_>) -> rusqlite::Result<IssueCols> {
         created: r.get(11)?,
         updated: r.get(12)?,
         body: r.get(13)?,
+        number: r.get::<_, Option<i64>>(14)?.map(|n| n as u32),
     })
 }
 
@@ -647,6 +748,10 @@ fn issue_columns_with_skip(r: &rusqlite::Row<'_>, n: usize) -> IssueCols {
         created: get(11).unwrap_or_default(),
         updated: get(12).unwrap_or_default(),
         body: get(13).unwrap_or_default(),
+        number: r
+            .get::<_, Option<i64>>(n + 14)
+            .unwrap_or(None)
+            .map(|n| n as u32),
     }
 }
 
@@ -664,6 +769,7 @@ fn hydrate(
     Ok(IndexedIssue {
         issue: Issue {
             id: *id,
+            number: cols.number,
             title: cols.title,
             kind: dit_model::IssueKind::parse(&cols.kind)
                 .ok_or_else(|| corrupt("type", &cols.kind))?,
@@ -706,6 +812,7 @@ mod tests {
     fn sample_issue(id: &str, status: &str) -> Issue {
         Issue {
             id: IssueId::parse(id).unwrap(),
+            number: None,
             title: "Login timeout".into(),
             kind: IssueKind::Bug,
             status: status.into(),
@@ -1039,5 +1146,153 @@ mod tests {
         // The expensive half of a rebuild survives a state-only refresh.
         assert_eq!(idx.field_events(&issue.id, None).unwrap().len(), 1);
         assert_eq!(idx.watermark("events").unwrap().as_deref(), Some("c1"));
+    }
+
+    #[test]
+    fn number_round_trips_through_upsert_and_both_read_shapes() {
+        let mut idx = Index::in_memory().unwrap();
+        let mut numbered = sample_issue(ID, "todo");
+        numbered.number = Some(12);
+        idx.upsert_issue(&numbered, "p", "s").unwrap();
+
+        assert_eq!(
+            idx.get_issue(&numbered.id).unwrap().unwrap().issue.number,
+            Some(12)
+        );
+        // The list shape reads `number` through the offset mapper.
+        let all = idx
+            .search(&dql(""), None, OffsetDateTime::UNIX_EPOCH)
+            .unwrap();
+        assert!(all.iter().any(|i| i.issue.number == Some(12)), "{all:?}");
+
+        // And DQL can select on it (SQLite compares INTEGER to REAL 12.0 fine).
+        let by_number = idx
+            .search(&dql("number = 12"), None, OffsetDateTime::UNIX_EPOCH)
+            .unwrap();
+        assert_eq!(by_number.len(), 1);
+        assert_eq!(by_number[0].issue.number, Some(12));
+
+        // max_number drives the next `numbering: local` assignment.
+        assert_eq!(idx.max_number().unwrap(), Some(12));
+    }
+
+    #[test]
+    fn unnumbered_count_counts_exactly_the_backfillable_set() {
+        let mut idx = Index::in_memory().unwrap();
+        let mut numbered = sample_issue(ID, "todo");
+        numbered.number = Some(4);
+        idx.upsert_issue(&numbered, "p", "s").unwrap();
+        idx.upsert_issue(&sample_issue(OTHER, "todo"), "q", "s")
+            .unwrap();
+
+        assert_eq!(idx.unnumbered_count().unwrap(), 1);
+
+        let mut legacy = sample_issue(OTHER, "done");
+        legacy.number = Some(5);
+        idx.upsert_issue(&legacy, "q", "s").unwrap();
+        assert_eq!(
+            idx.unnumbered_count().unwrap(),
+            0,
+            "a backfilled issue leaves the set"
+        );
+    }
+
+    #[test]
+    fn max_number_is_none_when_nothing_is_numbered() {
+        let mut idx = Index::in_memory().unwrap();
+        idx.upsert_issue(&sample_issue(ID, "todo"), "p", "s")
+            .unwrap();
+        assert_eq!(idx.max_number().unwrap(), None);
+    }
+
+    #[test]
+    fn duplicate_numbers_are_reported_with_their_holders() {
+        let mut idx = Index::in_memory().unwrap();
+        let mut a = sample_issue(ID, "todo");
+        a.number = Some(12);
+        let mut b = sample_issue(OTHER, "todo");
+        b.number = Some(12);
+        let mut c = sample_issue("01K3M9ZXQ2R7VN8P4TDBCEFGHK", "todo");
+        c.number = Some(13);
+        idx.upsert_issue(&a, "a", "sa").unwrap();
+        idx.upsert_issue(&b, "b", "sb").unwrap();
+        idx.upsert_issue(&c, "c", "sc").unwrap();
+
+        let dupes = idx.duplicate_numbers().unwrap();
+        assert_eq!(dupes.len(), 1, "{dupes:?}");
+        assert_eq!(dupes[0].0, 12);
+        assert_eq!(dupes[0].1.len(), 2);
+
+        let holders = idx.issues_with_number(12).unwrap();
+        assert_eq!(holders.len(), 2);
+        assert!(holders.iter().all(|h| h.issue.number == Some(12)));
+    }
+
+    #[test]
+    fn an_index_from_an_older_schema_is_dropped_and_rebuilt() {
+        // Simulate a `.dit-cache` written before the `number` column: stamp it
+        // with the old version and a table shape this binary no longer makes.
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let old = rusqlite::Connection::open(file.path()).unwrap();
+        old.execute_batch(
+            "CREATE TABLE issues (id TEXT PRIMARY KEY, path TEXT, blob_sha TEXT, short_ref TEXT, \
+             title TEXT, type TEXT, status TEXT, priority TEXT, reporter TEXT, epic TEXT, \
+             estimate INTEGER, sprint TEXT, due TEXT, created TEXT, updated TEXT, body TEXT);
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
+        drop(old);
+
+        // Opening with this binary silently rebuilds the schema.
+        let idx = Index::open(file.path()).unwrap();
+        assert!(idx.max_number().is_ok());
+    }
+
+    #[test]
+    fn an_unstamped_index_from_a_pre_versioning_binary_is_rebuilt_too() {
+        // The pilot case: a `.dit-cache` written before `user_version`
+        // existed at all — old tables present, version stamp 0. Opening it
+        // must rebuild, not adopt the stale columns and stamp them current.
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let old = rusqlite::Connection::open(file.path()).unwrap();
+        old.execute_batch(
+            "CREATE TABLE issues (id TEXT PRIMARY KEY, path TEXT, blob_sha TEXT, short_ref TEXT, \
+             title TEXT, type TEXT, status TEXT, priority TEXT, reporter TEXT, epic TEXT, \
+             estimate INTEGER, sprint TEXT, due TEXT, created TEXT, updated TEXT, body TEXT);",
+        )
+        .unwrap();
+        drop(old);
+
+        // The failure this guards against is on the write path, not open:
+        // adopting the old table makes every numbered upsert fail with
+        // "table issues has no column named number".
+        let mut idx = Index::open(file.path()).unwrap();
+        let mut issue = sample_issue(ID, "todo");
+        issue.number = Some(7);
+        idx.upsert_issue(&issue, "p", "s").unwrap();
+        assert_eq!(idx.max_number().unwrap(), Some(7));
+    }
+
+    #[test]
+    fn a_falsely_stamped_index_is_detected_by_shape_not_stamp() {
+        // What a buggy open leaves behind: old tables carrying today's
+        // version stamp. The stamp says current; the missing column says
+        // otherwise — the probe must win.
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let old = rusqlite::Connection::open(file.path()).unwrap();
+        old.execute_batch(
+            "CREATE TABLE issues (id TEXT PRIMARY KEY, path TEXT, blob_sha TEXT, short_ref TEXT, \
+             title TEXT, type TEXT, status TEXT, priority TEXT, reporter TEXT, epic TEXT, \
+             estimate INTEGER, sprint TEXT, due TEXT, created TEXT, updated TEXT, body TEXT);
+             PRAGMA user_version = 2;",
+        )
+        .unwrap();
+        drop(old);
+
+        let mut idx = Index::open(file.path()).unwrap();
+        let mut issue = sample_issue(ID, "todo");
+        issue.number = Some(3);
+        idx.upsert_issue(&issue, "p", "s").unwrap();
+        assert_eq!(idx.max_number().unwrap(), Some(3));
     }
 }
