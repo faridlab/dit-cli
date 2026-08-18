@@ -6,12 +6,13 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import * as api from "./api";
-import type { BoardDto, FieldPatch, NewIssueInput } from "./types";
+import type { BoardDto, FieldPatch, NewIssueInput, SetSettingsInput } from "./types";
 
 export const queryKeys = {
   status: ["status"] as const,
   schema: ["schema"] as const,
   board: ["board"] as const,
+  settings: ["settings"] as const,
   issues: (params: { q?: string; limit?: number; offset?: number }) =>
     ["issues", params.q ?? "", params.limit ?? 0, params.offset ?? 0] as const,
   issue: (id: string) => ["issue", id] as const,
@@ -55,6 +56,14 @@ export function useSchema() {
 
 export function useBoard() {
   return useQuery({ queryKey: queryKeys.board, queryFn: api.getBoard, staleTime: STALE_TIME_MS });
+}
+
+export function useSettings() {
+  return useQuery({
+    queryKey: queryKeys.settings,
+    queryFn: api.getSettings,
+    staleTime: STALE_TIME_MS,
+  });
 }
 
 export function useIssues(
@@ -165,6 +174,25 @@ export function useCreateIssue() {
       void client.invalidateQueries({ queryKey: queryKeys.board });
     },
     onError: reportError("Could not create issue"),
+  });
+}
+
+/** A settings change can move every file in the workspace (layout) or change
+ *  what the next commit contains (numbering), so everything goes stale —
+ *  the same sweep the live watcher does. */
+export function usePutSettings() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (input: SetSettingsInput) => api.putSettings(input),
+    onSuccess: () => {
+      invalidateWorkspaceData(client);
+      void client.invalidateQueries({ queryKey: queryKeys.settings });
+    },
+    // Refusals (dirty tree, same layout) arrive as 409 with their own way
+    // out in the message — surface that text verbatim, not a generic prefix.
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : String(error));
+    },
   });
 }
 

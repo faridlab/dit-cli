@@ -9,7 +9,7 @@ import { ArrowLeft, Pencil, X } from "lucide-react";
 import { BodyEditor } from "../components/BodyEditor";
 import { Markdown } from "../components/Markdown";
 import { SelectField } from "../components/SelectField";
-import { AssigneeCircles, PriorityDot, TypeBadge } from "../components/badges";
+import { AssigneeCircles, IssueHandle, PriorityDot, TypeBadge } from "../components/badges";
 import { ErrorBox, Loading } from "../components/states";
 import { ApiError } from "../lib/api";
 import { fullTimestamp, parseCsvList, relativeTime } from "../lib/format";
@@ -403,7 +403,13 @@ export function IssueDetailView({ id }: { id: string }) {
         >
           <ArrowLeft className="size-4" aria-hidden />
         </a>
-        <span className="font-mono text-xs tabular-nums text-zinc-500">{data.short_ref}</span>
+        <IssueHandle shortRef={data.short_ref} number={data.number} />
+        <span
+          className="font-mono text-[10px] text-zinc-600"
+          title="the permanent short ref behind the number"
+        >
+          {data.short_ref}
+        </span>
         <TypeBadge type={data.type} />
         <PriorityDot priority={data.priority} />
         <input

@@ -12,6 +12,8 @@ import type {
   IssueListDto,
   NewIssueInput,
   SchemaDto,
+  SetSettingsInput,
+  SettingsDto,
   StatusInfo,
 } from "./types";
 
@@ -122,6 +124,19 @@ export function createIssue(input: NewIssueInput): Promise<IssueDto> {
 
 export function getBoard(): Promise<BoardDto> {
   return request<BoardDto>("/api/board");
+}
+
+export function getSettings(): Promise<SettingsDto> {
+  return request<SettingsDto>("/api/settings");
+}
+
+/** One field at a time in practice: a layout change is the guided migration
+ * (git mv + reindex, one commit), a numbering change is a config flip. */
+export function putSettings(input: SetSettingsInput): Promise<SettingsDto> {
+  return request<SettingsDto>("/api/settings", {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
 }
 
 export function getFieldEvents(id: string, field: string): Promise<FieldEventDto[]> {

@@ -9,7 +9,7 @@ import { ArrowDown, ArrowUp } from "lucide-react";
 import { fullTimestamp, priorityRank, relativeTime } from "../lib/format";
 import type { IssueDto, StatusDto } from "../lib/types";
 import { cn } from "../lib/cn";
-import { AssigneeCircles, LabelChips, PriorityDot, ShortRef, StatusPill, TypeBadge } from "./badges";
+import { AssigneeCircles, IssueHandle, LabelChips, PriorityDot, StatusPill, TypeBadge } from "./badges";
 
 type SortKey = "updated" | "created" | "priority" | "title" | "status";
 type SortDir = "asc" | "desc";
@@ -128,7 +128,7 @@ export function IssueTable({
         )}
       >
         <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
-          short_ref
+          #
         </span>
         <span />
         <span />
@@ -162,7 +162,7 @@ export function IssueTable({
                       "h-9 w-full rounded text-left hover:bg-zinc-900 focus-visible:bg-zinc-900 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-700",
                     )}
                   >
-                    <ShortRef shortRef={issue.short_ref} />
+                    <IssueHandle shortRef={issue.short_ref} number={issue.number} />
                     <TypeBadge type={issue.type} />
                     <PriorityDot priority={issue.priority} />
                     <span className="truncate text-[13px] text-zinc-200">{issue.title}</span>

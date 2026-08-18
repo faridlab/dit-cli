@@ -20,7 +20,7 @@ import {
 import { useBoard, useMoveIssue } from "../lib/queries";
 import type { BoardColumnDto, BoardIssueDto } from "../lib/types";
 import { cn } from "../lib/cn";
-import { AssigneeCircles, LabelChips, PriorityDot, TypeBadge } from "../components/badges";
+import { AssigneeCircles, IssueHandle, LabelChips, PriorityDot, TypeBadge } from "../components/badges";
 import { Empty, ErrorBox, Loading } from "../components/states";
 import { relativeTime } from "../lib/format";
 
@@ -62,7 +62,7 @@ const BoardCard = memo(function BoardCard({
       )}
     >
       <div className="flex items-center gap-2">
-        <span className="font-mono text-xs tabular-nums text-zinc-500">{issue.short_ref}</span>
+        <IssueHandle shortRef={issue.short_ref} number={issue.number} />
         <TypeBadge type={issue.type} />
         <PriorityDot priority={issue.priority} />
         {issue.estimate !== null ? (
@@ -216,7 +216,7 @@ export function BoardView({ onOpen }: { onOpen: (id: string) => void }) {
         {activeIssue ? (
           <div className="w-72 rotate-1 rounded-md border border-sky-700 bg-zinc-900 p-2 opacity-90 shadow-2xl">
             <div className="flex items-center gap-2">
-              <span className="font-mono text-xs text-zinc-400">{activeIssue.short_ref}</span>
+              <IssueHandle shortRef={activeIssue.short_ref} number={activeIssue.number} />
               <TypeBadge type={activeIssue.type} />
               <PriorityDot priority={activeIssue.priority} />
             </div>

@@ -171,7 +171,7 @@ export function CommandPalette({
                       className="flex cursor-default items-center gap-2 rounded px-2 py-1.5 text-[13px] text-zinc-300 data-selected:bg-zinc-800 data-selected:text-zinc-100"
                     >
                       <span className="font-mono text-xs tabular-nums text-zinc-500">
-                        {issue.short_ref}
+                        {issue.number !== null ? `#${issue.number}` : issue.short_ref}
                       </span>
                       <TypeBadge type={issue.type} />
                       <PriorityDot priority={issue.priority} />

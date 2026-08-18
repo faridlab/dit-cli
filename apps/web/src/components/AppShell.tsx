@@ -15,6 +15,7 @@ import { BoardView } from "../views/BoardView";
 import { IssueDetailView } from "../views/IssueDetailView";
 import { IssuesView } from "../views/IssuesView";
 import { SearchView } from "../views/SearchView";
+import { SettingsView } from "../views/SettingsView";
 
 export function AppShell() {
   const queryClient = useQueryClient();
@@ -68,6 +69,7 @@ export function AppShell() {
             />
           ) : null}
           {route.name === "issue" ? <IssueDetailView id={route.id} /> : null}
+          {route.name === "settings" ? <SettingsView /> : null}
         </main>
       </div>
       <StatusBar conn={conn} />

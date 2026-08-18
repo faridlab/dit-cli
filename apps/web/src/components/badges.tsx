@@ -97,8 +97,19 @@ export function StatusPill({ status }: { status: StatusDto }) {
   );
 }
 
-export function ShortRef({ shortRef }: { shortRef: string }) {
+/** The handle a human reads (ADR 0007): `#12` once the workspace numbered
+ *  the issue, the short ref until then. The short ref stays the permanent
+ *  identifier everywhere else (URLs, navigation, API calls). */
+export function IssueHandle({
+  shortRef,
+  number,
+}: {
+  shortRef: string;
+  number: number | null;
+}) {
   return (
-    <span className="font-mono text-xs tabular-nums text-zinc-500">{shortRef}</span>
+    <span className="font-mono text-xs tabular-nums text-zinc-500">
+      {number !== null ? `#${number}` : shortRef}
+    </span>
   );
 }

@@ -2,7 +2,7 @@
 // (new issue, command palette). Keyboard-first tools earn a persistent,
 // predictable nav — no hamburger, no collapsing.
 
-import { Columns3, ListTodo, Plus, Search } from "lucide-react";
+import { Columns3, ListTodo, Plus, Search, Settings } from "lucide-react";
 import type { Route } from "../lib/router";
 import { cn } from "../lib/cn";
 
@@ -21,6 +21,12 @@ const ITEMS: NavItem[] = [
     route: { name: "search", q: "" },
     icon: Search,
     match: (r) => r.name === "search",
+  },
+  {
+    label: "Settings",
+    route: { name: "settings" },
+    icon: Settings,
+    match: (r) => r.name === "settings",
   },
 ];
 

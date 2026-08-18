@@ -15,8 +15,11 @@ import type {
   FieldEventDto,
   IssueDto,
   IssueType,
+  Layout,
+  NumberingPolicy,
   Priority,
   SchemaDto,
+  SettingsDto,
   StatusInfo,
 } from "./types";
 
@@ -48,6 +51,7 @@ const ISSUES: IssueDto[] = Array.from({ length: 36 }, (_, index) => {
   return {
     id: `01JMOCK${String(n).padStart(4, "0")}ULID`,
     short_ref: `MOCK${String(n).padStart(3, "0")}`,
+    number: n,
     title: [
       "Merge driver drops %A on rename",
       "Index rebuild after force push",
@@ -129,6 +133,13 @@ function naiveRender(text: string): string {
     .join("");
 }
 
+// Mutable so the settings panel can be hand-checked against the mock.
+const settings: SettingsDto = {
+  layout: "root",
+  numbering: "local",
+  templates: ["default", "bug", "story", "spike"],
+};
+
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
@@ -207,6 +218,7 @@ export function installMockApi(): void {
           issues: ISSUES.filter((issue) => issue.status === status.id).map((issue) => ({
             id: issue.id,
             short_ref: issue.short_ref,
+            number: issue.number,
             title: issue.title,
             priority: issue.priority,
             type: issue.type,
@@ -236,6 +248,7 @@ export function installMockApi(): void {
       const created: IssueDto = {
         id: `01JMOCK${String(n).padStart(4, "0")}ULID`,
         short_ref: `DIT-${n}`,
+        number: n,
         title: title.trim(),
         type: (body.type as IssueType) ?? "task",
         status: (body.status as string) ?? "todo",
@@ -305,6 +318,18 @@ export function installMockApi(): void {
         const field = url.searchParams.get("field") ?? "status";
         return jsonResponse(fieldEvents(issue, field));
       }
+    }
+
+    if (path === "/api/settings" && method === "GET") {
+      return jsonResponse(settings);
+    }
+
+    if (path === "/api/settings" && method === "PUT") {
+      // The mock only pretends: a layout flip updates the state it reports,
+      // without moving anything.
+      if (typeof body.layout === "string") settings.layout = body.layout as Layout;
+      if (typeof body.numbering === "string") settings.numbering = body.numbering as NumberingPolicy;
+      return jsonResponse(settings);
     }
 
     if (path === "/api/markdown/render" && method === "POST") {

@@ -8,6 +8,8 @@
 export type IssueType = "task" | "bug" | "story" | "spike" | "chore";
 export type Priority = "p0" | "p1" | "p2" | "p3" | "p4";
 export type StatusCategory = "todo" | "doing" | "done";
+export type Layout = "root" | "dotdir";
+export type NumberingPolicy = "local" | "on-merge";
 
 import type { BoardColumnDto as WireBoardColumnDto } from "./schema/BoardColumnDto";
 import type { BoardDto as WireBoardDto } from "./schema/BoardDto";
@@ -20,6 +22,8 @@ import type { IssueDto as WireIssueDto } from "./schema/IssueDto";
 import type { IssueListDto as WireIssueListDto } from "./schema/IssueListDto";
 import type { NewIssueDto } from "./schema/NewIssueDto";
 import type { SchemaDto as WireSchemaDto } from "./schema/SchemaDto";
+import type { SetSettingsDto } from "./schema/SetSettingsDto";
+import type { SettingsDto as WireSettingsDto } from "./schema/SettingsDto";
 import type { StatusDto as WireStatusDto } from "./schema/StatusDto";
 import type { StatusInfo as WireStatusInfo } from "./schema/StatusInfo";
 import type { TransitionDto } from "./schema/TransitionDto";
@@ -64,6 +68,14 @@ export interface BoardDto extends WireBoardDto {
 }
 
 export type StatusInfo = WireStatusInfo;
+
+export interface SettingsDto extends WireSettingsDto {
+  layout: Layout;
+  numbering: NumberingPolicy;
+}
+
+// Absent fields are untouched — the same contract as the issue patch.
+export type SetSettingsInput = SetSettingsDto;
 
 export interface IssueListDto extends WireIssueListDto {
   items: IssueDto[];

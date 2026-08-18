@@ -8,7 +8,8 @@ export type Route =
   | { name: "board" }
   | { name: "issues" }
   | { name: "search"; q: string }
-  | { name: "issue"; id: string };
+  | { name: "issue"; id: string }
+  | { name: "settings" };
 
 export function routeToHash(route: Route): string {
   switch (route.name) {
@@ -20,6 +21,8 @@ export function routeToHash(route: Route): string {
       return `#/search?q=${encodeURIComponent(route.q)}`;
     case "issue":
       return `#/issue/${encodeURIComponent(route.id)}`;
+    case "settings":
+      return "#/settings";
   }
 }
 
@@ -36,6 +39,7 @@ export function parseHash(hash: string): Route {
     return { name: "search", q };
   }
   if (first === "issues") return { name: "issues" };
+  if (first === "settings") return { name: "settings" };
   return { name: "board" };
 }
 
