@@ -18,7 +18,7 @@ use tokio::sync::broadcast;
 
 use crate::dto::{
     self, BoardColumnDto, BoardDto, BoardIssueDto, CommentDto, FieldEventDto, IssueDto,
-    IssueListDto, RenderInputDto, RenderOutputDto, SchemaDto, StatusInfo,
+    IssueListDto, RenderInputDto, RenderOutputDto, SchemaDto, SettingsDto, StatusInfo,
 };
 use crate::state::AppState;
 
@@ -42,6 +42,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         )
         .route("/api/issues/{id}/history", get(get_history))
         .route("/api/board", get(get_board))
+        .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/markdown/render", post(render_markdown))
         .route("/api/events", get(events))
         .fallback(serve_uri)
@@ -127,6 +128,13 @@ impl From<ServerError> for ApiError {
             // A missing issue is the request naming something that isn't
             // there — the same 404 the resolver produces directly.
             ServerError::Dit(DitError::NotFound(m)) => ApiError::not_found(m),
+            // The facade refusing a takeover (migrating a dirty tree, a
+            // layout the workspace already has) is a state the client can
+            // surface and retry from — not a server fault.
+            ServerError::Dit(err @ DitError::Refuse(_)) => ApiError {
+                status: StatusCode::CONFLICT,
+                message: err.to_string(),
+            },
             ServerError::Dit(e) => ApiError {
                 status: StatusCode::INTERNAL_SERVER_ERROR,
                 message: e.to_string(),
@@ -291,6 +299,9 @@ async fn create_issue(
             kind,
             status: input.status,
             priority,
+            // The number is facade-owned (ADR 0007): `numbering: local`
+            // assigns it in the transaction, and it is never client input.
+            number: None,
             // The reporter is who clicked, not who the request claims —
             // identity is server-side state, not client input.
             reporter: (!me.is_empty()).then(|| me.clone()),
@@ -447,6 +458,7 @@ async fn get_board(State(state): State<Arc<AppState>>) -> Result<Json<BoardDto>,
                         .map(|hit| BoardIssueDto {
                             id: hit.issue.id.as_str().to_owned(),
                             short_ref: hit.issue.id.short_ref().as_str().to_owned(),
+                            number: hit.issue.number,
                             title: hit.issue.title.clone(),
                             priority: hit.issue.priority.map(dto::priority_str),
                             kind: dto::kind_str(hit.issue.kind),
@@ -462,6 +474,51 @@ async fn get_board(State(state): State<Arc<AppState>>) -> Result<Json<BoardDto>,
     })
     .await?;
     Ok(Json(board))
+}
+
+// -- settings ------------------------------------------------------------------
+
+async fn get_settings(State(state): State<Arc<AppState>>) -> Result<Json<SettingsDto>, ApiError> {
+    let settings = read_dit(&state, |dit| Ok(dto::settings_dto(dit))).await?;
+    Ok(Json(settings))
+}
+
+/// Change layout and/or numbering. Both values are validated before anything
+/// is written; numbering applies first (a config-only commit), then the
+/// layout migration — which moves files and rebuilds the index, and may
+/// refuse (dirty tree) after the numbering change already landed. The panel
+/// sends one field at a time, and a refusal carries its own way out.
+async fn put_settings(
+    State(state): State<Arc<AppState>>,
+    Json(input): Json<dto::SetSettingsDto>,
+) -> Result<Json<SettingsDto>, ApiError> {
+    let layout = match &input.layout {
+        Some(text) => Some(
+            dto::parse_layout(text)
+                .ok_or_else(|| format!("`{text}` is not a layout (root or dotdir)"))
+                .map_err(ServerError::BadRequest)?,
+        ),
+        None => None,
+    };
+    let numbering = match &input.numbering {
+        Some(text) => Some(
+            dto::parse_numbering(text)
+                .ok_or_else(|| format!("`{text}` is not a numbering policy (local or on-merge)"))
+                .map_err(ServerError::BadRequest)?,
+        ),
+        None => None,
+    };
+    let settings = write_dit(&state, move |dit| {
+        if let Some(n) = numbering {
+            dit.set_numbering(n)?;
+        }
+        if let Some(l) = layout {
+            dit.migrate_layout(l)?;
+        }
+        Ok(dto::settings_dto(dit))
+    })
+    .await?;
+    Ok(Json(settings))
 }
 
 async fn render_markdown(

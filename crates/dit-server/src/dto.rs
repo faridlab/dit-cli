@@ -5,8 +5,8 @@
 //! a wire change and a docs change never happen in separate universes.
 
 use dit_core::{
-    render_markdown, Comment, FieldPatch, IndexedIssue, Issue, IssueKind, Priority,
-    StoredFieldEvent, Workflow, WorkflowStatus,
+    render_markdown, Comment, DataLayout, FieldPatch, IndexedIssue, Issue, IssueKind, Numbering,
+    Priority, StoredFieldEvent, Workflow, WorkflowStatus,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -80,6 +80,9 @@ pub struct IssueListDto {
 pub struct IssueDto {
     pub id: String,
     pub short_ref: String,
+    /// The human-friendly handle (ADR 0007): `Some(12)` displays as `#12`.
+    /// Absent until assigned — never invented client-side.
+    pub number: Option<u32>,
     pub title: String,
     #[serde(rename = "type")]
     #[ts(rename = "type")]
@@ -145,6 +148,7 @@ pub struct BoardColumnDto {
 pub struct BoardIssueDto {
     pub id: String,
     pub short_ref: String,
+    pub number: Option<u32>,
     pub title: String,
     pub priority: Option<String>,
     #[serde(rename = "type")]
@@ -246,6 +250,34 @@ pub struct RenderInputDto {
     pub text: String,
 }
 
+/// The workspace's user-facing configuration (ADRs 0005 + 0007) — the thing
+/// `dit ui` shows so the layout is never a surprise and never a CLI-only
+/// knob. Both fields are closed enums on the wire; there is no free-form
+/// path to mistype into.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct SettingsDto {
+    /// `root` or `dotdir` — where issue content lives.
+    pub layout: String,
+    /// `local` or `on-merge` — when an issue gets its `number:`.
+    pub numbering: String,
+    /// Template names creation can seed a body from.
+    pub templates: Vec<String>,
+}
+
+/// The change request. Absent fields are untouched — the same contract as
+/// the issue patch.
+#[derive(Debug, Deserialize, Default, TS)]
+#[ts(export)]
+pub struct SetSettingsDto {
+    #[serde(default)]
+    #[ts(optional)]
+    pub layout: Option<String>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub numbering: Option<String>,
+}
+
 #[derive(Debug, Serialize, TS)]
 #[ts(export)]
 pub struct RenderOutputDto {
@@ -285,10 +317,28 @@ pub fn parse_kind(text: &str) -> Option<IssueKind> {
     }
 }
 
+pub fn parse_layout(text: &str) -> Option<DataLayout> {
+    DataLayout::parse(text)
+}
+
+pub fn parse_numbering(text: &str) -> Option<Numbering> {
+    Numbering::parse(text)
+}
+
+/// The settings projection: read straight off the facade, no interpretation.
+pub fn settings_dto(dit: &dit_core::Dit) -> SettingsDto {
+    SettingsDto {
+        layout: dit.layout().as_str().to_owned(),
+        numbering: dit.config().numbering.as_str().to_owned(),
+        templates: dit.templates(),
+    }
+}
+
 pub fn issue_dto(issue: &Issue) -> IssueDto {
     IssueDto {
         id: issue.id.as_str().to_owned(),
         short_ref: issue.id.short_ref().as_str().to_owned(),
+        number: issue.number,
         title: issue.title.clone(),
         kind: kind_str(issue.kind),
         status: issue.status.clone(),
@@ -390,6 +440,9 @@ pub fn to_field_patch(dto: FieldPatchDto) -> Result<FieldPatch, String> {
         kind,
         status: dto.status,
         priority,
+        // Number stays facade-owned (ADR 0007): the API offers no renumber
+        // hatch — repairs go through the CLI's field edit, deliberately.
+        number: None,
         assignees: dto.assignees,
         labels: dto.labels,
         reporter: dto.reporter,

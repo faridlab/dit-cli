@@ -223,3 +223,74 @@ async fn schema_describes_the_workflow_the_server_validates_against() {
     let transitions = schema["workflow"]["transitions"].as_array().unwrap();
     assert!(!transitions.is_empty());
 }
+
+#[tokio::test]
+async fn settings_expose_the_layout_and_the_panel_can_change_it() {
+    let (app, tmp) = test_app();
+
+    let (status, settings, _) = req(&app, "GET", "/api/settings", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(settings["layout"], "root");
+    assert_eq!(settings["numbering"], "local");
+    let templates = settings["templates"].as_array().unwrap();
+    assert!(templates.iter().any(|t| t == "bug"), "{templates:?}");
+
+    // A policy flip takes effect on the very next create: no number.
+    let (status, _, _) = req(
+        &app,
+        "PUT",
+        "/api/settings",
+        Some(json!({ "numbering": "on-merge" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, created, _) = req(
+        &app,
+        "POST",
+        "/api/issues",
+        Some(json!({ "title": "Bot will number me" })),
+    )
+    .await;
+    assert_eq!(created["number"], Value::Null, "{created}");
+
+    // The layout change is the guided migration, over the wire.
+    let (status, settings, _) = req(
+        &app,
+        "PUT",
+        "/api/settings",
+        Some(json!({ "layout": "dotdir" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(settings["layout"], "dotdir");
+    assert!(
+        tmp.path().join(".dit/issues").is_dir(),
+        "content moved under .dit/"
+    );
+    assert!(!tmp.path().join("issues").exists());
+    // And the workspace still answers after the rebuild.
+    let (_, list, _) = req(&app, "GET", "/api/issues", None).await;
+    assert_eq!(list["total"], 1, "{list}");
+
+    // A refusal is a 409 that carries its own way out, not a 500.
+    let (status, _, text) = req(
+        &app,
+        "PUT",
+        "/api/settings",
+        Some(json!({ "layout": "dotdir" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{text}");
+    assert!(text.contains("already on the"), "{text}");
+
+    // A bogus enum is a 400 naming the value.
+    let (status, _, text) = req(
+        &app,
+        "PUT",
+        "/api/settings",
+        Some(json!({ "numbering": "whenever" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    assert!(text.contains("`whenever` is not a numbering"), "{text}");
+}
