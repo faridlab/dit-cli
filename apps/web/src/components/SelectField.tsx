@@ -31,7 +31,7 @@ export function SelectField({
       <SelectPrimitive.Trigger
         aria-label={ariaLabel}
         className={cn(
-          "inline-flex h-7 w-full items-center justify-between gap-1 rounded border border-zinc-700 bg-zinc-900 px-2 text-left text-xs text-zinc-200 hover:border-zinc-500 disabled:opacity-50",
+          "inline-flex h-[30px] w-full items-center justify-between gap-1 rounded-md border border-ctl bg-card px-2 text-left text-xs text-zinc-200 hover:border-zinc-500 focus:border-accent focus:outline-none disabled:opacity-50",
           className,
         )}
       >
@@ -44,18 +44,18 @@ export function SelectField({
         <SelectPrimitive.Content
           position="popper"
           sideOffset={4}
-          className="z-50 max-h-72 overflow-hidden rounded-md border border-zinc-700 bg-zinc-900 shadow-xl"
+          className="z-50 max-h-72 overflow-hidden rounded-md border border-ctl bg-card shadow-[0_25px_50px_-12px_rgba(0,0,0,0.8)]"
         >
           <SelectPrimitive.Viewport className="p-1">
             {options.map((option) => (
               <SelectPrimitive.Item
                 key={option.value}
                 value={option.value}
-                className="flex cursor-default select-none items-center justify-between rounded px-2 py-1 text-xs text-zinc-300 outline-none data-highlighted:bg-zinc-800 data-highlighted:text-zinc-100 data-state-checked:text-zinc-100"
+                className="flex cursor-default select-none items-center justify-between rounded px-2 py-1 text-xs text-zinc-300 outline-none data-highlighted:bg-edge data-highlighted:text-zinc-100 data-state-checked:text-zinc-100"
               >
                 <SelectPrimitive.ItemText>{option.label}</SelectPrimitive.ItemText>
                 <SelectPrimitive.ItemIndicator>
-                  <Check className="size-3.5 text-sky-400" aria-hidden />
+                  <Check className="size-3.5 text-teal-400" aria-hidden />
                 </SelectPrimitive.ItemIndicator>
               </SelectPrimitive.Item>
             ))}

@@ -12,12 +12,59 @@
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
   --radius: 0.375rem;
+
+  /* Surfaces, from the page inward. */
+  --color-app: #09090b;
+  --color-panel: #0b0b0d;
+  --color-card: #18181b;
+  --color-edge: #27272a;
+  --color-ctl: #3f3f46;
+  --color-dim: #52525b;
+  --color-rowline: #101012;
+
+  /* The one saturated color in the product: primary actions and selection. */
+  --color-accent: #0f766e;
+  --color-accent-hi: #0d9488;
+
+  /* Status pills and warnings are translucent so text over them stays legible. */
+  --color-done-bg: rgba(2, 44, 34, 0.5);
+  --color-done-line: rgba(6, 78, 59, 0.6);
+  --color-done-text: #34d399;
+  --color-doing-bg: rgba(8, 47, 73, 0.5);
+  --color-doing-line: rgba(12, 74, 110, 0.6);
+  --color-doing-text: #38bdf8;
+  --color-todo-bg: rgba(39, 39, 42, 0.6);
+  --color-todo-line: #3f3f46;
+  --color-todo-text: #a1a1aa;
+  --color-warn-bg: rgba(69, 26, 3, 0.35);
+  --color-warn-line: rgba(120, 53, 15, 0.8);
+  --color-warn-text: #fde68a;
+  --color-warn-text-dim: #fcd34d;
+  --color-context: #5eead4;
 }
 
 /* The product is dark-only by design; declaring it makes native controls
    (scrollbars, date pickers, selection) match. */
 :root {
   color-scheme: dark;
+}
+
+/* Slim dark scrollbars: the panes are dense and a platform-bright bar would
+   be the loudest element on screen. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #27272a transparent;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #27272a;
+  border-radius: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 /* A tool people live in all day: motion is a distraction, not delight. */

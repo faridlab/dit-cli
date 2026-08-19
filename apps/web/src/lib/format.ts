@@ -98,16 +98,53 @@ export function typeLetter(type: IssueType): string | null {
 export function typeBadgeClass(type: IssueType): string {
   switch (type) {
     case "bug":
-      return "text-red-400 border-red-900";
+      return "bg-red-900 text-red-400";
     case "story":
-      return "text-violet-400 border-violet-900";
+      return "bg-violet-950 text-violet-400";
     case "spike":
-      return "text-amber-400 border-amber-900";
+      return "bg-amber-900 text-amber-400";
     case "chore":
-      return "text-zinc-400 border-zinc-700";
+      return "bg-zinc-700 text-zinc-400";
     default:
-      return "text-zinc-500 border-zinc-700";
+      return "bg-zinc-700 text-zinc-500";
   }
+}
+
+/** Due dates read as neutral until they are today — then they turn orange,
+ * the only escalation color outside priorities. Past due escalates too. */
+export function dueTone(iso: string | null): string {
+  if (!iso) return "text-zinc-500";
+  const today = new Date().toISOString().slice(0, 10);
+  return iso.slice(0, 10) <= today ? "text-orange-400" : "text-zinc-500";
+}
+
+/** Compact due copy for dense rows: "today", "in 3d", "2d overdue". */
+export function dueText(iso: string | null): string {
+  if (!iso) return "—";
+  const today = new Date().toISOString().slice(0, 10);
+  const day = iso.slice(0, 10);
+  if (day === today) return "today";
+  const diff = Math.round((Date.parse(day) - Date.parse(today)) / 86_400_000);
+  if (Number.isNaN(diff)) return iso;
+  if (diff > 0) return `in ${diff}d`;
+  return `${-diff}d overdue`;
+}
+
+/** The context a piece of work happens in (@computer, @home, …), encoded as
+ * a label so it stays plain data in git. Feeds the Home grouping. */
+export function contextOf(labels: ReadonlyArray<string>): string | null {
+  for (const label of labels) {
+    if (label.startsWith("context:")) return label.slice("context:".length) || null;
+  }
+  return null;
+}
+
+/** The effort an issue takes right now (high/medium/low), as a label. */
+export function energyOf(labels: ReadonlyArray<string>): string {
+  for (const label of labels) {
+    if (label.startsWith("energy:")) return label.slice("energy:".length);
+  }
+  return "—";
 }
 
 // Numeric rank so "sort by priority" means something; higher = hotter.
