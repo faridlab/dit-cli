@@ -3,7 +3,7 @@
 // no hamburger, no collapsing. The header carries the workspace identity
 // (badge, name, branch) so every view answers "where am I" without asking.
 
-import { Columns3, House, ListTodo, Plus, Search, Settings } from "lucide-react";
+import { Columns3, FileText, House, ListTodo, Plus, Search, Settings } from "lucide-react";
 import type { Route } from "../lib/router";
 import { useStatus } from "../lib/queries";
 import { cn } from "../lib/cn";
@@ -20,6 +20,12 @@ const ITEMS: NavItem[] = [
   { label: "Home", route: { name: "home" }, icon: House, match: (r) => r.name === "home" },
   { label: "Board", route: { name: "board" }, icon: Columns3, match: (r) => r.name === "board" },
   { label: "Issues", route: { name: "issues" }, icon: ListTodo, match: (r) => r.name === "issues" },
+  {
+    label: "Docs",
+    route: { name: "docs", p: null },
+    icon: FileText,
+    match: (r) => r.name === "docs",
+  },
   {
     label: "Search",
     route: { name: "search", q: "" },

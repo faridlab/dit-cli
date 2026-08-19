@@ -12,6 +12,7 @@ import { NewIssueDialog } from "./NewIssueDialog";
 import { Sidebar } from "./Sidebar";
 import { StatusBar } from "./StatusBar";
 import { BoardView } from "../views/BoardView";
+import { DocsView } from "../views/DocsView";
 import { HomeView } from "../views/HomeView";
 import { IssueDetailView } from "../views/IssueDetailView";
 import { IssuesView } from "../views/IssuesView";
@@ -66,6 +67,9 @@ export function AppShell() {
           ) : null}
           {route.name === "board" ? <BoardView onOpen={openIssue} /> : null}
           {route.name === "issues" ? <IssuesView onOpen={openIssue} /> : null}
+          {route.name === "docs" ? (
+            <DocsView p={route.p} onSelect={(p) => navigate({ name: "docs", p })} />
+          ) : null}
           {route.name === "search" ? (
             <SearchView
               q={route.q}

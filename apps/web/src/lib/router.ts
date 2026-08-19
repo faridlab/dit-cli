@@ -8,6 +8,7 @@ export type Route =
   | { name: "home" }
   | { name: "board" }
   | { name: "issues" }
+  | { name: "docs"; p: string | null }
   | { name: "search"; q: string }
   | { name: "issue"; id: string }
   | { name: "settings" };
@@ -20,6 +21,8 @@ export function routeToHash(route: Route): string {
       return "#/board";
     case "issues":
       return "#/issues";
+    case "docs":
+      return route.p === null ? "#/docs" : `#/docs?p=${encodeURIComponent(route.p)}`;
     case "search":
       return `#/search?q=${encodeURIComponent(route.q)}`;
     case "issue":
@@ -44,6 +47,12 @@ export function parseHash(hash: string): Route {
   if (first === "home") return { name: "home" };
   if (first === "board") return { name: "board" };
   if (first === "issues") return { name: "issues" };
+  if (first === "docs") {
+    // The selected page rides in `p` as the full `docs/…` path — kept in
+    // the URL so a reload (or a shared link) reopens the same page.
+    const p = new URLSearchParams(query ?? "").get("p");
+    return { name: "docs", p: p === null || p.length === 0 ? null : p };
+  }
   if (first === "settings") return { name: "settings" };
   // Home is the landing view: capture, triage, orient — the board is one
   // click away for people who want to go straight to moving cards.

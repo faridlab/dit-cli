@@ -16,6 +16,8 @@ import type { BoardDto as WireBoardDto } from "./schema/BoardDto";
 import type { BoardIssueDto as WireBoardIssueDto } from "./schema/BoardIssueDto";
 import type { CommentDto as WireCommentDto } from "./schema/CommentDto";
 import type { DerivedDto } from "./schema/DerivedDto";
+import type { DocBodyDto as WireDocBodyDto } from "./schema/DocBodyDto";
+import type { DocEntryDto as WireDocEntryDto } from "./schema/DocEntryDto";
 import type { FieldEventDto as WireFieldEventDto } from "./schema/FieldEventDto";
 import type { FieldPatchDto } from "./schema/FieldPatchDto";
 import type { IssueDto as WireIssueDto } from "./schema/IssueDto";
@@ -38,6 +40,11 @@ export interface IssueDto extends WireIssueDto {
 
 export type CommentDto = WireCommentDto;
 export type FieldEventDto = WireFieldEventDto;
+
+// §13 pages: plain Markdown under the doc roots; `updated_ms` is display
+// metadata (the file's mtime), the real history is git.
+export type DocEntryDto = WireDocEntryDto;
+export type DocBodyDto = WireDocBodyDto;
 
 export interface StatusDto extends WireStatusDto {
   category: StatusCategory;

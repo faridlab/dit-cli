@@ -17,6 +17,8 @@ import { setToken, getToken } from "./auth";
 import type {
   BoardDto,
   CommentDto,
+  DocBodyDto,
+  DocEntryDto,
   FieldEventDto,
   IssueDto,
   IssueType,
@@ -705,6 +707,53 @@ const settings: SettingsDto = {
   templates: ["default", "bug", "story", "spike"],
 };
 
+// §13 pages — a few per root so the docs rail, the editor and delete can
+// all be hand-checked against the mock. `updated_ms` values are fixed so
+// the relative timestamps in the rail are stable between reloads.
+const DAY_MS = 24 * 60 * 60 * 1000;
+const MOCK_NOW = Date.parse("2026-08-19T12:00:00Z");
+function daysAgo(days: number): number {
+  return MOCK_NOW - days * DAY_MS;
+}
+
+const DOC_BODIES = new Map<string, string>([
+  [
+    "docs/architecture.md",
+    "# Architecture\n\nThe repo is the database: issues are Markdown files, SQLite is a disposable index, and every write is one commit.\n\n- Local-first, single writer\n- `dit fmt` owns the canonical formatting\n- The merge driver never silently drops a side\n",
+  ],
+  [
+    "docs/adr-0010-doc-editor-api.md",
+    "# ADR 0010 — the doc editor\n\nReads walk the file tree; writes go through `Transaction` like every other change. Paths are validated by `DocPath` in the pure core.\n",
+  ],
+  [
+    "notes/2026-08-19-standup.md",
+    "# Standup — Aug 19\n\n- board route fixed (parseHash was missing the branch)\n- docs editor API merged\n- next: rename support needs `git mv` semantics\n",
+  ],
+  [
+    "epics/editor-loop.md",
+    "# Epic — the editing loop\n\nCapture fast, triage honestly, never leave the keyboard.\n\n## Done\n\n- command palette\n- body editor\n\n## Open\n\n- docs editor\n",
+  ],
+]);
+
+const DOC_ENTRIES: DocEntryDto[] = [
+  { path: "docs/architecture.md", updated_ms: daysAgo(2), bytes: 320 },
+  { path: "docs/adr-0010-doc-editor-api.md", updated_ms: daysAgo(1), bytes: 214 },
+  { path: "epics/editor-loop.md", updated_ms: daysAgo(6), bytes: 268 },
+  { path: "notes/2026-08-19-standup.md", updated_ms: daysAgo(0), bytes: 196 },
+].sort((a, b) => (a.path < b.path ? -1 : 1));
+
+/** The DocPath rules the server enforces, mirrored so a bad path fails in
+ *  dev exactly the way production fails it. */
+function mockDocPathError(path: string): string | null {
+  const root = path.split("/")[0] ?? "";
+  if (!["docs", "notes", "epics", "changelogs"].includes(root)) {
+    return `\`${path}\` does not start with one of docs/, notes/, epics/, changelogs/`;
+  }
+  if (!path.endsWith(".md")) return `\`${path}\` is not a .md page`;
+  if (path.includes("..") || path.startsWith("/")) return `\`${path}\` is not a path the editor may write`;
+  return null;
+}
+
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
@@ -910,6 +959,48 @@ export function installMockApi(): void {
 
     if (path === "/api/markdown/render" && method === "POST") {
       return jsonResponse({ html: naiveRender(String(body.text ?? "")) });
+    }
+
+    if (path === "/api/docs" && method === "GET") {
+      return jsonResponse(DOC_ENTRIES);
+    }
+
+    const docMatch = path.match(/^\/api\/docs\/(.+)$/);
+    if (docMatch) {
+      const docPath = decodeURIComponent(docMatch[1] ?? "");
+      if (method === "GET") {
+        const body = DOC_BODIES.get(docPath);
+        if (body === undefined) {
+          return jsonResponse({ error: `no page matches \`${docPath}\`` }, 404);
+        }
+        const page: DocBodyDto = { path: docPath, body };
+        return jsonResponse(page);
+      }
+      if (method === "PUT") {
+        const problem = mockDocPathError(docPath);
+        if (problem) return jsonResponse({ error: problem }, 400);
+        const text = String(body.body ?? "");
+        DOC_BODIES.set(docPath, text);
+        const existing = DOC_ENTRIES.find((entry) => entry.path === docPath);
+        if (existing) {
+          existing.updated_ms = Date.now();
+          existing.bytes = text.length;
+        } else {
+          DOC_ENTRIES.push({ path: docPath, updated_ms: Date.now(), bytes: text.length });
+          DOC_ENTRIES.sort((a, b) => (a.path < b.path ? -1 : 1));
+        }
+        const page: DocBodyDto = { path: docPath, body: text };
+        return jsonResponse(page);
+      }
+      if (method === "DELETE") {
+        if (!DOC_BODIES.has(docPath)) {
+          return jsonResponse({ error: `no page matches \`${docPath}\`` }, 404);
+        }
+        DOC_BODIES.delete(docPath);
+        const index = DOC_ENTRIES.findIndex((entry) => entry.path === docPath);
+        if (index >= 0) DOC_ENTRIES.splice(index, 1);
+        return new Response(null, { status: 204 });
+      }
     }
 
     return jsonResponse({ error: `mock does not implement ${method} ${path}` }, 404);

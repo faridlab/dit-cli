@@ -6,6 +6,8 @@ import { getToken } from "./auth";
 import type {
   BoardDto,
   CommentDto,
+  DocBodyDto,
+  DocEntryDto,
   FieldEventDto,
   FieldPatch,
   IssueDto,
@@ -57,6 +59,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new ApiError(message, res.status);
   }
+
+  // A 204 says "done, nothing to say" — DELETE is the only caller today.
+  if (res.status === 204) return undefined as T;
 
   return (await res.json()) as T;
 }
@@ -124,6 +129,35 @@ export function createIssue(input: NewIssueInput): Promise<IssueDto> {
 
 export function getBoard(): Promise<BoardDto> {
   return request<BoardDto>("/api/board");
+}
+
+// -- docs (ADR 0010) ----------------------------------------------------------
+
+/** The path is `docs/…`-shaped with slug-safe segments, so encoding each
+ *  segment separately keeps the slashes the wildcard route needs. */
+function docUrl(path: string): string {
+  return `/api/docs/${path.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+export function listDocs(): Promise<DocEntryDto[]> {
+  return request<DocEntryDto[]>("/api/docs");
+}
+
+export function getDoc(path: string): Promise<DocBodyDto> {
+  return request<DocBodyDto>(docUrl(path));
+}
+
+/** One save is one commit; the response carries the formatted body that
+ *  actually landed, so the editor can show the canonical form. */
+export function putDoc(path: string, body: string): Promise<DocBodyDto> {
+  return request<DocBodyDto>(docUrl(path), {
+    method: "PUT",
+    body: JSON.stringify({ body }),
+  });
+}
+
+export function deleteDoc(path: string): Promise<void> {
+  return request<void>(docUrl(path), { method: "DELETE" });
 }
 
 export function getSettings(): Promise<SettingsDto> {

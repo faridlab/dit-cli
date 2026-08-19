@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useState } from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { Command } from "cmdk";
-import { Columns3, House, ListTodo, Plus, Search } from "lucide-react";
+import { Columns3, FileText, House, ListTodo, Plus, Search } from "lucide-react";
 import { useIssues } from "../lib/queries";
 import { useDebouncedValue } from "../lib/hooks";
 import type { Route } from "../lib/router";
@@ -17,6 +17,7 @@ const NAV_ITEMS: Array<{ label: string; route: Route; keywords: string }> = [
   { label: "Go to Home", route: { name: "home" }, keywords: "home dashboard inbox triage" },
   { label: "Go to Board", route: { name: "board" }, keywords: "board kanban columns" },
   { label: "Go to Issues", route: { name: "issues" }, keywords: "issues list table" },
+  { label: "Go to Docs", route: { name: "docs", p: null }, keywords: "docs pages wiki markdown" },
   { label: "Go to Search", route: { name: "search", q: "" }, keywords: "search dql query" },
 ];
 
@@ -122,6 +123,8 @@ export function CommandPalette({
                         <Columns3 className="size-4 text-zinc-500" aria-hidden />
                       ) : item.route.name === "issues" ? (
                         <ListTodo className="size-4 text-zinc-500" aria-hidden />
+                      ) : item.route.name === "docs" ? (
+                        <FileText className="size-4 text-zinc-500" aria-hidden />
                       ) : (
                         <Search className="size-4 text-zinc-500" aria-hidden />
                       )}

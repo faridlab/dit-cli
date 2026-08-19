@@ -19,6 +19,8 @@ export const queryKeys = {
   schema: ["schema"] as const,
   board: ["board"] as const,
   settings: ["settings"] as const,
+  docs: ["docs"] as const,
+  doc: (path: string) => ["doc", path] as const,
   issues: (params: { q?: string; limit?: number; offset?: number }) =>
     ["issues", params.q ?? "", params.limit ?? 0, params.offset ?? 0] as const,
   issue: (id: string) => ["issue", id] as const,
@@ -38,6 +40,8 @@ export function invalidateWorkspaceData(client: QueryClient) {
     ["issue"],
     ["comments"],
     ["history"],
+    ["docs"],
+    ["doc"],
   ]) {
     void client.invalidateQueries({ queryKey: prefix });
   }
@@ -69,6 +73,52 @@ export function useSettings() {
     queryKey: queryKeys.settings,
     queryFn: api.getSettings,
     staleTime: STALE_TIME_MS,
+  });
+}
+
+// -- docs (ADR 0010) ------------------------------------------------------------
+
+export function useDocs() {
+  return useQuery({ queryKey: queryKeys.docs, queryFn: api.listDocs, staleTime: STALE_TIME_MS });
+}
+
+/** `path` null = the docs landing state (no page selected), query disabled. */
+export function useDoc(path: string | null) {
+  return useQuery({
+    queryKey: queryKeys.doc(path ?? ""),
+    queryFn: () => api.getDoc(path ?? ""),
+    enabled: path !== null,
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+/** Save (create or overwrite) a page. The response is the formatted body
+ *  that landed, cached directly so the editor snaps to the canonical form. */
+export function usePutDoc() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ path, body }: { path: string; body: string }) => api.putDoc(path, body),
+    onSuccess: (saved) => {
+      void client.setQueryData(queryKeys.doc(saved.path), saved);
+      void client.invalidateQueries({ queryKey: queryKeys.docs });
+    },
+    // A bad path is a 400 with a message that says exactly which segment is
+    // wrong — surface it verbatim so the inline form can show it.
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : String(error));
+    },
+  });
+}
+
+export function useDeleteDoc() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (path: string) => api.deleteDoc(path),
+    onSuccess: (_data, path) => {
+      client.removeQueries({ queryKey: queryKeys.doc(path) });
+      void client.invalidateQueries({ queryKey: queryKeys.docs });
+    },
+    onError: reportError("Could not delete page"),
   });
 }
 
