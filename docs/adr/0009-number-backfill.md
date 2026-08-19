@@ -43,8 +43,13 @@ references people have already made.
   which is what everyone expects anyway.
 - **Creation order** within the unnumbered set: ULID ascending. A ULID's
   leading bits are its timestamp and Crockford base32 preserves order (ADR
-  0001), so id-string order **is** creation order — same-millisecond ties
-  break by random bits, deterministically. No wall clock is consulted.
+  0001), and minting is monotonic: ids minted inside one transaction share
+  that transaction's single clock reading, and each mint steps above the
+  previous id (through the short-ref window, so folder and comment file
+  names move with it) instead of drawing fresh entropy. Id-string order is
+  therefore creation order — not by encoding alone, which shuffles a
+  same-millisecond burst, but because minting never emits an id that sorts
+  below one minted before it. No wall clock is consulted.
 - **Same cursor as creation.** The sequence continues from the same
   `max(living) + 1` the creation path uses (ADR 0007). Consequence inherited
   from there, stated plainly: deleting the highest-numbered issue frees its
@@ -77,7 +82,14 @@ references people have already made.
 
 No new git claim — the mechanism is ordinary frontmatter edits through the
 existing Transaction + merge machinery (§5.3), already verified. The ordering
-claim (ULID string order == creation order) is the encoding property ADR 0001
-adopted Crockford base32 for, and the indexer's month shards already rely on
-it. The pilot is itself the end-to-end fixture: 30 unnumbered issues →
-`dit renumber` → `#1..#30` in creation order, one commit.
+claim (ULID string order == creation order) needs more than the encoding ADR
+0001 adopted Crockford base32 for: the encoding alone sorts a
+same-millisecond burst randomly, which is exactly how the original backfill
+fixture caught this ADR overclaiming. `IssueId::from_parts_after` (dit-model)
+plus the per-transaction mint cursor (dit-store) close the gap, with fixtures
+on both sides — `ids_minted_in_one_transaction_keep_creation_order`,
+`comments_added_in_one_transaction_read_back_in_addition_order`, and this
+ADR's own backfill test. The indexer's month shards already rely on the
+timestamp half of the property. The pilot is itself the end-to-end fixture:
+30 unnumbered issues → `dit renumber` → `#1..#30` in creation order, one
+commit.

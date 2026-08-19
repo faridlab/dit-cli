@@ -126,16 +126,65 @@ impl IssueId {
         for byte in random {
             entropy = (entropy << 8) | byte as u128;
         }
-        // 48 bits of time above 80 bits of randomness, big-endian, encoded
-        // into 26 base32 characters (130 bits of text for a 128-bit value —
-        // so the leading character stays within 0-7).
-        let mut value = (timestamp_ms as u128) << 80 | entropy;
+        // 48 bits of time above 80 bits of randomness, big-endian.
+        IssueId::from_u128((timestamp_ms as u128) << 80 | entropy)
+    }
+
+    /// Build the next ID minted after `prev` for the same clock source.
+    ///
+    /// `from_parts` alone cannot promise that id order is mint order: two
+    /// random draws in the same millisecond sort at random, yet everything
+    /// downstream (renumber's append-only backfill, comment file listing)
+    /// reads id order as creation order. When the candidate does not clear
+    /// `prev` — same millisecond with lower entropy, or a clock that read
+    /// the same or went backwards — the value continues from `prev` one
+    /// step up, so it always sorts after it.
+    ///
+    /// The step lands on the first character of the short ref, not at the
+    /// bottom of the value. Issue folders and comment file names are built
+    /// from the id's leading characters (the timestamp plus the start of
+    /// the random component), so a plain +1 — which only moves the tail —
+    /// hands consecutive mints the same short ref and the same file name.
+    /// Stepping on the short ref's first character moves every one of those
+    /// windows; a carry out of it rolls into the timestamp, still strictly
+    /// after `prev`, which is the actual contract.
+    pub fn from_parts_after(prev: &IssueId, timestamp_ms: u64, random: [u8; 10]) -> IssueId {
+        const NAME_WINDOW_LOW_BIT: u128 = ((ULID_LEN - 1 - SHORT_START) * 5) as u128;
+        let candidate = IssueId::from_parts(timestamp_ms, random);
+        if candidate > *prev {
+            return candidate;
+        }
+        let prev_value = prev.to_u128();
+        // Saturating can only fail to advance at the maximum representable
+        // id, which a 48-bit timestamp and 80 random bits cannot reach in
+        // practice — fall back to the candidate there rather than mint a
+        // duplicate.
+        let next = prev_value.saturating_add(1 << NAME_WINDOW_LOW_BIT);
+        if next > prev_value {
+            IssueId::from_u128(next)
+        } else {
+            candidate
+        }
+    }
+
+    /// Encode the full 128-bit value (time above entropy) as base32 text.
+    fn from_u128(mut value: u128) -> IssueId {
+        // 26 base32 characters carry 130 bits for a 128-bit value, so the
+        // leading character stays within 0-7.
         let mut out = [0u8; ULID_LEN];
         for i in (0..ULID_LEN).rev() {
             out[i] = ALPHABET[(value & 0x1F) as usize];
             value >>= 5;
         }
         IssueId(out)
+    }
+
+    /// The full 128-bit value behind the text. Every character was
+    /// validated or encoded by this crate, so decoding cannot fail.
+    fn to_u128(self) -> u128 {
+        self.as_str().chars().fold(0u128, |acc, c| {
+            acc << 5 | decode_char(c).unwrap_or(0) as u128
+        })
     }
 }
 
@@ -318,6 +367,48 @@ mod tests {
         // a caller passing arbitrary bytes must still produce a valid id.
         let id = IssueId::from_parts(0, [0xAB; 10]);
         assert!(IssueId::parse(id.as_str()).is_ok());
+    }
+
+    #[test]
+    fn from_parts_after_keeps_mint_order_in_the_same_millisecond() {
+        let ms = 1_755_336_720_000u64;
+        let first = IssueId::from_parts(ms, [0x40; 10]);
+        // A second draw in the same millisecond that lands below the first
+        // id must be bumped past it: id order is mint order, not entropy
+        // order. Raw entropy would sort a same-millisecond burst randomly.
+        let second = IssueId::from_parts_after(&first, ms, [0x00; 10]);
+        assert!(second > first, "{second} must sort after {first}");
+        // Short refs resolve back to one issue (`locate_issue`) and comment
+        // file names embed chars 10-14 — the bump must move that window, not
+        // just the tail of the value, or consecutive mints collide there.
+        assert_ne!(
+            first.short_ref(),
+            second.short_ref(),
+            "{first} and {second} must not share a short ref"
+        );
+        // A draw that already clears the previous id passes through
+        // untouched — no entropy is wasted on unnecessary bumps.
+        let high = IssueId::from_parts(ms, [0xFF; 10]);
+        assert_eq!(IssueId::from_parts_after(&first, ms, [0xFF; 10]), high);
+    }
+
+    #[test]
+    fn from_parts_after_a_later_millisecond_uses_the_new_time() {
+        let first = IssueId::from_parts(1_755_336_720_000, [0xFF; 10]);
+        let later = IssueId::from_parts_after(&first, 1_755_336_720_001, [0x00; 10]);
+        assert!(later > first);
+        assert_eq!(later.timestamp_ms(), 1_755_336_720_001);
+    }
+
+    #[test]
+    fn from_parts_after_carries_across_an_entropy_overflow() {
+        // prev at the very top of its millisecond: the next mint rolls into
+        // the following millisecond rather than reordering below prev.
+        let ms = 1_755_336_720_000u64;
+        let full = IssueId::from_parts(ms, [0xFF; 10]);
+        let next = IssueId::from_parts_after(&full, ms, [0x00; 10]);
+        assert!(next > full, "{next} must sort after {full}");
+        assert_eq!(next.timestamp_ms(), ms + 1);
     }
 
     #[test]

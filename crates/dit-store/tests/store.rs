@@ -100,6 +100,43 @@ fn created_ids_are_unique_and_time_sorted() {
 }
 
 #[test]
+fn ids_minted_in_one_transaction_keep_creation_order() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path());
+    let mut tx = store.transaction(now(), "farid");
+    let ids: Vec<IssueId> = (0..12)
+        .map(|n| tx.create_issue(draft(&format!("Issue {n}"))).unwrap())
+        .collect();
+    tx.finish().unwrap();
+    // One transaction shares one clock reading, so raw entropy would sort
+    // these ids at random against their creation order. Renumber backfills
+    // and comment listing both read id order as creation order (ADR 0009),
+    // so minting must be monotonic within a transaction.
+    let mut sorted = ids.clone();
+    sorted.sort();
+    assert_eq!(sorted, ids, "id order must be mint order");
+}
+
+#[test]
+fn comments_added_in_one_transaction_read_back_in_addition_order() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path());
+    let mut tx = store.transaction(now(), "farid");
+    let id = tx.create_issue(draft("Has comments")).unwrap();
+    tx.add_comment(&id, "farid", "first").unwrap();
+    tx.add_comment(&id, "farid", "second").unwrap();
+    tx.add_comment(&id, "farid", "third").unwrap();
+    tx.finish().unwrap();
+
+    let comments = store.read_comments(&id).unwrap();
+    let bodies: Vec<&str> = comments.iter().map(|c| c.body.as_str()).collect();
+    // Comment files sort by name, and names begin with the comment's id —
+    // same shared clock reading here, so the ids must be mint-ordered for
+    // the listing order to be the order they were added.
+    assert_eq!(bodies, vec!["first", "second", "third"]);
+}
+
+#[test]
 fn short_ref_resolves_back_to_the_issue() {
     let tmp = tempfile::tempdir().unwrap();
     let store = Store::open(tmp.path());

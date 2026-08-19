@@ -158,6 +158,7 @@ impl Store {
             author: author.to_owned(),
             staged: Vec::new(),
             dirs: HashMap::new(),
+            last_minted: None,
         }
     }
 
@@ -258,19 +259,28 @@ pub struct Transaction {
     /// Issue dirs this transaction created, so later operations in the same
     /// transaction can find files that are not on disk yet.
     dirs: HashMap<IssueId, PathBuf>,
+    /// The highest id minted so far in this transaction. One transaction
+    /// shares one clock reading, so ids minted in it all land in the same
+    /// millisecond — without a cursor their order would be pure entropy,
+    /// and everything that reads id order as creation order (renumber's
+    /// backfill, comment listing) would see the burst shuffled.
+    last_minted: Option<IssueId>,
 }
 
 impl Transaction {
-    /// Mint an id from the injected clock plus real entropy. Two calls in
-    /// the same millisecond still differ — the 80 random bits carry the
-    /// uniqueness, never the timestamp.
-    fn mint_id(&self) -> Result<IssueId, StoreError> {
+    /// Mint an id from the injected clock plus real entropy. Each mint
+    /// clears the previous one from this transaction, so id order is mint
+    /// order even though every id shares the transaction's millisecond.
+    fn mint_id(&mut self) -> Result<IssueId, StoreError> {
         let mut entropy = [0u8; 10];
         getrandom::fill(&mut entropy).map_err(|e| StoreError::Entropy(e.to_string()))?;
-        Ok(IssueId::from_parts(
-            crate::layout::datetime_to_ms(self.now).max(0) as u64,
-            entropy,
-        ))
+        let ts = crate::layout::datetime_to_ms(self.now).max(0) as u64;
+        let id = match self.last_minted {
+            Some(prev) => IssueId::from_parts_after(&prev, ts, entropy),
+            None => IssueId::from_parts(ts, entropy),
+        };
+        self.last_minted = Some(id);
+        Ok(id)
     }
 
     fn push_staged(&mut self, path: PathBuf, contents: String) {
