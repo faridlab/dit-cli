@@ -3,10 +3,16 @@
 // invalidates everything on "index_updated"; per-mutation invalidations
 // below are the fine-grained fallback between events.
 
-import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query";
 import { toast } from "sonner";
 import * as api from "./api";
-import type { BoardDto, FieldPatch, NewIssueInput, SetSettingsInput } from "./types";
+import type { BoardDto, FieldEventDto, FieldPatch, NewIssueInput, SetSettingsInput } from "./types";
 
 export const queryKeys = {
   status: ["status"] as const,
@@ -17,7 +23,7 @@ export const queryKeys = {
     ["issues", params.q ?? "", params.limit ?? 0, params.offset ?? 0] as const,
   issue: (id: string) => ["issue", id] as const,
   comments: (id: string) => ["comments", id] as const,
-  history: (id: string, field: string) => ["history", id, field] as const,
+  history: (id: string, field?: string) => ["history", id, field ?? ""] as const,
   markdownPreview: (text: string) => ["markdown-preview", text] as const,
 };
 
@@ -97,12 +103,43 @@ export function useComments(id: string) {
   });
 }
 
-export function useFieldEvents(id: string, field: string) {
+export function useFieldEvents(id: string, field?: string) {
   return useQuery({
     queryKey: queryKeys.history(id, field),
     queryFn: () => api.getFieldEvents(id, field),
     staleTime: STALE_TIME_MS,
   });
+}
+
+/** A field event plus the issue it belongs to. The wire event carries no
+ *  issue id (it was fetched from that issue's endpoint), so the merge tags
+ *  each one with the id of the query that produced it. */
+export type ActivityEvent = FieldEventDto & { issueId: string };
+
+/** The workspace activity feed, derived (never stored): the newest field
+ *  events across the given issues, merged and ordered by `seq` descending.
+ *  Callers pass the handful of most-recently-updated issue ids so the feed
+ *  costs a bounded number of requests. */
+export function useActivity(ids: ReadonlyArray<string>, limit = 15) {
+  const trimmed = ids.slice(0, 8);
+  const results = useQueries({
+    queries: trimmed.map((id) => ({
+      queryKey: queryKeys.history(id),
+      queryFn: () => api.getFieldEvents(id),
+      staleTime: STALE_TIME_MS,
+    })),
+  });
+  const events = results
+    .flatMap((result, index) => {
+      const issueId = trimmed[index];
+      if (!issueId) return [];
+      return (result.data ?? []).map((event): ActivityEvent => ({ ...event, issueId }));
+    })
+    .sort((a, b) => b.seq - a.seq)
+    .slice(0, limit);
+  const pending = results.some((result) => result.isPending);
+  const error = results.find((result) => result.error)?.error ?? null;
+  return { data: events, isPending: pending, error };
 }
 
 export function useMarkdownPreview(text: string, enabled: boolean) {
@@ -144,6 +181,26 @@ export function usePatchIssue(id: string) {
     mutationFn: (set: FieldPatch) => api.patchIssue(id, set),
     onSuccess: invalidate,
     onError: reportError("Could not save"),
+  });
+}
+
+/** Bulk edit from the issues list. Each issue is its own PATCH (one commit
+ *  per file on the server), run sequentially so the repo never sees
+ *  concurrent writes; one failure leaves the rest applied and reports. */
+export function useBulkPatchIssue() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (edits: ReadonlyArray<{ id: string; set: FieldPatch }>) => {
+      for (const edit of edits) {
+        await api.patchIssue(edit.id, edit.set);
+      }
+    },
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ["issues"] });
+      void client.invalidateQueries({ queryKey: queryKeys.board });
+      void client.invalidateQueries({ queryKey: queryKeys.status });
+    },
+    onError: reportError("Could not save every issue"),
   });
 }
 

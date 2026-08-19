@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 export type Route =
+  | { name: "home" }
   | { name: "board" }
   | { name: "issues" }
   | { name: "search"; q: string }
@@ -13,6 +14,8 @@ export type Route =
 
 export function routeToHash(route: Route): string {
   switch (route.name) {
+    case "home":
+      return "#/home";
     case "board":
       return "#/board";
     case "issues":
@@ -38,9 +41,12 @@ export function parseHash(hash: string): Route {
     const q = new URLSearchParams(query ?? "").get("q") ?? "";
     return { name: "search", q };
   }
+  if (first === "home") return { name: "home" };
   if (first === "issues") return { name: "issues" };
   if (first === "settings") return { name: "settings" };
-  return { name: "board" };
+  // Home is the landing view: capture, triage, orient — the board is one
+  // click away for people who want to go straight to moving cards.
+  return { name: "home" };
 }
 
 export function navigate(route: Route): void {

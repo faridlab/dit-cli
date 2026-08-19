@@ -139,11 +139,13 @@ export function putSettings(input: SetSettingsInput): Promise<SettingsDto> {
   });
 }
 
-export function getFieldEvents(id: string, field: string): Promise<FieldEventDto[]> {
-  const qs = new URLSearchParams({ field });
-  return request<FieldEventDto[]>(
-    `/api/issues/${encodeURIComponent(id)}/history?${qs.toString()}`,
-  );
+/** Field history in `seq` order. `field` omitted = every field, which powers
+ *  the detail history timeline and the Home activity feed in one request. */
+export function getFieldEvents(id: string, field?: string): Promise<FieldEventDto[]> {
+  const qs = new URLSearchParams();
+  if (field) qs.set("field", field);
+  const suffix = qs.size > 0 ? `?${qs.toString()}` : "";
+  return request<FieldEventDto[]>(`/api/issues/${encodeURIComponent(id)}/history${suffix}`);
 }
 
 export function renderMarkdown(text: string): Promise<{ html: string }> {
