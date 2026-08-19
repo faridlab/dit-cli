@@ -11,11 +11,12 @@ import { useIssues, useSchema } from "../lib/queries";
 import { ApiError } from "../lib/api";
 
 // Chips double as documentation: they are the fastest way to learn a query
-// language — steal a working example, edit it.
+// language — steal a working example, edit it. Every one of these is a query
+// the real parser accepts as-is.
 const EXAMPLES: Array<{ label: string; dql: string }> = [
-  { label: "My open work", dql: "status != done AND assignees ~ @me" },
+  { label: "My open work", dql: "status != done AND assignee = @me" },
   { label: "Recent in auth/api", dql: "label IN (auth, api) AND updated > -7d" },
-  { label: "Hot bugs", dql: "type = bug AND priority IN (urgent, high)" },
+  { label: "Hot bugs", dql: "type = bug AND priority IN (p0, p1)" },
   { label: "Title contains “login”", dql: "title ~ login ORDER BY updated DESC LIMIT 20" },
 ];
 
@@ -49,39 +50,41 @@ export function SearchView({
     onSearch(input);
   };
 
-  const dqlError =
+  // A 400 is the parser rejecting the text, not the request failing — the
+  // warn tone keeps it a coaching moment, not a red alert.
+  const parseError: string | null =
     results.error instanceof ApiError && results.error.status === 400 && trimmed.length > 0
       ? results.error.message
       : null;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <form onSubmit={submit} className="border-b border-zinc-800 px-3 py-2">
+      <form onSubmit={submit} className="border-b border-edge px-5 py-3.5">
         <div className="flex items-center gap-2">
           <Search className="size-4 shrink-0 text-zinc-500" aria-hidden />
           <input
             value={input}
             onChange={(event) => setInput(event.target.value)}
-            placeholder='Try: status != done AND assignee = @me'
+            placeholder="status != done AND assignee = @me"
             aria-label="DQL query"
             spellCheck={false}
-            className="h-8 flex-1 rounded border border-zinc-700 bg-zinc-950 px-2 font-mono text-xs text-zinc-200 placeholder:text-zinc-600 focus:border-sky-600 focus:outline-none"
+            className="h-[38px] flex-1 rounded-md border border-ctl bg-app px-3 font-mono text-[13px] text-zinc-200 placeholder:text-zinc-600 focus:border-accent focus:outline-none"
           />
           <button
             type="submit"
-            className="h-8 rounded bg-sky-700 px-3 text-xs font-medium text-white hover:bg-sky-600"
+            className="h-[38px] shrink-0 rounded-md bg-accent px-4 text-[13px] font-medium text-white hover:bg-accent-hi"
           >
             Search
           </button>
         </div>
-        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
           {EXAMPLES.map((example) => (
             <button
               key={example.dql}
               type="button"
               onClick={() => onSearch(example.dql)}
               title={example.dql}
-              className="rounded border border-zinc-800 bg-zinc-900 px-1.5 py-0.5 text-[11px] text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
+              className="rounded-[3px] border border-edge px-2 py-0.5 font-mono text-[11px] text-zinc-400 hover:border-zinc-400 hover:text-zinc-200"
             >
               {example.label}
             </button>
@@ -97,21 +100,15 @@ export function SearchView({
         />
       ) : null}
 
-      {dqlError ? (
-        <div
-          role="alert"
-          className="m-3 rounded-md border border-amber-900/70 bg-amber-950/30 p-3 text-sm"
-        >
-          <p className="font-medium text-amber-300">The query could not be parsed</p>
-          <p className="mt-1 font-mono text-xs text-amber-200/80">{dqlError}</p>
-        </div>
+      {parseError ? (
+        <ErrorBox tone="warn" error={new Error(parseError)} title="The query could not be parsed" />
       ) : null}
 
       {trimmed.length > 0 && results.isPending ? (
         <Loading label="Searching…" className="flex-1" />
       ) : null}
 
-      {trimmed.length > 0 && results.isError && !dqlError ? (
+      {trimmed.length > 0 && results.isError && !parseError ? (
         <ErrorBox
           error={results.error}
           title="Search failed"
@@ -121,7 +118,7 @@ export function SearchView({
 
       {results.data ? (
         <>
-          <div className="flex items-center gap-2 px-3 py-1.5 text-[11px] text-zinc-500">
+          <div className="flex items-center gap-2 px-5 py-2 text-[11px] text-zinc-500">
             <span className="font-mono tabular-nums">
               {results.data.total} {results.data.total === 1 ? "issue" : "issues"}
             </span>
@@ -141,11 +138,18 @@ export function SearchView({
               className="flex-1 justify-center"
             />
           ) : (
-            <IssueTable
-              issues={results.data.items}
-              statuses={schema.data?.workflow.statuses ?? []}
-              onOpen={onOpen}
-            />
+            // Results live in a card rather than bleeding to the gutters —
+            // search is a query tool, the card frames the answer.
+            <div className="min-h-0 flex-1 px-4 pb-4">
+              <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-[10px] border border-edge bg-panel">
+                <IssueTable
+                  issues={results.data.items}
+                  statuses={schema.data?.workflow.statuses ?? []}
+                  onOpen={onOpen}
+                  columns="compact"
+                />
+              </div>
+            </div>
           )}
         </>
       ) : null}

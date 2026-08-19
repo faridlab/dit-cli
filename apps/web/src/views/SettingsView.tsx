@@ -8,6 +8,7 @@ import { usePutSettings, useSettings } from "../lib/queries";
 import type { Layout, NumberingPolicy } from "../lib/types";
 import { cn } from "../lib/cn";
 import { ErrorBox, Loading } from "../components/states";
+import { SectionHeading } from "../components/chrome";
 
 interface Option<T extends string> {
   value: T;
@@ -64,10 +65,10 @@ function OptionCards<T extends string>({
             aria-pressed={active}
             onClick={() => onPick(option.value)}
             className={cn(
-              "rounded-md border p-3 text-left",
+              "rounded-[10px] border p-3.5 text-left",
               active
-                ? "border-sky-700 bg-sky-950/30"
-                : "border-zinc-800 bg-zinc-900/50 hover:border-zinc-700",
+                ? "border-accent bg-white/[0.03]"
+                : "border-edge bg-card hover:border-dim",
               disabled && "opacity-50",
             )}
           >
@@ -76,7 +77,7 @@ function OptionCards<T extends string>({
                 aria-hidden
                 className={cn(
                   "size-2 rounded-full",
-                  active ? "bg-sky-400" : "bg-zinc-700",
+                  active ? "bg-accent" : "bg-ctl",
                 )}
               />
               {option.label}
@@ -130,7 +131,7 @@ export function SettingsView() {
   };
 
   return (
-    <div className="mx-auto w-full max-w-2xl overflow-y-auto px-6 py-8">
+    <div className="mx-auto w-full max-w-[700px] overflow-y-auto px-6 py-8">
       <h1 className="text-lg font-semibold text-zinc-100">Settings</h1>
       <p className="mt-1 text-[13px] text-zinc-500">
         Workspace-wide choices, recorded in <code className="font-mono text-xs">.dit/config.yaml</code>{" "}
@@ -138,9 +139,7 @@ export function SettingsView() {
       </p>
 
       <section className="mt-8">
-        <h2 className="text-[13px] font-semibold uppercase tracking-wide text-zinc-400">
-          Where files live
-        </h2>
+        <SectionHeading>Where files live</SectionHeading>
         <p className="mt-1 text-xs text-zinc-600">
           Changing this moves every issue in one commit — history follows the files.
         </p>
@@ -155,9 +154,7 @@ export function SettingsView() {
       </section>
 
       <section className="mt-8">
-        <h2 className="text-[13px] font-semibold uppercase tracking-wide text-zinc-400">
-          Issue numbers
-        </h2>
+        <SectionHeading>Issue numbers</SectionHeading>
         <p className="mt-1 text-xs text-zinc-600">
           When an issue gets the <code className="font-mono text-xs">number:</code> that becomes its
           #handle. Existing numbers never change.
@@ -173,9 +170,7 @@ export function SettingsView() {
       </section>
 
       <section className="mt-8">
-        <h2 className="text-[13px] font-semibold uppercase tracking-wide text-zinc-400">
-          Templates
-        </h2>
+        <SectionHeading>Templates</SectionHeading>
         <p className="mt-1 text-xs text-zinc-600">
           Bodies seeded on creation, from <code className="font-mono text-xs">.dit/templates/</code>.
         </p>
@@ -183,7 +178,7 @@ export function SettingsView() {
           {current.templates.map((name) => (
             <li
               key={name}
-              className="rounded border border-zinc-800 bg-zinc-900/50 px-2 py-1 font-mono text-xs text-zinc-400"
+              className="rounded-[3px] border border-white/[0.06] bg-white/[0.04] px-2 py-1 font-mono text-xs text-zinc-400"
             >
               {name}
             </li>

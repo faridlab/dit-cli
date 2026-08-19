@@ -22,7 +22,7 @@ import type { BoardColumnDto, BoardIssueDto } from "../lib/types";
 import { cn } from "../lib/cn";
 import { AssigneeCircles, IssueHandle, LabelChips, PriorityDot, TypeBadge } from "../components/badges";
 import { Empty, ErrorBox, Loading } from "../components/states";
-import { relativeTime } from "../lib/format";
+import { energyOf, relativeTime } from "../lib/format";
 
 const CARD_DRAG_PREFIX = "card:";
 const COLUMN_DRAG_PREFIX = "col:";
@@ -57,7 +57,7 @@ const BoardCard = memo(function BoardCard({
       {...listeners}
       onClick={() => onOpen(issue.id)}
       className={cn(
-        "cursor-grab rounded-md border border-zinc-800 bg-zinc-900 p-2 shadow-sm hover:border-zinc-600",
+        "cursor-grab rounded-lg border border-edge bg-card p-3 transition-colors hover:border-dim",
         isDragging && "opacity-30",
       )}
     >
@@ -65,16 +65,25 @@ const BoardCard = memo(function BoardCard({
         <IssueHandle shortRef={issue.short_ref} number={issue.number} />
         <TypeBadge type={issue.type} />
         <PriorityDot priority={issue.priority} />
+        <span className="ml-auto font-mono text-[10.5px] text-dim">
+          {energyOf(issue.labels)}
+        </span>
         {issue.estimate !== null ? (
-          <span className="ml-auto font-mono text-[10px] text-zinc-500" title="estimate">
+          <span
+            className="font-mono text-[10.5px] text-zinc-500"
+            title="estimate"
+          >
             {issue.estimate}
           </span>
         ) : null}
       </div>
-      <p className="mt-1 line-clamp-2 text-[13px] leading-snug text-zinc-200">{issue.title}</p>
-      <div className="mt-1.5 flex items-center justify-between gap-2">
-        <LabelChips labels={issue.labels} />
-        <span className="flex items-center gap-2">
+      <p className="mt-2 line-clamp-2 text-sm leading-normal text-zinc-200">{issue.title}</p>
+      <div className="mt-2.5 flex items-center justify-between gap-2">
+        {/* The board DTO carries no epic or due date, so the footer shows
+            what the endpoint actually has — everything else lives on the
+            issue screen. */}
+        <LabelChips labels={issue.labels} max={2} />
+        <span className="flex shrink-0 items-center gap-2">
           <span className="text-[10px] text-zinc-600" title={issue.updated}>
             {relativeTime(issue.updated)}
           </span>
@@ -98,15 +107,15 @@ function Column({
   const overLimit = limit !== null && count > limit;
 
   return (
-    <section className="flex w-72 shrink-0 flex-col border-r border-zinc-900 last:border-r-0">
-      <header className="flex items-center gap-2 px-3 pb-2 pt-3">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+    <section className="flex w-[262px] shrink-0 flex-col border-r border-card last:border-r-0">
+      <header className="flex items-center gap-2 px-3.5 pb-2.5 pt-3.5">
+        <h2 className="text-xs font-semibold uppercase tracking-[0.06em] text-zinc-400">
           {column.label}
         </h2>
         <span
           className={cn(
-            "rounded px-1.5 font-mono text-[10px] tabular-nums",
-            overLimit ? "bg-amber-950/60 text-amber-400" : "bg-zinc-800 text-zinc-500",
+            "rounded-md px-[7px] py-px font-mono text-[10.5px] tabular-nums",
+            overLimit ? "bg-amber-950/60 text-amber-400" : "bg-edge text-zinc-500",
           )}
           title={overLimit ? `WIP limit ${limit} exceeded` : limit !== null ? `WIP limit ${limit}` : undefined}
         >
@@ -114,21 +123,21 @@ function Column({
           {limit !== null ? `/${limit}` : ""}
         </span>
         {overLimit ? (
-          <span className="text-[10px] text-amber-400">over WIP limit</span>
+          <span className="text-[10.5px] text-amber-400">over WIP</span>
         ) : null}
       </header>
       <div
         ref={setNodeRef}
         className={cn(
-          "min-h-0 flex-1 space-y-2 overflow-y-auto px-3 pb-3",
-          isOver && "rounded-md bg-zinc-900/70 ring-1 ring-inset ring-sky-800",
+          "flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3.5 pb-3.5",
+          isOver && "rounded-lg bg-card/40 ring-1 ring-inset ring-accent",
         )}
       >
         {column.issues.map((issue) => (
           <BoardCard key={issue.id} issue={issue} onOpen={onOpen} />
         ))}
         {column.issues.length === 0 ? (
-          <p className="rounded-md border border-dashed border-zinc-800 px-2 py-6 text-center text-[11px] text-zinc-600">
+          <p className="rounded-lg border border-dashed border-edge px-2 py-5 text-center text-[11.5px] text-dim">
             No issues
           </p>
         ) : null}
@@ -207,20 +216,28 @@ export function BoardView({ onOpen }: { onOpen: (id: string) => void }) {
       onDragEnd={onDragEnd}
       onDragCancel={() => setActiveId(null)}
     >
-      <div className="flex min-h-0 flex-1 items-stretch overflow-x-auto">
-        {columns.map((column) => (
-          <Column key={column.id} column={column} onOpen={onOpen} />
-        ))}
+      <div className="flex min-h-0 flex-1 flex-col">
+        <header className="flex items-center gap-3 border-b border-edge px-5 py-3">
+          <h1 className="text-lg font-semibold text-zinc-100">Board</h1>
+          <span className="ml-auto text-[11.5px] text-dim">
+            open an issue and change its status — the card moves here
+          </span>
+        </header>
+        <div className="flex min-h-0 flex-1 items-stretch overflow-x-auto">
+          {columns.map((column) => (
+            <Column key={column.id} column={column} onOpen={onOpen} />
+          ))}
+        </div>
       </div>
       <DragOverlay>
         {activeIssue ? (
-          <div className="w-72 rotate-1 rounded-md border border-sky-700 bg-zinc-900 p-2 opacity-90 shadow-2xl">
+          <div className="w-[262px] rotate-1 rounded-lg border border-ctl bg-card p-3 opacity-90 shadow-2xl">
             <div className="flex items-center gap-2">
               <IssueHandle shortRef={activeIssue.short_ref} number={activeIssue.number} />
               <TypeBadge type={activeIssue.type} />
               <PriorityDot priority={activeIssue.priority} />
             </div>
-            <p className="mt-1 text-[13px] leading-snug text-zinc-100">{activeIssue.title}</p>
+            <p className="mt-2 text-sm leading-normal text-zinc-100">{activeIssue.title}</p>
           </div>
         ) : null}
       </DragOverlay>
