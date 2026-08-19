@@ -4,7 +4,7 @@
 
 use std::fs;
 
-use dit_model::{FieldPatch, IssueDraft, IssueId, IssueKind, Priority};
+use dit_model::{DocPath, FieldPatch, IssueDraft, IssueId, IssueKind, Priority};
 use dit_store::{atomic, Layout, Store};
 use time::OffsetDateTime;
 
@@ -421,4 +421,131 @@ fn a_legacy_dotdir_workspace_keeps_writing_where_it_already_writes() {
     tx.finish().unwrap();
     let text = fs::read_to_string(&legacy_body).unwrap();
     assert!(text.contains("status: in_progress"), "{text}");
+}
+
+// -- doc pages (§13) ---------------------------------------------------------
+
+fn doc_tx() -> (tempfile::TempDir, Store) {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path());
+    (tmp, store)
+}
+
+#[test]
+fn write_doc_creates_a_formatted_page_under_the_right_root() {
+    let (tmp, store) = doc_tx();
+    let mut tx = store.transaction(now(), "farid");
+    tx.write_doc(
+        &DocPath::parse("docs/flows/auth-session.md").unwrap(),
+        "# Auth session\n\nSome   sloppily  spaced text.\n\n\n\nExtra gaps.\n",
+    )
+    .unwrap();
+    tx.finish().unwrap();
+
+    let path = tmp.path().join("docs/flows/auth-session.md");
+    let text = fs::read_to_string(&path).unwrap();
+    // The write passes through `dit fmt` — invariant 1 applies to pages as
+    // much as to issue bodies.
+    assert_eq!(
+        text,
+        dit_parse::fmt::fmt(&text).unwrap(),
+        "must be canonical"
+    );
+    assert!(text.starts_with("# Auth session"), "{text}");
+    // ...and the file round-trips through the ordinary markdown parser.
+    assert!(dit_parse::Document::parse(&text).is_ok());
+}
+
+#[test]
+fn write_doc_in_a_dotdir_workspace_lands_under_dot_dit() {
+    // Mode C (ADR 0005): content roots live under `.dit/`. `Store::open`
+    // detects layout from the tree, so bootstrap the legacy shape first.
+    let (tmp, store) = doc_tx();
+    let mut tx = store.transaction(now(), "farid");
+    tx.write_doc(&DocPath::parse("notes/learning-dsa.md").unwrap(), "# DSA\n")
+        .unwrap();
+    tx.finish().unwrap();
+
+    fs::create_dir_all(tmp.path().join(".dit/issues")).unwrap();
+    fs::rename(tmp.path().join("notes"), tmp.path().join(".dit/notes")).unwrap();
+    let store = Store::open(tmp.path());
+    assert_eq!(store.layout().kind(), dit_model::DataLayout::DotDir);
+    let mut tx = store.transaction(now(), "farid");
+    tx.write_doc(&DocPath::parse("notes/second.md").unwrap(), "# Second\n")
+        .unwrap();
+    tx.finish().unwrap();
+    assert!(tmp.path().join(".dit/notes/second.md").exists());
+    assert!(tmp.path().join(".dit/notes/learning-dsa.md").exists());
+}
+
+#[test]
+fn write_doc_refuses_conflict_markers() {
+    let (tmp, store) = doc_tx();
+    let mut tx = store.transaction(now(), "farid");
+    let err = tx
+        .write_doc(
+            &DocPath::parse("docs/merged.md").unwrap(),
+            "<<<<<<< ours\ntext\n=======\ntext\n>>>>>>> theirs\n",
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("conflict"), "{err}");
+    // Nothing was staged — the tree stays clean.
+    assert!(!tmp.path().join("docs").exists());
+}
+
+#[test]
+fn remove_doc_deletes_the_file_and_rollback_restores_it() {
+    let (tmp, store) = doc_tx();
+    let mut tx = store.transaction(now(), "farid");
+    tx.write_doc(&DocPath::parse("docs/gone.md").unwrap(), "# Gone\n")
+        .unwrap();
+    tx.finish().unwrap();
+    let path = tmp.path().join("docs/gone.md");
+    let original = fs::read_to_string(&path).unwrap();
+
+    let mut tx = store.transaction(now(), "farid");
+    tx.remove_doc(&DocPath::parse("docs/gone.md").unwrap())
+        .unwrap();
+    let applied = tx.finish().unwrap();
+    assert!(!path.exists(), "the page must be deleted");
+
+    applied.rollback();
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+}
+
+#[test]
+fn remove_doc_on_a_missing_page_is_not_found() {
+    let (_tmp, store) = doc_tx();
+    let mut tx = store.transaction(now(), "farid");
+    let err = tx
+        .remove_doc(&DocPath::parse("docs/never-existed.md").unwrap())
+        .unwrap_err();
+    assert!(err.to_string().contains("not exist"), "{err}");
+}
+
+#[test]
+fn write_and_remove_in_one_transaction_last_write_wins() {
+    // A create followed by a remove of the same page in one transaction
+    // leaves nothing behind — staged entries replace by path.
+    let (tmp, store) = doc_tx();
+    let mut tx = store.transaction(now(), "farid");
+    let path = DocPath::parse("docs/phantom.md").unwrap();
+    tx.write_doc(&path, "# Phantom\n").unwrap();
+    tx.remove_doc(&path).unwrap();
+    tx.finish().unwrap();
+    assert!(!tmp.path().join("docs/phantom.md").exists());
+
+    // The reverse — remove an existing page, then write it again — keeps the
+    // new content: last wins in staging order.
+    let mut tx = store.transaction(now(), "farid");
+    tx.write_doc(&path, "# Kept\n\ntext\n").unwrap();
+    tx.finish().unwrap();
+    let mut tx = store.transaction(now(), "farid");
+    tx.remove_doc(&path).unwrap();
+    tx.write_doc(&path, "# Resurrected\n").unwrap();
+    tx.finish().unwrap();
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("docs/phantom.md")).unwrap(),
+        "# Resurrected\n"
+    );
 }

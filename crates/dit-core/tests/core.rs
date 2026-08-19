@@ -913,3 +913,98 @@ fn migrate_layout_refuses_when_the_layout_is_already_current() {
     let err = dit.migrate_layout(DataLayout::Root).unwrap_err();
     assert!(err.to_string().contains("already"), "{err}");
 }
+
+// -- doc pages (§13; file-backed reads per ADR 0010) -------------------------
+
+#[test]
+fn a_saved_doc_lands_as_one_commit_and_reads_back() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    let repo = Repo::open(tmp.path()).unwrap();
+
+    let mut tx = dit.transaction("farid").unwrap();
+    tx.write_doc(
+        "docs/adr-0010-doc-editor.md",
+        "# Doc editor\n\nPage   text.\n",
+    )
+    .unwrap();
+    let head = tx
+        .commit("dit docs save: docs/adr-0010-doc-editor.md")
+        .unwrap()
+        .expect("one commit for one save");
+
+    // The file exists, reads back canonically formatted, and the commit
+    // message names it.
+    let text = dit.read_doc("docs/adr-0010-doc-editor.md").unwrap();
+    assert!(text.starts_with("# Doc editor"), "{text}");
+    assert_eq!(text, dit_parse::fmt::fmt(&text).unwrap());
+    let subject = repo
+        .log_lines(format!("{head}~1..{head}").as_str(), "%s")
+        .unwrap();
+    assert_eq!(
+        subject,
+        vec!["dit docs save: docs/adr-0010-doc-editor.md".to_owned()]
+    );
+
+    // The listing sees it, with display metadata from the filesystem.
+    let docs = dit.list_docs();
+    let paths: Vec<&str> = docs.iter().map(|d| d.path.as_str()).collect();
+    assert_eq!(paths, vec!["docs/adr-0010-doc-editor.md"]);
+    assert!(docs[0].bytes > 0, "size comes from the file");
+}
+
+#[test]
+fn a_deleted_doc_disappears_in_one_commit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    let mut tx = dit.transaction("farid").unwrap();
+    tx.write_doc("notes/scratch.md", "# Scratch\n").unwrap();
+    tx.commit("dit docs save: notes/scratch.md").unwrap();
+
+    let mut tx = dit.transaction("farid").unwrap();
+    tx.delete_doc("notes/scratch.md").unwrap();
+    tx.commit("dit docs delete: notes/scratch.md").unwrap();
+
+    assert!(dit.list_docs().is_empty());
+    let err = dit.read_doc("notes/scratch.md").unwrap_err();
+    assert!(matches!(err, DitError::NotFound(_)), "{err}");
+    assert!(!tmp.path().join("notes/scratch.md").exists());
+}
+
+#[test]
+fn doc_paths_are_sandboxed_at_the_facade() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    for escape in [
+        "../outside.md",
+        "issues/2026/08/x-readme/readme.md",
+        ".dit/config.yaml",
+        "docs/../notes/x.md",
+    ] {
+        let mut tx = dit.transaction("farid").unwrap();
+        let err = tx.write_doc(escape, "# nope\n").unwrap_err();
+        assert!(!err.to_string().is_empty(), "{escape} refused: {err}");
+        tx.abort();
+    }
+    // Nothing escaped: no doc roots, nothing outside the workspace.
+    assert!(dit.list_docs().is_empty());
+    assert!(!tmp.path().parent().unwrap().join("outside.md").exists());
+}
+
+#[test]
+fn list_docs_skips_names_the_editor_cannot_address() {
+    // Hand-made files with names outside the DocPath rules (uppercase,
+    // dotfiles) must not break the listing — they are simply not editable
+    // through the doc editor until renamed.
+    let tmp = tempfile::tempdir().unwrap();
+    let dit = workspace(tmp.path());
+    std::fs::create_dir_all(tmp.path().join("docs")).unwrap();
+    std::fs::write(tmp.path().join("docs/good.md"), "# good\n").unwrap();
+    std::fs::write(tmp.path().join("docs/BAD-NAME.MD"), "# bad\n").unwrap();
+    std::fs::write(tmp.path().join("docs/.secret.md"), "# hidden\n").unwrap();
+    std::fs::write(tmp.path().join("docs/notes.txt"), "not markdown\n").unwrap();
+
+    let docs = dit.list_docs();
+    let paths: Vec<&str> = docs.iter().map(|d| d.path.as_str()).collect();
+    assert_eq!(paths, vec!["docs/good.md"]);
+}

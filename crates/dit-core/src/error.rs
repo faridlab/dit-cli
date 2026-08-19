@@ -43,6 +43,11 @@ pub enum DitError {
     /// `NotFound` (an issue ref) so the CLI can hint at `dit templates list`.
     #[error("no template named `{0}` in .dit/templates/")]
     TemplateMissing(String),
+    /// A doc path that is not a legal page location — wrong root, traversal
+    /// shape, or not `.md`. The string is wrong, not the workspace, so
+    /// delivery maps it to a 400 the editor can show inline.
+    #[error(transparent)]
+    DocPath(#[from] dit_model::DocPathError),
     #[error(transparent)]
     Schema(#[from] SchemaError),
     #[error(transparent)]

@@ -113,6 +113,13 @@ impl Layout {
         self.content_dir("docs")
     }
 
+    /// The file a validated doc page (§13) lives at. `DocPath::parse` has
+    /// already confined the segments to a doc root and slug-safe names, so
+    /// this join cannot leave the workspace.
+    pub fn doc_file(&self, path: &dit_model::DocPath) -> PathBuf {
+        self.content_dir(path.root()).join(path.strip_root())
+    }
+
     pub fn notes_dir(&self) -> PathBuf {
         self.content_dir("notes")
     }

@@ -1825,6 +1825,8 @@ notes/
 
 **Wiki-link resolution rule** (mandatory, otherwise links break the moment someone creates a space): `[[docs/flows/auth-session]]` is resolved via a **unique suffix** search across all doc spaces (`docs/` and `notes/`). If more than one matches, `dit validate` fails it as ambiguous. With this rule, moving a page into a space breaks not a single existing link.
 
+**The v1 editor API (ADR 0010).** The `dit ui` Docs screen is backed by four facade operations — `list_docs`, `read_doc`, `Transaction::write_doc`, `Transaction::delete_doc` — served over `/api/docs`. Reads are file-backed (pages have no index rows until labels/wiki-links arrive; the file tree is the source of truth), writes go through `Transaction` + `dit fmt` like every other write, and page paths are validated by the `DocPath` value object in `dit-model` — the four doc roots only, `issues` excluded, no traversal, `.md` only.
+
 Two things make DIT's version better than Confluence, and both come from git:
 
 - **Real page history.** Confluence stores versions as snapshots; git stores diffs with an author, a message, and branch context. You can ask "why did this paragraph change?" and get an answer, not just "version 14 by Budi".

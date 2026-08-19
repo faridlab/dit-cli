@@ -12,7 +12,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
-use dit_model::{format_rfc3339, Comment, FieldPatch, Issue, IssueDraft, IssueId, ISSUE_BODY_FILE};
+use dit_model::{
+    format_rfc3339, Comment, DocPath, FieldPatch, Issue, IssueDraft, IssueId, ISSUE_BODY_FILE,
+};
 use dit_parse::Document;
 use time::OffsetDateTime;
 
@@ -196,11 +198,19 @@ impl Store {
     }
 }
 
-/// A staged write: the final path and the bytes it should hold.
+/// A staged write: the final path and what should be there — new bytes, or
+/// nothing at all (a removal). Both kinds carry rollback information, so a
+/// failed transaction restores the tree whatever the mix was.
 #[derive(Debug)]
 struct Staged {
     path: PathBuf,
-    contents: String,
+    write: StagedWrite,
+}
+
+#[derive(Debug)]
+enum StagedWrite {
+    Write(String),
+    Remove,
 }
 
 /// An applied write, remembering what was there before (if anything).
@@ -283,19 +293,26 @@ impl Transaction {
         Ok(id)
     }
 
-    fn push_staged(&mut self, path: PathBuf, contents: String) {
+    fn push_staged(&mut self, path: PathBuf, write: StagedWrite) {
+        // A repeated path replaces its entry, so one transaction can never
+        // write a file twice — and write-then-remove (or the reverse) keeps
+        // only the last intent.
         if let Some(existing) = self.staged.iter_mut().find(|s| s.path == path) {
-            existing.contents = contents;
+            existing.write = write;
         } else {
-            self.staged.push(Staged { path, contents });
+            self.staged.push(Staged { path, write });
         }
     }
 
     /// The current bytes for a path: staged contents if this transaction
-    /// already touched it, otherwise the file on disk.
+    /// already touched it, otherwise the file on disk. Issue paths are never
+    /// staged as removals, so a `Remove` entry here falls through to disk —
+    /// only the doc editor stages those.
     fn current_bytes(&self, path: &std::path::Path) -> Result<String, StoreError> {
         if let Some(s) = self.staged.iter().find(|s| s.path == path) {
-            return Ok(s.contents.clone());
+            if let StagedWrite::Write(contents) = &s.write {
+                return Ok(contents.clone());
+            }
         }
         fs::read_to_string(path).map_err(|e| e.into())
     }
@@ -330,7 +347,7 @@ impl Transaction {
         let slug = dit_model::Slug::from_title(&draft.title);
         let contents = dit_parse::serialize_new_issue(&id, &draft, &format_rfc3339(self.now))?;
         let dir = self.store.layout.issue_dir(&id, &slug);
-        self.push_staged(dir.join(ISSUE_BODY_FILE), contents);
+        self.push_staged(dir.join(ISSUE_BODY_FILE), StagedWrite::Write(contents));
         self.dirs.insert(id, dir);
         Ok(id)
     }
@@ -343,7 +360,7 @@ impl Transaction {
         let current = self.current_bytes(&path)?;
         let mut doc = Document::parse(&current)?;
         dit_parse::apply_patch(&mut doc, &patch, &format_rfc3339(self.now))?;
-        self.push_staged(path, doc.to_string());
+        self.push_staged(path, StagedWrite::Write(doc.to_string()));
         Ok(())
     }
 
@@ -362,7 +379,7 @@ impl Transaction {
             format!("\n{body}")
         };
         doc.set_body(body);
-        self.push_staged(path, doc.to_string());
+        self.push_staged(path, StagedWrite::Write(doc.to_string()));
         Ok(())
     }
 
@@ -377,7 +394,10 @@ impl Transaction {
         let contents =
             dit_parse::serialize_comment(&comment_id, alias, &format_rfc3339(self.now), body)?;
         let dir = self.issue_dir(id)?;
-        self.push_staged(dir.join("comments").join(name), contents);
+        self.push_staged(
+            dir.join("comments").join(name),
+            StagedWrite::Write(contents),
+        );
         Ok(comment_id)
     }
 
@@ -387,13 +407,47 @@ impl Transaction {
         self.staged.len()
     }
 
+    /// Write a plain Markdown page (§13) through `dit fmt`. The path is
+    /// already a validated `DocPath`, so joining it onto the layout's
+    /// content dir cannot escape the workspace — validation lives in
+    /// `dit-model`, once, for every caller.
+    pub fn write_doc(&mut self, path: &DocPath, content: &str) -> Result<(), StoreError> {
+        let formatted = dit_parse::fmt::fmt(content)?;
+        let file = self.store.layout.doc_file(path);
+        self.push_staged(file, StagedWrite::Write(formatted));
+        Ok(())
+    }
+
+    /// Stage a page removal. The page must exist — on disk or as a write
+    /// staged earlier in this transaction — so a delete-then-commit of
+    /// nothing is an error, not a silent no-op.
+    pub fn remove_doc(&mut self, path: &DocPath) -> Result<(), StoreError> {
+        let file = self.store.layout.doc_file(path);
+        let staged_here = self.staged.iter().any(|s| s.path == file);
+        if !staged_here && !file.exists() {
+            return Err(StoreError::NotFound(path.as_str().to_owned()));
+        }
+        self.push_staged(file, StagedWrite::Remove);
+        Ok(())
+    }
+
     /// Apply every staged write. All-or-nothing: if a write fails partway,
     /// the already-applied prefix is rolled back before the error returns.
     pub fn finish(self) -> Result<Changeset, StoreError> {
         let mut applied: Vec<Applied> = Vec::new();
         for s in &self.staged {
             let previous = fs::read(&s.path).ok();
-            match atomic::write(&s.path, &s.contents) {
+            let outcome = match &s.write {
+                StagedWrite::Write(contents) => atomic::write(&s.path, contents).map(|_| ()),
+                StagedWrite::Remove => match &previous {
+                    // Removing a file that is already gone leaves the
+                    // transaction's end state true — record it as applied so
+                    // a rollback still knows there is nothing to restore.
+                    None => Ok(()),
+                    Some(_) => atomic::remove_file(&s.path),
+                },
+            };
+            match outcome {
                 Ok(()) => applied.push(Applied {
                     path: s.path.clone(),
                     previous,

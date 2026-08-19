@@ -33,9 +33,9 @@ pub use error::DitError;
 // second dependency — the facade is the only crate delivery names.
 pub use dit_index::IndexedIssue;
 pub use dit_model::{
-    Comment, Config, DataLayout, DerivedSignal, FieldPatch, Issue, IssueDraft, IssueId, IssueKind,
-    Numbering, Priority, StoredFieldEvent, Workflow, WorkflowStatus, CONTENT_ROOTS,
-    GENERATED_INDEX_MARKER,
+    Comment, Config, DataLayout, DerivedSignal, DocEntry, DocPath, DocPathError, FieldPatch, Issue,
+    IssueDraft, IssueId, IssueKind, Numbering, Priority, StoredFieldEvent, Workflow,
+    WorkflowStatus, CONTENT_ROOTS, DOC_ROOTS, GENERATED_INDEX_MARKER,
 };
 pub use dit_vcs::{SyncOptions, SyncReport};
 
@@ -497,6 +497,83 @@ impl Dit {
         Ok(self.index.comments_for(id)?)
     }
 
+    /// Every doc page (§13) under the four doc roots, path-sorted.
+    ///
+    /// The one read here that answers from the filesystem instead of the
+    /// index — deliberately, per ADR 0010: pages have no index rows yet, so
+    /// the file tree *is* the list. When the doc index lands (labels,
+    /// wiki-links), this moves under I2 with it. Files whose names fall
+    /// outside `DocPath` rules (hand-made uppercase, dotfiles) are skipped,
+    /// not fatal: the listing must not die on one odd file.
+    pub fn list_docs(&self) -> Vec<DocEntry> {
+        let root = self.store.layout().root().to_owned();
+        let mut out = Vec::new();
+        for name in DOC_ROOTS {
+            let dir = self.store.layout().content_dir(name);
+            let mut stack = vec![dir];
+            while let Some(dir) = stack.pop() {
+                let entries = match std::fs::read_dir(&dir) {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+                for entry in entries.flatten() {
+                    let file_name = entry.file_name().to_string_lossy().into_owned();
+                    if file_name.starts_with('.') {
+                        continue;
+                    }
+                    let path = entry.path();
+                    if path.is_dir() {
+                        stack.push(path);
+                        continue;
+                    }
+                    if !file_name.ends_with(".md") {
+                        continue;
+                    }
+                    let Ok(rel) = path.strip_prefix(&root) else {
+                        continue;
+                    };
+                    // Layout-safe on every platform git runs: forward slashes.
+                    let rel = rel.to_string_lossy().replace('\\', "/");
+                    let Ok(doc_path) = DocPath::parse(&rel) else {
+                        continue;
+                    };
+                    let (updated_ms, bytes) = match entry.metadata() {
+                        Ok(meta) => (
+                            meta.modified()
+                                .ok()
+                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                .map(|d| d.as_millis() as i64)
+                                .unwrap_or(0),
+                            meta.len(),
+                        ),
+                        Err(_) => continue,
+                    };
+                    out.push(DocEntry {
+                        path: doc_path,
+                        updated_ms,
+                        bytes,
+                    });
+                }
+            }
+        }
+        out.sort_by(|a, b| a.path.cmp(&b.path));
+        out
+    }
+
+    /// Read one doc page. File-backed like [`Dit::list_docs`] — the page on
+    /// disk is the source of truth, and git holds its history.
+    pub fn read_doc(&self, path: &str) -> Result<String, DitError> {
+        let doc_path = DocPath::parse(path)?;
+        let file = self.store.layout().doc_file(&doc_path);
+        match std::fs::read_to_string(&file) {
+            Ok(text) => Ok(text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(DitError::NotFound(doc_path.as_str().to_owned()))
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// Health checks — what `dit doctor` prints.
     pub fn doctor(&self) -> Vec<Diagnostic> {
         let mut out = Vec::new();
@@ -868,6 +945,25 @@ impl<'a> Transaction<'a> {
     /// Replace the markdown body; frontmatter is untouched down to the byte.
     pub fn set_body(&mut self, id: &IssueId, body: &str) -> Result<(), DitError> {
         Ok(self.store_tx.set_body(id, body)?)
+    }
+
+    /// Write a doc page (§13), formatted by `dit fmt` like every other
+    /// write. The §16 name; the path string is validated into a `DocPath`
+    /// here so no caller below the facade ever re-derives the sandbox.
+    pub fn write_doc(&mut self, path: &str, content: &str) -> Result<(), DitError> {
+        let doc_path = DocPath::parse(path)?;
+        Ok(self.store_tx.write_doc(&doc_path, content)?)
+    }
+
+    /// Delete a doc page. Mapping the store's "not there" onto the facade's
+    /// `NotFound` keeps delivery able to 404 uniformly.
+    pub fn delete_doc(&mut self, path: &str) -> Result<(), DitError> {
+        let doc_path = DocPath::parse(path)?;
+        match self.store_tx.remove_doc(&doc_path) {
+            Ok(()) => Ok(()),
+            Err(dit_store::StoreError::NotFound(name)) => Err(DitError::NotFound(name)),
+            Err(e) => Err(e.into()),
+        }
     }
 
     pub fn comment(&mut self, id: &IssueId, alias: &str, body: &str) -> Result<IssueId, DitError> {
