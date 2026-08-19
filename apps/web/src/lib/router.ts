@@ -42,6 +42,7 @@ export function parseHash(hash: string): Route {
     return { name: "search", q };
   }
   if (first === "home") return { name: "home" };
+  if (first === "board") return { name: "board" };
   if (first === "issues") return { name: "issues" };
   if (first === "settings") return { name: "settings" };
   // Home is the landing view: capture, triage, orient — the board is one
