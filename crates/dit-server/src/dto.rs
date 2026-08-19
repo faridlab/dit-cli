@@ -5,8 +5,8 @@
 //! a wire change and a docs change never happen in separate universes.
 
 use dit_core::{
-    render_markdown, Comment, DataLayout, FieldPatch, IndexedIssue, Issue, IssueKind, Numbering,
-    Priority, StoredFieldEvent, Workflow, WorkflowStatus,
+    render_markdown, Comment, DataLayout, DocEntry, FieldPatch, IndexedIssue, Issue, IssueKind,
+    Numbering, Priority, StoredFieldEvent, Workflow, WorkflowStatus,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -250,6 +250,25 @@ pub struct RenderInputDto {
     pub text: String,
 }
 
+/// One row of the Docs listing (ADR 0010). `updated_ms` is the file's
+/// mtime, display metadata only — the page's real history is git.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct DocEntryDto {
+    pub path: String,
+    pub updated_ms: i64,
+    pub bytes: u64,
+}
+
+/// A page's contents, addressed by its `docs/…` path. Saves return the
+/// formatted body that landed, so the editor can show the canonical form.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct DocBodyDto {
+    pub path: String,
+    pub body: String,
+}
+
 /// The workspace's user-facing configuration (ADRs 0005 + 0007) — the thing
 /// `dit ui` shows so the layout is never a surprise and never a CLI-only
 /// knob. Both fields are closed enums on the wire; there is no free-form
@@ -359,6 +378,14 @@ pub fn issue_dto(issue: &Issue) -> IssueDto {
 
 pub fn indexed_dto(hit: &IndexedIssue) -> IssueDto {
     issue_dto(&hit.issue)
+}
+
+pub fn doc_entry_dto(entry: &DocEntry) -> DocEntryDto {
+    DocEntryDto {
+        path: entry.path.as_str().to_owned(),
+        updated_ms: entry.updated_ms,
+        bytes: entry.bytes,
+    }
 }
 
 pub fn comment_dto(issue_id: &dit_core::IssueId, comment: &Comment) -> CommentDto {

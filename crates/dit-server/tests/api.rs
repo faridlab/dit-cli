@@ -294,3 +294,72 @@ async fn settings_expose_the_layout_and_the_panel_can_change_it() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
     assert!(text.contains("`whenever` is not a numbering"), "{text}");
 }
+
+#[tokio::test]
+async fn the_docs_editor_round_trips_a_page() {
+    let (app, _tmp) = test_app();
+
+    // An untouched workspace lists pages, not an error.
+    let (status, list, _) = req(&app, "GET", "/api/docs", None).await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    assert_eq!(list.as_array().map(Vec::len), Some(0), "{list}");
+
+    // Save a new page: the response carries the formatted body that landed.
+    let (status, saved, text) = req(
+        &app,
+        "PUT",
+        "/api/docs/docs/editor-notes.md",
+        Some(json!({ "body": "# Notes\n\nFirst page.\n" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(saved["path"], "docs/editor-notes.md", "{saved}");
+    assert!(saved["body"].as_str().unwrap().contains("First page."));
+
+    // It reads back unchanged and appears in the listing.
+    let (status, page, text) = req(&app, "GET", "/api/docs/docs/editor-notes.md", None).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(page["body"], saved["body"], "{page}");
+    let (_, entries, _) = req(&app, "GET", "/api/docs", None).await;
+    let paths: Vec<&str> = entries
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["path"].as_str())
+        .collect();
+    assert_eq!(paths, ["docs/editor-notes.md"], "{entries}");
+
+    // Delete: 204 with no body, then the page is gone.
+    let (status, _, text) = req(&app, "DELETE", "/api/docs/docs/editor-notes.md", None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{text}");
+    assert!(text.is_empty(), "{text}");
+    let (status, body, text) = req(&app, "GET", "/api/docs/docs/editor-notes.md", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{text}");
+    assert!(
+        body["error"].as_str().unwrap().contains("editor-notes"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn doc_paths_that_cannot_exist_are_400s_and_missing_pages_are_404s() {
+    let (app, _tmp) = test_app();
+
+    // Traversal, non-markdown and wrong-root paths are malformed requests
+    // the editor can show inline — the `DocPath` sandbox surfaced as HTTP.
+    for uri in [
+        "/api/docs/docs/%2E%2E/outside.md",
+        "/api/docs/docs/notes.txt",
+        "/api/docs/issues/2026/x.md",
+        "/api/docs/docs/UPPER.md",
+    ] {
+        let (status, body, text) = req(&app, "PUT", uri, Some(json!({ "body": "x" }))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body} {text}");
+    }
+
+    // Reading or deleting a page that was never there is a 404.
+    let (status, _, text) = req(&app, "GET", "/api/docs/docs/never-there.md", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{text}");
+    let (status, _, text) = req(&app, "DELETE", "/api/docs/docs/never-there.md", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{text}");
+}

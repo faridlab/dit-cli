@@ -17,8 +17,9 @@ use serde::Deserialize;
 use tokio::sync::broadcast;
 
 use crate::dto::{
-    self, BoardColumnDto, BoardDto, BoardIssueDto, CommentDto, FieldEventDto, IssueDto,
-    IssueListDto, RenderInputDto, RenderOutputDto, SchemaDto, SettingsDto, StatusInfo,
+    self, BoardColumnDto, BoardDto, BoardIssueDto, CommentDto, DocBodyDto, DocEntryDto,
+    FieldEventDto, IssueDto, IssueListDto, RenderInputDto, RenderOutputDto, SchemaDto, SettingsDto,
+    StatusInfo,
 };
 use crate::state::AppState;
 
@@ -43,6 +44,11 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/api/issues/{id}/history", get(get_history))
         .route("/api/board", get(get_board))
         .route("/api/settings", get(get_settings).put(put_settings))
+        .route("/api/docs", get(list_docs))
+        .route(
+            "/api/docs/{*path}",
+            get(get_doc).put(put_doc).delete(delete_doc),
+        )
         .route("/api/markdown/render", post(render_markdown))
         .route("/api/events", get(events))
         .fallback(serve_uri)
@@ -128,6 +134,13 @@ impl From<ServerError> for ApiError {
             // A missing issue is the request naming something that isn't
             // there — the same 404 the resolver produces directly.
             ServerError::Dit(DitError::NotFound(m)) => ApiError::not_found(m),
+            // A page path that is not a legal location (wrong root,
+            // traversal shape, not `.md`) is a malformed request the
+            // editor can show inline — same class as a DQL parse error.
+            ServerError::Dit(err @ DitError::DocPath(_)) => ApiError {
+                status: StatusCode::BAD_REQUEST,
+                message: err.to_string(),
+            },
             // The facade refusing a takeover (migrating a dirty tree, a
             // layout the workspace already has) is a state the client can
             // surface and retry from — not a server fault.
@@ -370,6 +383,67 @@ async fn put_body(
     })
     .await?;
     Ok(Json(issue))
+}
+
+// -- docs (ADR 0010) -----------------------------------------------------------
+
+async fn list_docs(State(state): State<Arc<AppState>>) -> Result<Json<Vec<DocEntryDto>>, ApiError> {
+    let entries = read_dit(&state, move |dit| {
+        Ok(dit.list_docs().iter().map(dto::doc_entry_dto).collect())
+    })
+    .await?;
+    Ok(Json(entries))
+}
+
+async fn get_doc(
+    State(state): State<Arc<AppState>>,
+    Path(path): Path<String>,
+) -> Result<Json<DocBodyDto>, ApiError> {
+    let page = read_dit(&state, move |dit| {
+        dit.read_doc(&path)
+            .map(|body| DocBodyDto { path, body })
+            .map_err(ServerError::Dit)
+    })
+    .await?;
+    Ok(Json(page))
+}
+
+/// Create or overwrite a page. One save is one commit, formatted by
+/// `dit fmt` — the response carries the formatted body back so the editor
+/// can show exactly what landed.
+async fn put_doc(
+    State(state): State<Arc<AppState>>,
+    Path(path): Path<String>,
+    Json(input): Json<dto::BodyDto>,
+) -> Result<Json<DocBodyDto>, ApiError> {
+    let me = state.me.clone();
+    let saved = write_dit(&state, move |dit| {
+        let mut tx = dit.transaction(&me).map_err(ServerError::Dit)?;
+        tx.write_doc(&path, &input.body).map_err(ServerError::Dit)?;
+        tx.commit(&format!("dit docs save: {path}"))
+            .map_err(ServerError::Dit)?;
+        dit.read_doc(&path)
+            .map(|body| DocBodyDto { path, body })
+            .map_err(ServerError::Dit)
+    })
+    .await?;
+    Ok(Json(saved))
+}
+
+async fn delete_doc(
+    State(state): State<Arc<AppState>>,
+    Path(path): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let me = state.me.clone();
+    write_dit(&state, move |dit| {
+        let mut tx = dit.transaction(&me).map_err(ServerError::Dit)?;
+        tx.delete_doc(&path).map_err(ServerError::Dit)?;
+        tx.commit(&format!("dit docs delete: {path}"))
+            .map_err(ServerError::Dit)?;
+        Ok(())
+    })
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn list_comments(
