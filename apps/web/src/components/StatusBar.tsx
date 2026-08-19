@@ -45,7 +45,7 @@ export function StatusBar({ conn }: { conn: ConnectionState }) {
 
   if (status.isError) {
     return (
-      <footer className="flex h-7 items-center gap-3 border-t border-zinc-800 bg-zinc-950 px-3 font-mono text-[11px] text-zinc-500">
+      <footer className="flex h-7 items-center gap-3 border-t border-edge bg-app px-3.5 font-mono text-[11px] text-zinc-500">
         <span className="flex items-center gap-1.5 text-red-400">
           <CircleAlert className="size-3" aria-hidden />
           server unreachable
@@ -65,7 +65,7 @@ export function StatusBar({ conn }: { conn: ConnectionState }) {
   const repo = data ? data.repo.split("/").filter(Boolean).pop() ?? data.repo : "…";
 
   return (
-    <footer className="flex h-7 items-center gap-4 border-t border-zinc-800 bg-zinc-950 px-3 font-mono text-[11px] text-zinc-500">
+    <footer className="flex h-7 items-center gap-4 border-t border-edge bg-app px-3.5 font-mono text-[11px] text-zinc-500">
       <span className="flex items-center gap-1.5" title={data ? data.repo : undefined}>
         <span className="text-zinc-400">{repo}</span>
       </span>

@@ -12,6 +12,7 @@ import { NewIssueDialog } from "./NewIssueDialog";
 import { Sidebar } from "./Sidebar";
 import { StatusBar } from "./StatusBar";
 import { BoardView } from "../views/BoardView";
+import { HomeView } from "../views/HomeView";
 import { IssueDetailView } from "../views/IssueDetailView";
 import { IssuesView } from "../views/IssuesView";
 import { SearchView } from "../views/SearchView";
@@ -40,17 +41,18 @@ export function AppShell() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  // `dit serve` opens the browser without a fragment; default to the board
-  // so the address bar always reflects where you are.
+  // `dit serve` opens the browser without a fragment; default to Home so
+  // the address bar always reflects where you are.
   useEffect(() => {
-    if (window.location.hash === "") navigate({ name: "board" });
+    if (window.location.hash === "") navigate({ name: "home" });
   }, [navigate]);
 
   const openIssue = useCallback((id: string) => navigate({ name: "issue", id }), [navigate]);
   const openNewIssue = useCallback(() => setNewIssueOpen(true), []);
+  const openSearch = useCallback((q: string) => navigate({ name: "search", q }), [navigate]);
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden bg-zinc-950 text-zinc-200">
+    <div className="flex h-dvh flex-col overflow-hidden bg-app text-zinc-200">
       <div className="flex min-h-0 flex-1">
         <Sidebar
           route={route}
@@ -59,6 +61,9 @@ export function AppShell() {
           onOpenPalette={() => setPaletteOpen(true)}
         />
         <main className="flex min-w-0 flex-1 flex-col">
+          {route.name === "home" ? (
+            <HomeView conn={conn} onOpen={openIssue} onSearch={openSearch} />
+          ) : null}
           {route.name === "board" ? <BoardView onOpen={openIssue} /> : null}
           {route.name === "issues" ? <IssuesView onOpen={openIssue} /> : null}
           {route.name === "search" ? (

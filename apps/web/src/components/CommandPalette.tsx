@@ -6,13 +6,15 @@
 import { useEffect, useMemo, useState } from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { Command } from "cmdk";
-import { Columns3, ListTodo, Plus, Search } from "lucide-react";
+import { Columns3, House, ListTodo, Plus, Search } from "lucide-react";
 import { useIssues } from "../lib/queries";
 import { useDebouncedValue } from "../lib/hooks";
 import type { Route } from "../lib/router";
 import { PriorityDot, TypeBadge } from "./badges";
+import { Kbd } from "./chrome";
 
 const NAV_ITEMS: Array<{ label: string; route: Route; keywords: string }> = [
+  { label: "Go to Home", route: { name: "home" }, keywords: "home dashboard inbox triage" },
   { label: "Go to Board", route: { name: "board" }, keywords: "board kanban columns" },
   { label: "Go to Issues", route: { name: "issues" }, keywords: "issues list table" },
   { label: "Go to Search", route: { name: "search", q: "" }, keywords: "search dql query" },
@@ -79,7 +81,7 @@ export function CommandPalette({
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay className="fixed inset-0 z-40 bg-black/60" />
         <DialogPrimitive.Content
-          className="fixed left-1/2 top-28 z-50 w-[560px] max-w-[92vw] -translate-x-1/2 overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl"
+          className="fixed left-1/2 top-28 z-50 w-[560px] max-w-[92vw] -translate-x-1/2 overflow-hidden rounded-lg border border-ctl bg-card shadow-[0_25px_50px_-12px_rgba(0,0,0,0.8)]"
           onOpenAutoFocus={(event) => {
             // Let the command input take focus instead of the dialog itself.
             event.preventDefault();
@@ -87,7 +89,7 @@ export function CommandPalette({
         >
           <DialogPrimitive.Title className="sr-only">Command palette</DialogPrimitive.Title>
           <Command shouldFilter={false} className="flex flex-col" loop>
-            <div className="flex items-center gap-2 border-b border-zinc-800 px-3">
+            <div className="flex items-center gap-2 border-b border-edge px-3">
               <Search className="size-4 shrink-0 text-zinc-500" aria-hidden />
               <Command.Input
                 value={search}
@@ -95,9 +97,7 @@ export function CommandPalette({
                 placeholder="Search issues or type a command…"
                 className="h-11 w-full bg-transparent text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none"
               />
-              <kbd className="rounded border border-zinc-700 px-1 font-mono text-[10px] text-zinc-500">
-                esc
-              </kbd>
+              <Kbd>esc</Kbd>
             </div>
             <Command.List className="max-h-80 overflow-y-auto p-1.5">
               <Command.Empty className="px-3 py-6 text-center text-sm text-zinc-500">
@@ -114,9 +114,11 @@ export function CommandPalette({
                       key={item.label}
                       value={item.label}
                       onSelect={() => pick(() => onNavigate(item.route))}
-                      className="flex cursor-default items-center gap-2 rounded px-2 py-1.5 text-[13px] text-zinc-300 data-selected:bg-zinc-800 data-selected:text-zinc-100"
+                      className="flex cursor-default items-center gap-2 rounded px-2 py-1.5 text-[13px] text-zinc-300 data-selected:bg-edge data-selected:text-zinc-100"
                     >
-                      {item.route.name === "board" ? (
+                      {item.route.name === "home" ? (
+                        <House className="size-4 text-zinc-500" aria-hidden />
+                      ) : item.route.name === "board" ? (
                         <Columns3 className="size-4 text-zinc-500" aria-hidden />
                       ) : item.route.name === "issues" ? (
                         <ListTodo className="size-4 text-zinc-500" aria-hidden />
@@ -137,7 +139,7 @@ export function CommandPalette({
                   <Command.Item
                     value="new issue"
                     onSelect={() => pick(onNewIssue)}
-                    className="flex cursor-default items-center gap-2 rounded px-2 py-1.5 text-[13px] text-zinc-300 data-selected:bg-zinc-800 data-selected:text-zinc-100"
+                    className="flex cursor-default items-center gap-2 rounded px-2 py-1.5 text-[13px] text-zinc-300 data-selected:bg-edge data-selected:text-zinc-100"
                   >
                     <Plus className="size-4 text-zinc-500" aria-hidden />
                     New issue
@@ -168,7 +170,7 @@ export function CommandPalette({
                       key={issue.id}
                       value={issue.id}
                       onSelect={() => pick(() => onNavigate({ name: "issue", id: issue.short_ref }))}
-                      className="flex cursor-default items-center gap-2 rounded px-2 py-1.5 text-[13px] text-zinc-300 data-selected:bg-zinc-800 data-selected:text-zinc-100"
+                      className="flex cursor-default items-center gap-2 rounded px-2 py-1.5 text-[13px] text-zinc-300 data-selected:bg-edge data-selected:text-zinc-100"
                     >
                       <span className="font-mono text-xs tabular-nums text-zinc-500">
                         {issue.number !== null ? `#${issue.number}` : issue.short_ref}

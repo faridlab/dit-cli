@@ -10,6 +10,7 @@ import { useCreateIssue, useSchema } from "../lib/queries";
 import type { IssueDto, IssueType, Priority } from "../lib/types";
 import { parseCsvList } from "../lib/format";
 import { cn } from "../lib/cn";
+import { BUTTON_OUTLINED, BUTTON_PRIMARY, INPUT_CLASS } from "./chrome";
 
 const TYPE_OPTIONS: Array<{ value: IssueType; label: string }> = [
   { value: "task", label: "task" },
@@ -20,9 +21,6 @@ const TYPE_OPTIONS: Array<{ value: IssueType; label: string }> = [
 ];
 
 const PRIORITY_OPTIONS: Priority[] = ["p0", "p1", "p2", "p3", "p4"];
-
-const INPUT_CLASS =
-  "h-8 w-full rounded border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-200 placeholder:text-zinc-600 focus:border-sky-600 focus:outline-none";
 
 function Label({ children }: { children: React.ReactNode }) {
   return (
@@ -103,14 +101,14 @@ export function NewIssueDialog({
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay className="fixed inset-0 z-40 bg-black/60" />
         <DialogPrimitive.Content
-          className="fixed left-1/2 top-24 z-50 w-[520px] max-w-[92vw] -translate-x-1/2 rounded-lg border border-zinc-700 bg-zinc-900 p-4 shadow-2xl"
+          className="fixed left-1/2 top-24 z-50 w-[520px] max-w-[92vw] -translate-x-1/2 rounded-lg border border-ctl bg-panel p-4 shadow-[0_25px_50px_-12px_rgba(0,0,0,0.8)]"
         >
           <div className="mb-3 flex items-center justify-between">
-            <DialogPrimitive.Title className="text-sm font-semibold text-zinc-100">
+            <DialogPrimitive.Title className="text-[13px] font-semibold text-zinc-100">
               New issue
             </DialogPrimitive.Title>
             <DialogPrimitive.Close
-              className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+              className="rounded p-1 text-zinc-500 hover:bg-card hover:text-zinc-300"
               aria-label="Close"
             >
               <X className="size-4" aria-hidden />
@@ -194,14 +192,14 @@ export function NewIssueDialog({
               <button
                 type="button"
                 onClick={() => onOpenChange(false)}
-                className="rounded border border-zinc-700 px-3 py-1.5 text-xs text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
+                className={BUTTON_OUTLINED}
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={create.isPending}
-                className="rounded bg-sky-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-600 disabled:bg-zinc-800 disabled:text-zinc-500"
+                className={BUTTON_PRIMARY}
               >
                 {create.isPending ? "Creating…" : "Create issue"}
               </button>
