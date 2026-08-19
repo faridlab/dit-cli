@@ -11,8 +11,15 @@ import { Markdown } from "../components/Markdown";
 import { SelectField } from "../components/SelectField";
 import { AssigneeCircles, IssueHandle, PriorityDot, TypeBadge } from "../components/badges";
 import { ErrorBox, Loading } from "../components/states";
+import { INPUT_CLASS, SectionHeading } from "../components/chrome";
 import { ApiError } from "../lib/api";
-import { fullTimestamp, parseCsvList, relativeTime } from "../lib/format";
+import {
+  circleColor,
+  fullTimestamp,
+  initials,
+  parseCsvList,
+  relativeTime,
+} from "../lib/format";
 import {
   useAddComment,
   useComments,
@@ -21,11 +28,8 @@ import {
   usePatchIssue,
   useSchema,
 } from "../lib/queries";
-import type { IssueDto, IssueType, Priority } from "../lib/types";
+import type { FieldEventDto, IssueDto, IssueType, Priority } from "../lib/types";
 import { cn } from "../lib/cn";
-
-const INPUT_CLASS =
-  "h-7 w-full rounded border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-200 placeholder:text-zinc-600 focus:border-sky-600 focus:outline-none";
 
 const TYPE_OPTIONS: Array<{ value: IssueType; label: string }> = [
   { value: "task", label: "task" },
@@ -37,23 +41,10 @@ const TYPE_OPTIONS: Array<{ value: IssueType; label: string }> = [
 
 const PRIORITY_OPTIONS: Priority[] = ["p0", "p1", "p2", "p3", "p4"];
 
-const HISTORY_FIELDS = [
-  "status",
-  "title",
-  "priority",
-  "type",
-  "assignees",
-  "labels",
-  "estimate",
-  "due",
-  "sprint",
-  "epic",
-] as const;
-
 function FieldRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1">
-      <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+      <span className="text-[10.5px] font-medium uppercase tracking-[0.05em] text-zinc-500">
         {label}
       </span>
       {children}
@@ -96,8 +87,78 @@ function CommitInput({
       onKeyDown={(event) => {
         if (event.key === "Enter") commit(event);
       }}
-      className={INPUT_CLASS}
+      className={cn(INPUT_CLASS, "w-full")}
     />
+  );
+}
+
+/** Labels as chips: click × to drop one, "+ label" to add. Every commit
+ *  sends the whole array — the patch replaces the set. */
+function LabelEditor({
+  labels,
+  disabled,
+  onCommit,
+}: {
+  labels: string[];
+  disabled?: boolean;
+  onCommit: (labels: string[]) => void;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState("");
+
+  const commit = () => {
+    const added = parseCsvList(draft);
+    setAdding(false);
+    setDraft("");
+    if (added.length === 0) return;
+    onCommit([...labels, ...added.filter((label) => !labels.includes(label))]);
+  };
+
+  return (
+    <span className="flex flex-wrap gap-1.5">
+      {labels.map((label) => (
+        <button
+          key={label}
+          type="button"
+          disabled={disabled}
+          onClick={() => onCommit(labels.filter((each) => each !== label))}
+          title={`Remove ${label}`}
+          className="group flex items-center gap-1.5 rounded-[3px] border border-ctl bg-card px-2 py-0.5 font-mono text-[11px] text-zinc-300 hover:border-red-400 hover:text-red-300 disabled:opacity-50"
+        >
+          {label}
+          <span className="text-dim group-hover:text-red-300" aria-hidden>
+            ×
+          </span>
+        </button>
+      ))}
+      {adding ? (
+        <input
+          autoFocus
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={commit}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") commit();
+            if (event.key === "Escape") {
+              setAdding(false);
+              setDraft("");
+            }
+          }}
+          placeholder="label, label"
+          aria-label="Add labels"
+          className="h-[24px] w-28 rounded-[3px] border border-accent bg-app px-1.5 font-mono text-[11px] text-zinc-200 focus:outline-none"
+        />
+      ) : (
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => setAdding(true)}
+          className="rounded-[3px] border border-dashed border-ctl px-2 py-0.5 font-mono text-[11px] text-dim hover:border-zinc-400 hover:text-zinc-400 disabled:opacity-50"
+        >
+          + label
+        </button>
+      )}
+    </span>
   );
 }
 
@@ -106,18 +167,22 @@ function CommentsSection({ issueId }: { issueId: string }) {
   const add = useAddComment(issueId);
   const [draft, setDraft] = useState("");
 
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
+  const send = () => {
     const body = draft.trim();
     if (body.length === 0 || add.isPending) return;
     add.mutate(body, { onSuccess: () => setDraft("") });
   };
 
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    send();
+  };
+
   return (
-    <section className="mt-2 border-t border-zinc-800 pt-3">
-      <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-400">
+    <section>
+      <SectionHeading size="sm" className="mb-3">
         Comments
-      </h2>
+      </SectionHeading>
       {comments.isPending ? <Loading label="Loading comments…" /> : null}
       {comments.isError ? (
         <ErrorBox
@@ -129,99 +194,91 @@ function CommentsSection({ issueId }: { issueId: string }) {
       {comments.data && comments.data.length === 0 ? (
         <p className="text-xs text-zinc-600">No comments yet.</p>
       ) : null}
-      <ul className="flex flex-col gap-3">
+      <ul className="mb-3 flex flex-col gap-2.5">
         {(comments.data ?? []).map((comment) => (
-          <li key={comment.id} className="flex gap-2">
+          <li key={comment.id} className="flex gap-2.5">
             <span
-              className="mt-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded-full bg-zinc-700 font-mono text-[9px] text-zinc-200"
+              className={cn(
+                "mt-0.5 inline-flex size-[22px] shrink-0 items-center justify-center rounded-full font-mono text-[9px] leading-none text-white",
+                circleColor(comment.author),
+              )}
               title={comment.author}
             >
-              {comment.author.slice(0, 2).toUpperCase()}
+              {initials(comment.author)}
             </span>
-            <div className="min-w-0 flex-1 rounded-md border border-zinc-800 bg-zinc-950/60 px-3 py-2">
+            <div className="min-w-0 flex-1 rounded-lg border border-edge bg-card/60 px-3 py-2.5">
               <div className="flex items-baseline gap-2">
-                <span className="font-mono text-[11px] text-zinc-300">{comment.author}</span>
+                <span className="font-mono text-[11.5px] text-zinc-300">{comment.author}</span>
                 <span
-                  className="text-[11px] text-zinc-600"
+                  className="text-[11.5px] text-dim"
                   title={fullTimestamp(comment.created)}
                 >
                   {relativeTime(comment.created)}
                 </span>
               </div>
-              <Markdown html={comment.body_html} className="mt-1 text-[13px]" />
+              <Markdown html={comment.body_html} className="mt-1.5 text-sm" />
             </div>
           </li>
         ))}
       </ul>
-      <form onSubmit={submit} className="mt-3 flex flex-col gap-2">
+      <form onSubmit={submit} className="flex flex-col gap-2">
         <textarea
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            // Ctrl/⌘+Enter sends — the mouse never has to leave the keyboard.
+            if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+              event.preventDefault();
+              send();
+            }
+          }}
           placeholder="Write a comment (markdown)…"
           rows={3}
-          className={cn(INPUT_CLASS, "h-auto resize-y py-1.5 font-mono")}
+          className={cn(INPUT_CLASS, "h-auto w-full resize-y bg-app py-2.5 font-mono text-[12.5px]")}
         />
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2.5">
           <button
             type="submit"
             disabled={draft.trim().length === 0 || add.isPending}
-            className="rounded bg-sky-700 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-sky-600 disabled:bg-zinc-800 disabled:text-zinc-500"
+            className="rounded-md bg-accent px-2.5 py-1 text-[11px] font-medium text-white hover:bg-accent-hi disabled:bg-card disabled:text-zinc-500"
           >
             Comment
           </button>
-          <span className="text-[11px] text-zinc-600">Ctrl/⌘+Enter to send</span>
+          <span className="text-[11.5px] text-dim">Ctrl/⌘+Enter to send</span>
         </div>
       </form>
     </section>
   );
 }
 
-function HistorySection({ issueId }: { issueId: string }) {
-  const [field, setField] = useState<string>("status");
-  const events = useFieldEvents(issueId, field);
-
+function HistorySection({ events }: { events: FieldEventDto[] }) {
   return (
-    <section className="mt-4 border-t border-zinc-800 pt-3">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">History</h2>
-        <select
-          value={field}
-          onChange={(event) => setField(event.target.value)}
-          aria-label="History field"
-          className="h-6 rounded border border-zinc-700 bg-zinc-950 px-1 text-[11px] text-zinc-300 focus:border-sky-600 focus:outline-none"
-        >
-          {HISTORY_FIELDS.map((name) => (
-            <option key={name} value={name}>
-              {name}
-            </option>
-          ))}
-        </select>
+    <section>
+      <div className="mb-2.5 flex items-center justify-between gap-2">
+        <SectionHeading size="sm">History</SectionHeading>
+        <span className="text-[11px] text-dim">all fields · by seq</span>
       </div>
-      {events.isPending ? <Loading label="Loading history…" /> : null}
-      {events.isError ? (
-        <ErrorBox
-          error={events.error}
-          title="Could not load history"
-          onRetry={() => void events.refetch()}
-        />
-      ) : null}
-      {events.data && events.data.length === 0 ? (
-        <p className="text-xs text-zinc-600">No recorded changes for {field}.</p>
+      {events.length === 0 ? (
+        <p className="text-xs text-zinc-600">No recorded changes yet.</p>
       ) : null}
       <ol className="flex flex-col">
-        {(events.data ?? []).map((event) => (
+        {events.map((event) => (
           // The server orders by seq — the order things actually happened,
           // newest last. Re-sorting by timestamp would invent contradictions.
-          <li key={event.seq} className="flex flex-col border-l border-zinc-800 py-1 pl-2">
-            <div className="flex items-baseline gap-2 text-[11px] text-zinc-500">
-              <span className="font-mono tabular-nums text-zinc-600">#{event.seq}</span>
-              <span title={fullTimestamp(event.ts)}>{relativeTime(event.ts)}</span>
-              {event.author ? <span className="font-mono text-zinc-400">{event.author}</span> : null}
-            </div>
-            <div className="font-mono text-[11px] text-zinc-300">
-              <span className="text-zinc-500">{event.old_value ?? "∅"}</span>
-              <span className="mx-1.5 text-zinc-600">→</span>
-              <span>{event.new_value ?? "∅"}</span>
+          <li key={event.seq} className="flex gap-2.5 border-l border-edge py-2 pl-3">
+            <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-edge" aria-hidden />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-baseline gap-2 text-[11px] text-zinc-500">
+                <span className="font-mono tabular-nums text-dim">#{event.seq}</span>
+                <span className="font-mono text-zinc-400">{event.author}</span>
+                <span className="ml-auto" title={fullTimestamp(event.ts)}>
+                  {relativeTime(event.ts)}
+                </span>
+              </div>
+              <p className="mt-0.5 text-[12.5px] text-zinc-300">{event.field}</p>
+              <p className="mt-px font-mono text-[11px] text-zinc-500">
+                {event.old_value ?? "∅"} → {event.new_value ?? "∅"}
+              </p>
             </div>
           </li>
         ))}
@@ -230,7 +287,13 @@ function HistorySection({ issueId }: { issueId: string }) {
   );
 }
 
-function FieldRail({ issue }: { issue: IssueDto }) {
+function FieldRail({
+  issue,
+  history,
+}: {
+  issue: IssueDto;
+  history: FieldEventDto[];
+}) {
   const schema = useSchema();
   const patch = usePatchIssue(issue.id);
 
@@ -240,99 +303,121 @@ function FieldRail({ issue }: { issue: IssueDto }) {
       ? statuses.map((status) => ({ value: status.id, label: status.label }))
       : [{ value: issue.status, label: issue.status }];
 
+  // "Who touched it last", per field, derived from the one unfiltered
+  // history query — never stored (invariant 5).
+  const blameFor = (field: string): string | null => {
+    for (let i = history.length - 1; i >= 0; i--) {
+      const event = history[i];
+      if (event && event.field === field) {
+        return `${event.author}, ${relativeTime(event.ts)}`;
+      }
+    }
+    return null;
+  };
+  const statusBlame = blameFor("status");
+
   return (
-    <aside className="flex w-72 shrink-0 flex-col gap-3 overflow-y-auto border-l border-zinc-800 p-3">
-      <FieldRow label="Status">
-        <SelectField
-          ariaLabel="Status"
-          value={issue.status}
-          options={statusOptions}
-          disabled={patch.isPending}
-          onChange={(status) => patch.mutate({ status })}
-        />
-      </FieldRow>
-      <FieldRow label="Type">
-        <SelectField
-          ariaLabel="Type"
-          value={issue.type}
-          options={TYPE_OPTIONS}
-          disabled={patch.isPending}
-          onChange={(type) => patch.mutate({ type })}
-        />
-      </FieldRow>
-      <FieldRow label="Priority">
-        <SelectField
-          ariaLabel="Priority"
-          value={issue.priority ?? ""}
-          options={PRIORITY_OPTIONS.map((value) => ({ value, label: value }))}
-          disabled={patch.isPending}
-          onChange={(priority) => patch.mutate({ priority })}
-        />
-      </FieldRow>
-      <FieldRow label="Assignees">
-        <CommitInput
-          initial={issue.assignees.join(", ")}
-          format="csv"
-          placeholder="alias, alias"
-          onCommit={(assignees) => patch.mutate({ assignees: parseCsvList(assignees) })}
-        />
-      </FieldRow>
-      <FieldRow label="Labels">
-        <CommitInput
-          initial={issue.labels.join(", ")}
-          format="csv"
-          placeholder="area, team"
-          onCommit={(labels) => patch.mutate({ labels: parseCsvList(labels) })}
-        />
-      </FieldRow>
-      <FieldRow label="Estimate">
-        <CommitInput
-          initial={issue.estimate === null ? "" : String(issue.estimate)}
-          type="number"
-          placeholder="—"
-          onCommit={(value) => {
-            const trimmed = value.trim();
-            if (trimmed.length > 0) patch.mutate({ estimate: Number(trimmed) });
-          }}
-        />
-      </FieldRow>
-      <FieldRow label="Due">
-        <CommitInput
-          initial={issue.due ?? ""}
-          type="date"
-          onCommit={(value) => {
-            const trimmed = value.trim();
-            if (trimmed.length > 0) patch.mutate({ due: trimmed });
-          }}
-        />
-      </FieldRow>
-      <FieldRow label="Sprint">
-        <CommitInput
-          initial={issue.sprint ?? ""}
-          placeholder="—"
-          onCommit={(value) => {
-            const trimmed = value.trim();
-            if (trimmed.length > 0) patch.mutate({ sprint: trimmed });
-          }}
-        />
-      </FieldRow>
-      <FieldRow label="Epic">
-        <span className="font-mono text-xs text-zinc-400">{issue.epic ?? "—"}</span>
-      </FieldRow>
-      <FieldRow label="Reporter">
-        <span className="font-mono text-xs text-zinc-400">{issue.reporter ?? "—"}</span>
-      </FieldRow>
-      <FieldRow label="Created">
-        <span className="text-xs text-zinc-500" title={fullTimestamp(issue.created)}>
-          {relativeTime(issue.created)}
-        </span>
-      </FieldRow>
-      <FieldRow label="Updated">
-        <span className="text-xs text-zinc-500" title={fullTimestamp(issue.updated)}>
-          {relativeTime(issue.updated)}
-        </span>
-      </FieldRow>
-      <HistorySection issueId={issue.id} />
+    <aside className="flex w-[288px] shrink-0 flex-col gap-5 overflow-y-auto border-l border-edge px-4 pb-7 pt-5 min-[1180px]:w-[336px]">
+      <section>
+        <div className="mb-2.5 flex items-center justify-between gap-2">
+          <SectionHeading size="sm">Fields</SectionHeading>
+          <span className="text-[11px] text-dim">who touched it last</span>
+        </div>
+        <div className="flex flex-col gap-3">
+          <FieldRow label="Status">
+            <SelectField
+              ariaLabel="Status"
+              value={issue.status}
+              options={statusOptions}
+              disabled={patch.isPending}
+              onChange={(status) => patch.mutate({ status })}
+            />
+            {statusBlame ? <span className="text-[11px] text-dim">{statusBlame}</span> : null}
+          </FieldRow>
+          <FieldRow label="Type">
+            <SelectField
+              ariaLabel="Type"
+              value={issue.type}
+              options={TYPE_OPTIONS}
+              disabled={patch.isPending}
+              onChange={(type) => patch.mutate({ type })}
+            />
+          </FieldRow>
+          <FieldRow label="Priority">
+            {/* No "clear" affordance: v0.1's patch contract treats null as
+                "absent", so a field can be changed but not emptied. */}
+            <SelectField
+              ariaLabel="Priority"
+              value={issue.priority ?? ""}
+              options={PRIORITY_OPTIONS.map((value) => ({ value, label: value }))}
+              disabled={patch.isPending}
+              onChange={(priority) => patch.mutate({ priority })}
+            />
+          </FieldRow>
+          <FieldRow label="Assignees">
+            <CommitInput
+              initial={issue.assignees.join(", ")}
+              format="csv"
+              placeholder="alias, alias"
+              onCommit={(assignees) => patch.mutate({ assignees: parseCsvList(assignees) })}
+            />
+          </FieldRow>
+          <FieldRow label="Labels">
+            <LabelEditor
+              labels={issue.labels}
+              disabled={patch.isPending}
+              onCommit={(labels) => patch.mutate({ labels })}
+            />
+          </FieldRow>
+          <FieldRow label="Estimate">
+            <CommitInput
+              initial={issue.estimate === null ? "" : String(issue.estimate)}
+              type="number"
+              placeholder="—"
+              onCommit={(value) => {
+                const trimmed = value.trim();
+                if (trimmed.length > 0) patch.mutate({ estimate: Number(trimmed) });
+              }}
+            />
+          </FieldRow>
+          <FieldRow label="Due">
+            <CommitInput
+              initial={issue.due ?? ""}
+              type="date"
+              onCommit={(value) => {
+                const trimmed = value.trim();
+                if (trimmed.length > 0) patch.mutate({ due: trimmed });
+              }}
+            />
+          </FieldRow>
+          <FieldRow label="Sprint">
+            <CommitInput
+              initial={issue.sprint ?? ""}
+              placeholder="—"
+              onCommit={(value) => {
+                const trimmed = value.trim();
+                if (trimmed.length > 0) patch.mutate({ sprint: trimmed });
+              }}
+            />
+          </FieldRow>
+        </div>
+      </section>
+
+      <HistorySection events={history} />
+
+      {/* Epic is read-only here: v0.1's patch contract has no epic field, so
+          linking an issue into an epic is an edit to the issue file itself. */}
+      <p className="mt-auto border-t border-edge pt-3 font-mono text-[11px] leading-relaxed text-dim">
+        {issue.epic ? (
+          <>
+            epic {issue.epic.slice(0, 8)}
+            <br />
+          </>
+        ) : null}
+        reported by {issue.reporter ?? "—"}
+        <br />
+        created {relativeTime(issue.created)} · updated {relativeTime(issue.updated)}
+      </p>
     </aside>
   );
 }
@@ -342,16 +427,14 @@ function DescriptionSection({ issue }: { issue: IssueDto }) {
 
   return (
     <section>
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
-          Description
-        </h2>
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <SectionHeading size="sm">Description</SectionHeading>
         <button
           type="button"
           onClick={() => setEditing((value) => !value)}
           className={cn(
-            "flex items-center gap-1 rounded border border-zinc-700 px-2 py-0.5 text-[11px]",
-            editing ? "text-zinc-300 hover:border-zinc-500" : "text-zinc-400 hover:border-zinc-500",
+            "flex items-center gap-1 rounded-md border border-ctl px-2 py-0.5 text-[11.5px] transition-colors hover:border-zinc-400",
+            editing ? "text-zinc-200" : "text-zinc-400",
           )}
         >
           {editing ? <X className="size-3" aria-hidden /> : <Pencil className="size-3" aria-hidden />}
@@ -361,11 +444,11 @@ function DescriptionSection({ issue }: { issue: IssueDto }) {
       {editing ? (
         <BodyEditor issueId={issue.id} body={issue.body} />
       ) : issue.body.trim().length === 0 ? (
-        <p className="rounded-md border border-dashed border-zinc-800 px-3 py-6 text-center text-xs text-zinc-600">
+        <p className="rounded-lg border border-dashed border-edge px-3 py-6 text-center text-xs text-zinc-600">
           No description.
         </p>
       ) : (
-        <Markdown html={issue.body_html} className="text-[13px]" />
+        <Markdown html={issue.body_html} className="text-[14.5px] leading-relaxed" />
       )}
     </section>
   );
@@ -376,6 +459,9 @@ export function IssueDetailView({ id }: { id: string }) {
   // Header and rail both edit this issue; one mutation hook before any early
   // return keeps hook order stable and the saving indicator shared.
   const patch = usePatchIssue(id);
+  // One unfiltered history query feeds both the blame lines and the
+  // timeline — the field param exists on the wire but costs a second request.
+  const history = useFieldEvents(id);
 
   if (issue.isPending) {
     return <Loading label={`Loading ${id}…`} className="flex-1" />;
@@ -395,17 +481,17 @@ export function IssueDetailView({ id }: { id: string }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex items-center gap-3 border-b border-zinc-800 px-3 py-2">
+      <header className="flex items-center gap-3 border-b border-edge px-5 py-3">
         <a
           href="#/issues"
           title="Back to issues"
-          className="rounded p-1 text-zinc-500 hover:bg-zinc-900 hover:text-zinc-300"
+          className="rounded-md p-1 text-zinc-500 hover:bg-card hover:text-zinc-300"
         >
           <ArrowLeft className="size-4" aria-hidden />
         </a>
         <IssueHandle shortRef={data.short_ref} number={data.number} />
         <span
-          className="font-mono text-[10px] text-zinc-600"
+          className="font-mono text-[10px] text-dim"
           title="the permanent short ref behind the number"
         >
           {data.short_ref}
@@ -425,18 +511,18 @@ export function IssueDetailView({ id }: { id: string }) {
             const title = event.currentTarget.value.trim();
             if (title.length > 0 && title !== data.title) patch.mutate({ title });
           }}
-          className="min-w-0 flex-1 rounded border border-transparent bg-transparent px-1.5 py-0.5 text-sm font-medium text-zinc-100 hover:border-zinc-700 focus:border-sky-600 focus:outline-none"
+          className="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1.5 py-0.5 text-base font-semibold text-zinc-100 hover:border-ctl focus:border-accent focus:outline-none"
         />
-        {patch.isPending ? <span className="text-[11px] text-zinc-500">Saving…</span> : null}
+        {patch.isPending ? <span className="text-[11.5px] text-dim">Saving…</span> : null}
         <AssigneeCircles assignees={data.assignees} />
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <div className="min-w-0 flex-1 overflow-y-auto p-4">
+        <div className="flex min-w-0 flex-1 flex-col gap-[22px] overflow-y-auto px-6 pb-8 pt-5">
           <DescriptionSection issue={data} />
           <CommentsSection issueId={data.id} />
         </div>
-        <FieldRail issue={data} />
+        <FieldRail issue={data} history={history.data ?? []} />
       </div>
     </div>
   );
