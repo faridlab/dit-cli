@@ -11,9 +11,11 @@ import { relativeTime } from "../lib/format";
 import { cn } from "../lib/cn";
 import { Markdown } from "../components/Markdown";
 import { BUTTON_OUTLINED, BUTTON_PRIMARY, SectionHeading } from "../components/chrome";
+import { EditorModeToggle, type EditorMode } from "../components/EditorModeToggle";
 import { Empty, ErrorBox, Loading } from "../components/states";
 
 const CodeMirrorEditor = lazy(() => import("../editor/CodeMirrorEditor"));
+const RichEditor = lazy(() => import("../editor/RichEditor"));
 
 const DOC_ROOTS = ["docs", "notes", "epics", "changelogs"] as const;
 
@@ -61,6 +63,7 @@ export function DocsView({
   // creating a page can open the editor on the fresh path in one step.
   const [editingPath, setEditingPath] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [editMode, setEditMode] = useState<EditorMode>("rich");
   const [newPath, setNewPath] = useState("");
   const [newPathError, setNewPathError] = useState<string | null>(null);
 
@@ -72,13 +75,19 @@ export function DocsView({
 
   const startEditing = () => {
     setDraft(doc.data?.body ?? "");
+    setEditMode("rich");
     setEditingPath(p);
   };
 
-  const saveNow = () => {
-    if (p === null || put.isPending || draft === (doc.data?.body ?? "")) return;
+  // The rich editor serializes asynchronously, so it hands the exact bytes it
+  // just produced to this save — no racing a debounced setState.
+  const saveNow = (markdown?: string) => {
+    if (p === null || put.isPending) return;
+    const next = markdown ?? draft;
+    if (next === (doc.data?.body ?? "")) return;
+    setDraft(next);
     put.mutate(
-      { path: p, body: draft },
+      { path: p, body: next },
       {
         onSuccess: (saved) => {
           setEditingPath(null);
@@ -104,6 +113,7 @@ export function DocsView({
           setNewPath("");
           onSelect(saved.path);
           setDraft(saved.body);
+          setEditMode("rich");
           setEditingPath(saved.path);
         },
       },
@@ -269,7 +279,7 @@ export function DocsView({
                     </span>
                     <button
                       type="button"
-                      onClick={saveNow}
+                      onClick={() => saveNow()}
                       disabled={put.isPending || draft === doc.data.body}
                       className={BUTTON_PRIMARY}
                     >
@@ -312,14 +322,29 @@ export function DocsView({
             <div className="min-h-0 flex-1 overflow-y-auto">
               {editing ? (
                 <div className="flex h-full flex-col">
-                  <div className="min-h-0 flex-1 border-b border-edge">
-                    <Suspense fallback={<Loading label="Loading editor…" />}>
-                      <CodeMirrorEditor value={draft} onChange={setDraft} onSave={saveNow} />
-                    </Suspense>
+                  <div className="flex shrink-0 items-center gap-3 border-b border-edge px-4 py-1.5">
+                    <EditorModeToggle mode={editMode} onChange={setEditMode} showPreview={false} />
+                    <p className="text-[11px] text-zinc-600">
+                      Mod+Enter saves · one save is one commit, formatted by dit fmt
+                    </p>
                   </div>
-                  <p className="shrink-0 px-4 py-2 text-[11px] text-zinc-600">
-                    Markdown · Mod+Enter saves · one save is one commit, formatted by dit fmt
-                  </p>
+                  <div className="min-h-0 flex-1 overflow-y-auto">
+                    <div className="mx-auto h-full w-full max-w-[860px] px-6 py-4">
+                      <Suspense fallback={<Loading label="Loading editor…" />}>
+                        {editMode === "rich" ? (
+                          <RichEditor
+                            value={draft}
+                            onChange={setDraft}
+                            onSave={saveNow}
+                            onFallbackToSource={() => setEditMode("source")}
+                            className="h-full"
+                          />
+                        ) : (
+                          <CodeMirrorEditor value={draft} onChange={setDraft} onSave={saveNow} />
+                        )}
+                      </Suspense>
+                    </div>
+                  </div>
                 </div>
               ) : rendered.data ? (
                 <div className="mx-auto w-full max-w-[760px] px-8 py-6">

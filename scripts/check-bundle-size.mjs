@@ -22,6 +22,7 @@ const DIST = fileURLToPath(new URL("../apps/web/dist/assets", import.meta.url));
 const BUDGET_KB = {
   "entry (js)": 350,   // React + Radix + TanStack + shell
   "entry (css)": 60,   // Tailwind output is tiny; a blowup means a runtime CSS lib crept in
+  "wasm (bridge)": 260, // dit-parse + comrak; measured 217 KB gz. Raising it needs an ADR.
 };
 
 // Lazy chunks are exempt from the entry budget but capped individually.
@@ -42,6 +43,8 @@ const entryCss = files.filter(({ f }) => /^index-.*\.css$/.test(f));
 const lazy = files.filter(
   ({ f, p }) => f.endsWith(".js") && !/^index-/.test(f) && statSync(p).isFile(),
 );
+// The editor bridge. One artifact, loaded only when a rich editor mounts.
+const wasm = files.filter(({ f }) => f.endsWith(".wasm"));
 
 let failed = false;
 const check = (label, list, budget) => {
@@ -53,6 +56,20 @@ const check = (label, list, budget) => {
 
 check("entry (js)", entryJs, BUDGET_KB["entry (js)"]);
 check("entry (css)", entryCss, BUDGET_KB["entry (css)"]);
+check("wasm (bridge)", wasm, BUDGET_KB["wasm (bridge)"]);
+
+// The wasm artifact must be reachable only through the lazy editor chunk: an
+// eager reference would make every page load pay for the bridge.
+for (const { f, p } of entryJs) {
+  if (readFileSync(p, "utf8").includes(".wasm")) {
+    failed = true;
+    console.log(`FAIL entry references the wasm bridge eagerly: ${f}`);
+  }
+}
+if (wasm.length > 1) {
+  failed = true;
+  console.log(`FAIL expected one wasm artifact, found ${wasm.length}`);
+}
 
 for (const { f, p } of lazy) {
   const kb = gz(p);

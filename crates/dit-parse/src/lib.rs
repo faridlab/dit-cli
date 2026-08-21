@@ -17,6 +17,7 @@ pub mod fmt;
 pub mod frontmatter;
 pub mod html;
 pub mod issue;
+pub mod prosemirror;
 pub mod schema;
 pub mod yaml;
 
@@ -26,5 +27,6 @@ pub use html::render_html;
 pub use issue::{
     apply_patch, issue_from_document, parse_issue, serialize_new_issue, IssueParseError,
 };
+pub use prosemirror::{doc_to_markdown, markdown_to_doc, ProseMirrorError};
 pub use schema::{parse_config, parse_workflow, write_config, write_workflow, SchemaError};
 pub use yaml::{parse as parse_yaml, Yaml, YamlError};

@@ -459,6 +459,8 @@ version = "0.1.4"
 dependencies = [
  "comrak",
  "dit-model",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 
@@ -523,6 +525,8 @@ dependencies = [
  "dit-model",
  "dit-parse",
  "dit-query",
+ "serde_json",
+ "wasm-bindgen",
 ]
 
 [[package]]

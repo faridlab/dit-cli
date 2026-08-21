@@ -969,13 +969,14 @@ dit/
 │   ├── dit-cli/       clap + ratatui (TUI mode).
 │   ├── dit-server/    axum HTTP + WebSocket + embedded UI.
 │   │                  ★ This is the primary UI surface (§6.5).
-│   └── dit-wasm/      wasm-bindgen on top of model+parse+query.
-│                      Optional — optimization & Web Viewer, not a prerequisite.
+│   └── dit-wasm/      wasm-bindgen on top of parse: the editor's
+│                      markdown↔ProseMirror bridge (ADR 0011), built
+│                      into apps/web by `just wasm-build`.
 └── apps/
     └── web/           React + TypeScript + Vite
 ```
 
-**Boundary rules that must never be broken:** `dit-model`, `dit-parse`, and `dit-query` must always compile to `wasm32-unknown-unknown` and must never have I/O dependencies. This is enforced in CI with a `cargo check --target wasm32-unknown-unknown -p dit-model -p dit-parse -p dit-query` job. This rule is what makes your WASM plan actually work rather than merely aspirational.
+**Boundary rules that must never be broken:** `dit-model`, `dit-parse`, and `dit-query` must always compile to `wasm32-unknown-unknown` and must never have I/O dependencies. This is enforced in CI with a `cargo check --target wasm32-unknown-unknown -p dit-model -p dit-parse -p dit-query -p dit-wasm` job. This rule is what makes your WASM plan actually work rather than merely aspirational.
 
 > **Budget warning: `dit-parse` is not a one-line job.**
 > The requirement "safe round-trip, comments and key order preserved" has no mature Rust solution as of today. `serde_yaml` has been archived (0.9.34+deprecated, last touched in 2024); `serde_yml` flags itself as unmaintained; `yaml-rust2` is a parser without round-trip preservation; `saphyr` is still pre-1.0. Not one of them gives you typed-serde + comment preservation + key-order preservation all at once.
@@ -1458,7 +1459,7 @@ This is the section that usually gets skipped in a design doc and becomes the re
 | 9 | Rebuilding Jira but worse (scope creep) | **High** | A strict roadmap. Reject features that do not exploit git. If a feature would be implemented exactly the same way as in Jira, that is a signal it does not belong in DIT. |
 | 10 | Clone time & contributor onboarding on a large repo | Medium | Partial clone + sparse cone + archive. Embeddings as a CI artifact, not a 20-minute rebuild on every new machine. |
 | 11 | The minimum git version excludes LTS distros (**Mode B only**) | Low | The `commit-tree` + `update-ref` path, which does not need `--orphan` (§5.1), as the default. Version check in `dit doctor`. |
-| 12 | **The ProseMirror↔Rust bridge leaks: opening an issue in the UI produces a spurious diff** | **High** | A single serialization in Rust (§12.2) + mandatory `dit fmt` + v0.4 exit criteria that test this directly ("open 50 issues, close them, `git status` must be clean"). If the bridge leaks, every UI session pollutes the history and triggers body conflicts. |
+| 12 | **The ProseMirror↔Rust bridge leaks: opening an issue in the UI produces a spurious diff** | **High** | A single serialization in Rust (§12.2) + mandatory `dit fmt` + v0.4 exit criteria that test this directly ("open 50 issues, close them, `git status` must be clean"). If the bridge leaks, every UI session pollutes the history and triggers body conflicts. **Mitigated as of ADR 0011:** both directions run the same `format_ast` pipeline in `dit-parse`, round-tripped over the repo corpus in tests; the editor additionally refuses to load or save anything the bridge rejects (conflict markers included). |
 | 13 | `experimental_minimize_commonmark` is an experimental option on the critical path | Medium | Pin the comrak version. Round-trip regression tests over a corpus of real markdown in CI. Prepare a fallback: our own serializer on top of comrak's AST if that option is removed. |
 | 14 | The editor's license changes tier (core features become paid) | Low | **TipTap decided** (§12.4), MIT core, and its Pro features are irrelevant because git already provides them. The bridge lives on the Rust side, so swapping the editor library does not touch the data format. |
 | 15 | Mode A doubles the contributor setup steps (two clones, two links) | Medium | `dit init --track` is idempotent; `dit doctor` detects a missing link and walks you through fixing it; a `README.md` at the root of the DIT repo explains the structure. |
@@ -1600,6 +1601,10 @@ Merge ──┘         │        │                                          
 The editor never writes markdown. It receives ProseMirror JSON **produced by Rust** from the file, and returns ProseMirror JSON **serialized by Rust** into the file. The consequence: the CLI, the editor, the AI, and the merge driver are mathematically incapable of producing different bytes.
 
 This is also the second strong reason for WASM — and a more concrete one than the DQL parser reason in §6.4.
+
+**Status: built.** `dit_parse::prosemirror` implements both directions — `markdown_to_doc` (comrak AST → PM JSON) and `doc_to_markdown` (PM JSON → comrak AST → the **same `format_ast` pipeline `dit fmt` runs**, so byte-identity is structural, not tested-in-after-the-fact). `crates/dit-wasm` wraps the two functions for the browser (string in, string out; ~217 KB gz measured, capped at 260 by the bundle gate), and `apps/web/src/editor/bridge.ts` is the only module that loads it. The full mapping, the three deliberate schema deviations (per-item `listItem.task`, first-row-pinned `tableRow.isHeader` + cell types, `hardBreak.soft`), the verbatim raw-HTML nodes, and the strict incoming-JSON validation are recorded in **ADR 0011**. New `dit-parse` deps, recorded here per the no-silent-dependency rule (§9): `serde` + `serde_json` (workspace versions, wasm-clean) — the bridge's PM JSON is the only thing they touch.
+
+One consequence deserves its own line: **the editor normalizes shapes before they reach the serializer.** A tight list whose item has two paragraphs serializes to lines that *reparse* as one paragraph (lazy continuation) — verified by probe before designing around it. The editor's shape plugin loosens exactly those lists (and pins table header rows / pads alignments), because the editor must not be able to author a document its own save path refuses or silently changes on reload.
 
 ### 12.3 `dit fmt` — gofmt for markdown
 
@@ -2312,7 +2317,7 @@ The chain is real: an external contributor sends a PR that adds an issue contain
 Three defenses, all mandatory:
 
 1. **Never enable raw HTML in comrak.** The `render.unsafe_` option must stay off, and that is enforced by a test, not by convention. Markdown from the repo is rendered into safe nodes; raw HTML is displayed as text.
-2. **A strict Content-Security-Policy** from `dit-server`: `default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'`. Without `unsafe-inline`.
+2. **A strict Content-Security-Policy** from `dit-server`: `default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; base-uri 'none'`. Without `unsafe-inline` for scripts. The one widening is `'wasm-unsafe-eval'` in `script-src` (ADR 0011): it permits **WebAssembly compilation only** — the editor's markdown bridge needs it — while plain `unsafe-eval` (JS `eval`) stays banned, and the security test asserts this at token level because the substring check would false-positive on the longer token.
 3. **Sanitization at render time, not at save time.** Files keep exactly what they contain (Principle 1 — do not silently alter someone's content); what gets sanitized is the rendered output. Sanitizing at save time would break issues that are genuinely discussing HTML.
 
 ### 17.3 Never execute anything named by repo content

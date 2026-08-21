@@ -137,13 +137,17 @@ fn forbidden(reason: &str) -> Response {
 /// The CSP and hardening headers stamped on every response, static assets
 /// included. `default-src 'none'` and then only what the app actually
 /// needs; scripts are `'self'` (bundled, hashed files) and nothing inline.
+/// `'wasm-unsafe-eval'` is the narrowest token that lets the editor's Rust
+/// bridge compile its `.wasm` — it permits WebAssembly compilation only,
+/// never JavaScript `eval`, and browsers without wasm support ignore it.
 pub async fn security_headers(req: Request<Body>, next: Next) -> Response {
     let mut res = next.run(req).await;
     let headers = res.headers_mut();
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(
-            "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+            "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; \
+             style-src 'self' 'unsafe-inline'; \
              img-src 'self' data:; font-src 'self'; connect-src 'self'; \
              base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
         ),

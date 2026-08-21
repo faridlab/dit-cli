@@ -665,22 +665,59 @@ async fn serve_uri(uri: axum::http::Uri) -> Response {
         },
     };
     {
-        let mime = match name.rsplit('.').next().unwrap_or("") {
-            "html" => "text/html; charset=utf-8",
-            "js" => "text/javascript",
-            "css" => "text/css",
-            "svg" => "image/svg+xml",
-            "png" => "image/png",
-            "ico" => "image/x-icon",
-            "json" | "map" => "application/json",
-            "woff2" => "font/woff2",
-            _ => "application/octet-stream",
-        };
         (
-            [(axum::http::header::CONTENT_TYPE, mime)],
+            [(axum::http::header::CONTENT_TYPE, asset_mime(name))],
             axum::body::Body::from(data.into_owned()),
         )
             .into_response()
+    }
+}
+
+/// The Content-Type for an embedded asset, by file extension. Compiled
+/// unconditionally so its table is testable without an `embed-ui` build —
+/// a wrong MIME here is invisible in dev and breaks only the embedded
+/// production server.
+fn asset_mime(name: &str) -> &'static str {
+    match name.rsplit('.').next().unwrap_or("") {
+        "html" => "text/html; charset=utf-8",
+        "js" => "text/javascript",
+        "css" => "text/css",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "ico" => "image/x-icon",
+        "json" | "map" => "application/json",
+        "woff2" => "font/woff2",
+        // WebAssembly.instantiateStreaming refuses anything else — with
+        // octet-stream the browser makes the editor bridge fall back to
+        // ArrayBuffer instantiation, or rejects it outright.
+        "wasm" => "application/wasm",
+        _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::asset_mime;
+
+    #[test]
+    fn wasm_assets_get_the_wasm_mime_type() {
+        // The editor's Rust bridge: streaming instantiation requires the
+        // exact MIME, and octet-stream (the fallback) would break it only
+        // in the embedded production build.
+        assert_eq!(
+            asset_mime("assets/dit_wasm_bg-HASH.wasm"),
+            "application/wasm"
+        );
+    }
+
+    #[test]
+    fn the_existing_table_is_unchanged() {
+        assert_eq!(asset_mime("index.html"), "text/html; charset=utf-8");
+        assert_eq!(asset_mime("app-HASH.js"), "text/javascript");
+        assert_eq!(asset_mime("app-HASH.css"), "text/css");
+        assert_eq!(asset_mime("dit_wasm-HASH.js"), "text/javascript");
+        assert_eq!(asset_mime("noext"), "application/octet-stream");
     }
 }
 

@@ -12,7 +12,7 @@
 //! the conflict by hand. Markers inside fenced code blocks are legitimate
 //! content and are left alone.
 
-use comrak::{format_commonmark, parse_document, Arena, Options};
+use comrak::{format_commonmark, parse_document, Arena, Node, Options};
 
 use crate::frontmatter::Document;
 
@@ -51,6 +51,14 @@ pub fn format_body(body: &str) -> Result<String, FmtError> {
     let options = dit_options();
     let arena = Arena::new();
     let root = parse_document(&arena, body, &options);
+    format_ast(root)
+}
+
+/// The canonical `dit fmt` pipeline over an already-built AST. Shared with
+/// `dit_parse::prosemirror` so the editor and the CLI cannot diverge: both
+/// feed the same tree shape to the same formatter.
+pub fn format_ast(root: Node<'_>) -> Result<String, FmtError> {
+    let options = dit_options();
     let mut out = String::new();
     format_commonmark(root, &options, &mut out)?;
     Ok(post_process(&out))
@@ -121,6 +129,12 @@ pub fn dit_options() -> Options<'static> {
     // does not require it — readable text comes back full of backslashes.
     // The option is marked experimental upstream, hence the version pin.
     options.render.experimental_minimize_commonmark = true;
+    // Canonical code blocks are always fenced. comrak's default re-emits
+    // info-less code as 4-space indented code, which `has_conflict_markers`
+    // cannot see into — a conflicted-body example inside a fence would
+    // survive parsing but then trip the conflict check on its own canonical
+    // form. Fences stay fences; indented input normalizes up to a fence.
+    options.render.prefer_fenced = true;
     options
 }
 
@@ -158,10 +172,24 @@ fn collapse_self_titled_wikilinks(text: &str) -> String {
                 continue;
             }
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        // Copy one full character, not one byte: pushing `byte as char`
+        // re-encodes every multi-byte character as latin-1 mojibake.
+        let len = utf8_char_len(bytes[i]);
+        out.push_str(&text[i..i + len]);
+        i += len;
     }
     out
+}
+
+/// The byte length of the UTF-8 character starting with `lead`. Only called
+/// on char boundaries, where the leading byte is never a continuation.
+fn utf8_char_len(lead: u8) -> usize {
+    match lead {
+        0x00..=0x7f => 1,
+        0xc0..=0xdf => 2,
+        0xe0..=0xef => 3,
+        _ => 4,
+    }
 }
 
 /// Find the `]]` that closes a wikilink opened at depth, honoring nesting.
@@ -300,6 +328,34 @@ mod tests {
         assert!(is_break, "hard break was destroyed: {formatted:?}");
         let again = format_body(&formatted).unwrap();
         assert_eq!(again, formatted, "hard break form must be stable");
+    }
+
+    #[test]
+    fn code_blocks_canonicalize_to_fences_not_indents() {
+        // An info-less fence must stay a fence, and indented input must
+        // normalize up to a fence: indented code is invisible to the
+        // conflict-marker check, so it must never be the canonical form.
+        let from_fence = format_body("```\nplain fence\n```\n").unwrap();
+        assert_eq!(from_fence, "```\nplain fence\n```\n");
+        let from_indent = format_body("    indented code\n").unwrap();
+        assert_eq!(from_indent, "```\nindented code\n```\n");
+        // …and a conflicted-body example inside a fence survives its own
+        // canonical form (this exact shape lives in DESIGN.md).
+        let doc = "```\nINPUT\n<<<<<<< ours\nours\n=======\ntheirs\n>>>>>>> theirs\n```\n";
+        let canonical = format_body(doc).unwrap();
+        assert!(!has_conflict_markers(&canonical), "{canonical}");
+    }
+
+    #[test]
+    fn non_ascii_text_survives_formatting() {
+        // The wikilink post-pass once copied text byte-by-byte (`byte as
+        // char`), silently re-encoding every multi-byte character as latin-1
+        // mojibake. Unicode must cross `dit fmt` untouched.
+        let input = "h\u{e9}llo \u{2014} na\u{ef}ve \u{65e5}\u{672c}\u{8a9e} \u{1f389} text\n";
+        let formatted = format_body(input).unwrap();
+        assert_eq!(formatted, input);
+        // Idempotence includes the unicode case.
+        assert_eq!(format_body(&formatted).unwrap(), formatted);
     }
 
     #[test]

@@ -53,7 +53,7 @@ jobs:
 
       # Invariant I4 — the pure core must stay pure and wasm-compatible.
       - name: Pure core compiles to wasm32
-        run: cargo check --target wasm32-unknown-unknown -p dit-model -p dit-parse -p dit-query
+        run: cargo check --target wasm32-unknown-unknown -p dit-model -p dit-parse -p dit-query -p dit-wasm
 
   licenses:
     runs-on: ubuntu-latest
@@ -72,6 +72,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: "22" }
+      # The UI build embeds the editor's WASM bridge (ADR 0011) — the web
+      # app's own guard fails the build when it is missing.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo install wasm-pack --locked
+      - run: wasm-pack build crates/dit-wasm --target web --out-name dit_wasm --no-pack --out-dir ../../apps/web/src/editor/wasm
       - run: npm ci --prefix apps/web
       - run: npm run build --prefix apps/web
       # ADR 0003 — the bundle is part of the install, so it is budgeted.
@@ -98,10 +105,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: "22" }
-      - run: npm ci --prefix apps/web && npm run build --prefix apps/web
+      # The UI embeds the editor's WASM bridge (ADR 0011); build it before
+      # the web app, which refuses to bundle without it.
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.target }},wasm32-unknown-unknown
+      - run: cargo install wasm-pack --locked
+      - run: wasm-pack build crates/dit-wasm --target web --out-name dit_wasm --no-pack --out-dir ../../apps/web/src/editor/wasm
+      - run: npm ci --prefix apps/web && npm run build --prefix apps/web
       - run: cargo build --release --locked --features embed-ui -p dit-cli --target ${{ matrix.target }}
       - run: tar -czf dit-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release dit
       - uses: softprops/action-gh-release@v2

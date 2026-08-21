@@ -25,7 +25,13 @@ invariants:
 
 # Invariant I4 — the pure core must stay pure.
 wasm:
-    cargo check --target wasm32-unknown-unknown -p dit-model -p dit-parse -p dit-query
+    cargo check --target wasm32-unknown-unknown -p dit-model -p dit-parse -p dit-query -p dit-wasm
+
+# The editor's Rust<->ProseMirror bridge (DESIGN.md §12.2), compiled for
+# the browser into apps/web/src/editor/wasm/ — a gitignored build artifact,
+# like dist/. Rerun after any change to dit-parse or dit-wasm.
+wasm-build:
+    wasm-pack build crates/dit-wasm --target web --out-name dit_wasm --no-pack --out-dir ../../apps/web/src/editor/wasm
 
 deny:
     cargo deny check
@@ -34,7 +40,8 @@ web-license:
     node scripts/check-js-licenses.mjs
 
 # The UI ships inside the binary, so its size is part of the install (ADR 0003).
-web-size:
+# Depends on wasm-build so a cold machine cannot measure a stale bundle.
+web-size: wasm-build
     npm run build --prefix apps/web
     node scripts/check-bundle-size.mjs
 

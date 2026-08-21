@@ -8,7 +8,24 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[lib]
+# cdylib for the browser bundle, rlib so the native test suite below can link
+# the same functions the browser calls.
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 dit-model = { workspace = true }
 dit-parse = { workspace = true }
 dit-query = { workspace = true }
+# The browser bridge. String in, string out — no js-sys/web-sys, so the
+# surface reviewable for XSS stays exactly these two functions.
+wasm-bindgen = "0.2"
+# The ProseMirror document crosses the boundary as JSON text (DESIGN.md §12.2).
+serde_json = { workspace = true }
+
+# wasm-opt (binaryen) is not a dependency we ask every contributor to
+# install. The editor's wasm budget in scripts/check-bundle-size.mjs is
+# measured against this unoptimized output; flip to true only together with
+# raising that budget.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

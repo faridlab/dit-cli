@@ -21,3 +21,7 @@ apps/web/dist/
 
 # The UI bundle is a build artifact, never committed (DESIGN.md §8).
 apps/web/dist/
+
+# The editor's WASM bridge — wasm-pack output (`just wasm-build`), same
+# category as dist/: derived from crates/dit-wasm, never committed.
+apps/web/src/editor/wasm/

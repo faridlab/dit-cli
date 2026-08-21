@@ -52,6 +52,7 @@ dit-vcs   = { path = "crates/dit-vcs" }
 dit-ai    = { path = "crates/dit-ai" }
 dit-core  = { path = "crates/dit-core" }
 dit-server = { path = "crates/dit-server" }
+dit-wasm  = { path = "crates/dit-wasm" }
 
 serde     = { version = "1", features = ["derive"] }
 serde_json = "1"

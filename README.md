@@ -110,8 +110,22 @@ Git already provides, for free, what Jira built from scratch and sells:
 **Read `ARCHITECTURE.md` §1 before your first PR.** Ten invariants are
 non-negotiable, and each one is enforced by a test in `tests/invariants.rs`.
 For development: `rustup target add wasm32-unknown-unknown`, `cargo install
-just`, then `just check` runs every gate — fmt, clippy, tests, architecture,
-invariants, wasm. Open in VS Code and accept the recommended extensions.
+just wasm-pack`, then `just check` runs every gate — fmt, clippy, tests,
+architecture, invariants, wasm. Open in VS Code and accept the recommended
+extensions.
+
+**The rich editor's markdown bridge is Rust compiled to WASM** (ADR 0011):
+the editor in the browser serializes through the exact same code as
+`dit fmt`, so a UI save never produces a formatting diff. The artifact is
+gitignored like any build output — after changing `dit-parse` or `dit-wasm`,
+rebuild it and restart the dev server:
+
+```bash
+just wasm-build      # → apps/web/src/editor/wasm/
+```
+
+`npm run build` and `vite dev` both fail with instructions when it is
+missing, and the bundle gate caps the artifact at 260 KB gzipped.
 
 ## Layout
 

@@ -12,3 +12,7 @@ workspace = true
 dit-model = { workspace = true }
 thiserror = { workspace = true }
 comrak = { workspace = true }
+# prosemirror.rs crosses the WASM boundary as JSON text; serde_json is the
+# stable, wasm-clean codec for that (DESIGN.md §12.2 records the reason).
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -217,9 +217,24 @@ async fn every_api_response_carries_the_security_headers() {
         csp.contains("default-src 'none'") || csp.contains("default-src 'none';"),
         "the CSP must start from nothing: {csp}"
     );
+    // Token-level, not substring: the CSP must carry 'wasm-unsafe-eval' for
+    // the editor's Rust bridge, and that string *contains* "unsafe-eval" —
+    // a substring check here would false-positive on exactly that token.
+    let script_src = csp
+        .split(';')
+        .map(str::trim)
+        .find(|d| d.starts_with("script-src"))
+        .unwrap_or_default()
+        .to_owned();
+    assert!(!script_src.is_empty(), "script-src must be set: {csp}");
+    let tokens: Vec<&str> = script_src.split_whitespace().skip(1).collect();
     assert!(
-        !csp.to_lowercase().contains("unsafe-eval"),
-        "no unsafe-eval, ever: {csp}"
+        tokens.contains(&"'wasm-unsafe-eval'"),
+        "script-src must allow wasm compilation for the editor bridge: {csp}"
+    );
+    assert!(
+        !tokens.contains(&"'unsafe-eval'"),
+        "plain unsafe-eval stays banned: {csp}"
     );
     assert!(res.headers().contains_key("x-content-type-options"));
     assert!(res.headers().contains_key("referrer-policy"));
