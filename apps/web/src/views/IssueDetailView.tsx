@@ -1,11 +1,13 @@
 // Issue detail: fields on the right rail, description and comments in the
-// main column, field history at the bottom of the rail. Text inputs commit
-// on Enter or blur (no save button per field — this is a keyboard tool);
-// they are keyed by the server value, so a live refresh never destroys
-// in-progress typing unless the server itself changed that field.
+// main column, field history at the bottom of the rail. The description is
+// the always-on editor — no edit/done mode, one commit per typing pause.
+// Text inputs commit on Enter or blur (no save button per field — this is a
+// keyboard tool); they are keyed by the server value, so a live refresh
+// never destroys in-progress typing unless the server itself changed that
+// field.
 
-import { type FormEvent, type KeyboardEvent, useState } from "react";
-import { ArrowLeft, Pencil, X } from "lucide-react";
+import { type KeyboardEvent, lazy, Suspense, useState } from "react";
+import { ArrowLeft } from "lucide-react";
 import { BodyEditor } from "../components/BodyEditor";
 import { Markdown } from "../components/Markdown";
 import { SelectField } from "../components/SelectField";
@@ -40,6 +42,10 @@ const TYPE_OPTIONS: Array<{ value: IssueType; label: string }> = [
 ];
 
 const PRIORITY_OPTIONS: Priority[] = ["p0", "p1", "p2", "p3", "p4"];
+
+// The comment composer is the same Notion-like editor the description uses
+// (lazy chunk, TipTap + the Rust bridge in WASM).
+const RichEditor = lazy(() => import("../editor/RichEditor"));
 
 function FieldRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -167,15 +173,13 @@ function CommentsSection({ issueId }: { issueId: string }) {
   const add = useAddComment(issueId);
   const [draft, setDraft] = useState("");
 
-  const send = () => {
-    const body = draft.trim();
+  // A comment is a discrete message in git history, so the composer sends
+  // when the writer says so rather than on a typing pause: Mod+Enter (the
+  // editor hands over its just-serialized bytes) or the button.
+  const send = (markdown?: string) => {
+    const body = (markdown ?? draft).trim();
     if (body.length === 0 || add.isPending) return;
     add.mutate(body, { onSuccess: () => setDraft("") });
-  };
-
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    send();
   };
 
   return (
@@ -221,24 +225,19 @@ function CommentsSection({ issueId }: { issueId: string }) {
           </li>
         ))}
       </ul>
-      <form onSubmit={submit} className="flex flex-col gap-2">
-        <textarea
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            // Ctrl/⌘+Enter sends — the mouse never has to leave the keyboard.
-            if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-              event.preventDefault();
-              send();
-            }
-          }}
-          placeholder="Write a comment (markdown)…"
-          rows={3}
-          className={cn(INPUT_CLASS, "h-auto w-full resize-y bg-app py-2.5 font-mono text-[12.5px]")}
-        />
+      <div className="flex flex-col gap-2">
+        <Suspense fallback={<Loading label="Loading editor…" />}>
+          <RichEditor
+            value={draft}
+            onChange={setDraft}
+            onSave={send}
+            className="min-h-20 rounded-md border border-edge bg-card/60 p-2"
+          />
+        </Suspense>
         <div className="flex items-center gap-2.5">
           <button
-            type="submit"
+            type="button"
+            onClick={() => send()}
             disabled={draft.trim().length === 0 || add.isPending}
             className="rounded-md bg-accent px-2.5 py-1 text-[11px] font-medium text-white hover:bg-accent-hi disabled:bg-card disabled:text-zinc-500"
           >
@@ -246,7 +245,7 @@ function CommentsSection({ issueId }: { issueId: string }) {
           </button>
           <span className="text-[11.5px] text-dim">Ctrl/⌘+Enter to send</span>
         </div>
-      </form>
+      </div>
     </section>
   );
 }
@@ -422,34 +421,16 @@ function FieldRail({
   );
 }
 
+/** The description is the editor: always on, autosaving per pause — the
+ *  same surface for reading and writing, like the doc editor. Keyed by the
+ *  issue so switching issues never carries a buffer across. */
 function DescriptionSection({ issue }: { issue: IssueDto }) {
-  const [editing, setEditing] = useState(false);
-
   return (
     <section>
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <SectionHeading size="sm">Description</SectionHeading>
-        <button
-          type="button"
-          onClick={() => setEditing((value) => !value)}
-          className={cn(
-            "flex items-center gap-1 rounded-md border border-ctl px-2 py-0.5 text-[11.5px] transition-colors hover:border-zinc-400",
-            editing ? "text-zinc-200" : "text-zinc-400",
-          )}
-        >
-          {editing ? <X className="size-3" aria-hidden /> : <Pencil className="size-3" aria-hidden />}
-          {editing ? "Done" : "Edit"}
-        </button>
-      </div>
-      {editing ? (
-        <BodyEditor issueId={issue.id} body={issue.body} />
-      ) : issue.body.trim().length === 0 ? (
-        <p className="rounded-lg border border-dashed border-edge px-3 py-6 text-center text-xs text-zinc-600">
-          No description.
-        </p>
-      ) : (
-        <Markdown html={issue.body_html} className="text-[14.5px] leading-relaxed" />
-      )}
+      <SectionHeading size="sm" className="mb-3">
+        Description
+      </SectionHeading>
+      <BodyEditor key={issue.id} issueId={issue.id} body={issue.body} />
     </section>
   );
 }
