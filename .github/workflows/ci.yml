@@ -37,8 +37,9 @@ jobs:
       # Regeneration ran as part of the Tests step (ts-rs exports during
       # `cargo test`); any diff means a hand edit or a wire change that was
       # never regenerated, and must fail the build instead of drifting.
-      # Ubuntu only: Windows checkout would rewrite line endings and turn
-      # every file into a diff.
+      # Ubuntu only: one canonical runner. Checkouts are LF-pinned by
+      # .gitattributes, but ts-rs writes the bindings from the test process
+      # and could pick up host line endings elsewhere.
       - name: TS bindings in sync
         if: matrix.os == 'ubuntu-latest'
         run: git diff --exit-code -- apps/web/src/lib/schema

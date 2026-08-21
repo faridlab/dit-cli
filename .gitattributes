@@ -1,0 +1,7 @@
+# The canonical file format is LF: `dit fmt` writes `\n`, and the corpus
+# round-trip test in dit-parse asserts byte-identity over the markdown files
+# checked in here. A Windows clone smudges text files to CRLF by default
+# (`core.autocrlf=true` on GitHub's runners), which mutates the corpus before
+# any test runs. Pin every text file to LF on checkout so all platforms read
+# and write the same bytes; binary files are left untouched by `text=auto`.
+* text=auto eol=lf

@@ -1500,4 +1500,25 @@ mod tests {
         }
         assert!(checked >= 5, "corpus sweep checked only {checked} files");
     }
+
+    #[test]
+    fn a_crlf_document_round_trips_like_a_second_fmt_pass() {
+        // A Windows clone can smudge a file to CRLF, and format_body is not
+        // a fixed point on such input: when a line wrap lands inside a code
+        // span, comrak keeps the CR in the span's literal on the first pass
+        // and normalizes it away on the next parse. The bridge re-parses, so
+        // its output matches a second fmt pass, not the first — which is why
+        // the corpus test above needs checkouts to stay LF (.gitattributes
+        // pins that) rather than comparing against mutated bytes.
+        let crlf = "run `cargo install\r\njust wasm-pack` now\r\n";
+        let once = crate::fmt::format_body(crlf).unwrap();
+        let twice = crate::fmt::format_body(&once).unwrap();
+        assert_ne!(
+            once, twice,
+            "premise changed: fmt became idempotent on CRLF input"
+        );
+        let doc = markdown_to_doc(&once).unwrap();
+        let out = doc_to_markdown(&doc).unwrap();
+        assert_eq!(out, twice);
+    }
 }
