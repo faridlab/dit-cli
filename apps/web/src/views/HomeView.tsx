@@ -1,14 +1,14 @@
 // Home — the daily driver. Everything here is composed from the endpoints
 // the other views already use (there is no dashboard endpoint, and none is
 // needed): quick capture, next actions grouped by context, an epic rollup,
-// inbox triage, and a right rail with waiting-on and the activity feed. All
-// of it is derived (invariant 5): nothing on this screen is stored.
+// and inbox triage. Waiting-on and the activity feed live in the Home side
+// pane. All of it is derived (invariant 5): nothing on this screen is
+// stored.
 
 import { FormEvent, useMemo, useState } from "react";
 import { Plus } from "lucide-react";
 import type { ConnectionState } from "../lib/events";
 import {
-  useActivity,
   useCreateIssue,
   useIssues,
   usePatchIssue,
@@ -16,13 +16,10 @@ import {
   useStatus,
 } from "../lib/queries";
 import {
-  circleColor,
   contextOf,
   dueText,
   dueTone,
   energyOf,
-  initials,
-  relativeTime,
 } from "../lib/format";
 import type { IssueDto } from "../lib/types";
 import { cn } from "../lib/cn";
@@ -38,9 +35,10 @@ import { ErrorBox, Loading } from "../components/states";
 const NEXT_QUERY = "label = next AND assignee = @me ORDER BY priority ASC";
 const INBOX_QUERY = "label = inbox ORDER BY created DESC";
 
-// The pool powers everything that is grouped client-side (epics, open count,
-// waiting-on, activity ids). 200 issues keeps Home bounded on big workspaces;
-// the counts are labeled from it, not pretended to be exhaustive.
+// The pool powers everything that is grouped client-side (epics, open
+// count). 200 issues keeps Home bounded on big workspaces; the counts are
+// labeled from it, not pretended to be exhaustive. The side pane runs the
+// same pool query — one fetch, two surfaces.
 const POOL_LIMIT = 200;
 
 // Handle | type | priority | title | due; energy and epic join from 1100px.
@@ -388,136 +386,6 @@ function InboxSection({
   );
 }
 
-function WaitingOn({
-  pool,
-  blockedStatusIds,
-  me,
-  onOpen,
-}: {
-  pool: IssueDto[];
-  blockedStatusIds: ReadonlySet<string>;
-  me: string | null;
-  onOpen: (id: string) => void;
-}) {
-  // "Blocked" is workflow-defined, not a client concept: only statuses whose
-  // id or label says blocked/waiting count. No such status, no section.
-  const waiting = useMemo(() => {
-    if (blockedStatusIds.size === 0) return [];
-    return pool
-      .filter(
-        (issue) =>
-          blockedStatusIds.has(issue.status) &&
-          (me === null || !issue.assignees.includes(me)),
-      )
-      .slice(0, 3);
-  }, [pool, blockedStatusIds, me]);
-
-  if (blockedStatusIds.size === 0) return null;
-
-  return (
-    <section>
-      <SectionHeading size="sm" className="mb-3">
-        Waiting on
-      </SectionHeading>
-      <div className="flex flex-col gap-2.5">
-        {waiting.map((issue) => {
-          const first = issue.assignees[0];
-          return (
-            <button
-              key={issue.id}
-              type="button"
-              onClick={() => onOpen(issue.id)}
-              className="flex items-start gap-2.5 text-left"
-            >
-              <span
-                className={cn(
-                  "inline-flex size-[22px] shrink-0 items-center justify-center rounded-full font-mono text-[9px] leading-none text-white",
-                  first ? circleColor(first) : "bg-zinc-600",
-                )}
-              >
-                {first ? initials(first) : "?"}
-              </span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-[13.5px] leading-snug text-zinc-300">
-                {issue.title}
-              </span>
-              <span className="mt-0.5 block font-mono text-[11px] text-dim">
-                {issue.number !== null ? `#${issue.number}` : issue.short_ref} ·{" "}
-                {relativeTime(issue.updated)}
-              </span>
-            </span>
-            </button>
-          );
-        })}
-        {waiting.length === 0 ? (
-          <p className="text-xs text-dim">Nothing blocked on someone else.</p>
-        ) : null}
-      </div>
-    </section>
-  );
-}
-
-function ActivitySection({ pool }: { pool: IssueDto[] }) {
-  // The feed reads the most recently updated issues' full history and merges
-  // by `seq` — the only order that is not self-contradictory (invariant 9).
-  const ids = useMemo(
-    () =>
-      [...pool]
-        .sort((a, b) => Date.parse(b.updated) - Date.parse(a.updated))
-        .slice(0, 8)
-        .map((issue) => issue.id),
-    [pool],
-  );
-  const activity = useActivity(ids);
-  const handleOf = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const issue of pool) {
-      map.set(issue.id, issue.number !== null ? `#${issue.number}` : issue.short_ref);
-    }
-    return map;
-  }, [pool]);
-
-  return (
-    <section>
-      <SectionHeading size="sm" className="mb-2.5">
-        Activity
-      </SectionHeading>
-      <p className="mb-3 text-xs leading-relaxed text-dim">
-        Every field change, in <span className="font-mono">seq</span> order — derived, nothing
-        extra stored.
-      </p>
-      {activity.isPending ? (
-        <p className="text-xs text-zinc-600">Loading…</p>
-      ) : activity.error ? (
-        <p className="text-xs text-red-400">
-          {activity.error instanceof Error ? activity.error.message : "Could not load activity"}
-        </p>
-      ) : activity.data.length === 0 ? (
-        <p className="text-xs text-zinc-600">No field events yet.</p>
-      ) : (
-        <ol className="flex flex-col">
-          {activity.data.map((event) => (
-            <li
-              key={`${event.issueId}-${event.seq}-${event.field}`}
-              className="flex flex-col gap-0.5 border-l border-edge py-2 pl-3"
-            >
-              <div className="flex items-baseline gap-2 text-[11px] text-zinc-500">
-                <span className="font-mono text-dim">{handleOf.get(event.issueId) ?? "?"}</span>
-                <span className="font-mono text-zinc-400">{event.author}</span>
-                <span className="ml-auto">{relativeTime(event.ts)}</span>
-              </div>
-              <p className="text-[13px] text-zinc-300">{event.field}</p>
-              <p className="font-mono text-[11px] text-zinc-500">
-                {event.old_value ?? "∅"} → {event.new_value ?? "∅"}
-              </p>
-            </li>
-          ))}
-        </ol>
-      )}
-    </section>
-  );
-}
-
 export function HomeView({
   conn,
   onOpen,
@@ -544,16 +412,6 @@ export function HomeView({
   }, [schema.data]);
   const isDone = (statusId: string) => statusCategory.get(statusId) === "done";
 
-  // "Blocked" is whatever the workspace's workflow calls blocked — matched
-  // on the status's own id and label, never a hardcoded list.
-  const blockedStatusIds = useMemo(() => {
-    const set = new Set<string>();
-    for (const s of schema.data?.workflow.statuses ?? []) {
-      if (/block|wait/i.test(`${s.id} ${s.label}`)) set.add(s.id);
-    }
-    return set;
-  }, [schema.data]);
-
   const items = pool.data?.items ?? [];
   const byId = useMemo(() => new Map(items.map((issue) => [issue.id, issue])), [items]);
   const epicTitle = (id: string | null) => (id ? (byId.get(id)?.title ?? null) : null) ?? "—";
@@ -576,43 +434,31 @@ export function HomeView({
         </span>
       </header>
 
-      <div className="flex min-h-0 flex-1">
-        <div className="flex min-w-0 flex-1 flex-col gap-[26px] overflow-y-auto px-[22px] pb-10 pt-[22px]">
-          <CaptureForm defaultStatus={firstStatus} />
+      <div className="flex min-w-0 flex-1 flex-col gap-[26px] overflow-y-auto px-[22px] pb-10 pt-[22px]">
+        <CaptureForm defaultStatus={firstStatus} />
 
-          {next.isError ? (
-            <ErrorBox error={next.error} title="Could not load next actions" tone="warn" />
-          ) : (
-            <NextActions
-              issues={next.data?.items ?? []}
-              epicTitle={epicTitle}
-              onOpen={onOpen}
-              onSearch={onSearch}
-            />
-          )}
-
-          <EpicRollup pool={items} isDone={isDone} onSearch={onSearch} />
-
-          {inbox.isError ? (
-            <ErrorBox error={inbox.error} title="Could not load the inbox" tone="warn" />
-          ) : (
-            <InboxSection
-              issues={inbox.data?.items ?? []}
-              me={me}
-              doneStatus={doneStatus}
-            />
-          )}
-        </div>
-
-        <aside className="hidden w-[312px] shrink-0 flex-col gap-[22px] overflow-y-auto border-l border-edge px-[18px] pb-7 pt-[22px] min-[1180px]:flex">
-          <WaitingOn
-            pool={items}
-            blockedStatusIds={blockedStatusIds}
-            me={me}
+        {next.isError ? (
+          <ErrorBox error={next.error} title="Could not load next actions" tone="warn" />
+        ) : (
+          <NextActions
+            issues={next.data?.items ?? []}
+            epicTitle={epicTitle}
             onOpen={onOpen}
+            onSearch={onSearch}
           />
-          <ActivitySection pool={items} />
-        </aside>
+        )}
+
+        <EpicRollup pool={items} isDone={isDone} onSearch={onSearch} />
+
+        {inbox.isError ? (
+          <ErrorBox error={inbox.error} title="Could not load the inbox" tone="warn" />
+        ) : (
+          <InboxSection
+            issues={inbox.data?.items ?? []}
+            me={me}
+            doneStatus={doneStatus}
+          />
+        )}
       </div>
     </div>
   );

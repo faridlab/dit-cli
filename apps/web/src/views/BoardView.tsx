@@ -18,6 +18,7 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import { useBoard, useMoveIssue } from "../lib/queries";
+import { useBoardColumns } from "../components/panes/BoardPane";
 import type { BoardColumnDto, BoardIssueDto } from "../lib/types";
 import { cn } from "../lib/cn";
 import { AssigneeCircles, IssueHandle, LabelChips, PriorityDot, TypeBadge } from "../components/badges";
@@ -149,6 +150,7 @@ function Column({
 export function BoardView({ onOpen }: { onOpen: (id: string) => void }) {
   const board = useBoard();
   const move = useMoveIssue();
+  const { hidden } = useBoardColumns();
   const [activeId, setActiveId] = useState<string | null>(null);
   // Four pixels of movement before a drag starts, so plain clicks still
   // open the issue.
@@ -159,7 +161,11 @@ export function BoardView({ onOpen }: { onOpen: (id: string) => void }) {
     return <ErrorBox error={board.error} onRetry={() => void board.refetch()} title="Could not load the board" />;
   }
 
-  const columns = board.data.columns;
+  // Hidden columns (toggled from the Board side pane) are filtered out
+  // here, so their drop targets unmount too — a card can never land in a
+  // column you cannot see.
+  const allColumns = board.data.columns;
+  const columns = allColumns.filter((column) => !hidden.has(column.id));
   const activeIssue = activeId
     ? columns.flatMap((column) => column.issues).find((issue) => `${CARD_DRAG_PREFIX}${issue.id}` === activeId)
     : undefined;
@@ -198,11 +204,21 @@ export function BoardView({ onOpen }: { onOpen: (id: string) => void }) {
     move.mutate({ id: issueId, status: targetStatus });
   };
 
-  if (columns.length === 0) {
+  if (allColumns.length === 0) {
     return (
       <Empty
         title="This workspace has no workflow statuses"
         hint="The board needs at least one status in the workflow schema."
+        className="flex-1 justify-center"
+      />
+    );
+  }
+
+  if (columns.length === 0) {
+    return (
+      <Empty
+        title="Every column is hidden"
+        hint="Show columns again from the side pane."
         className="flex-1 justify-center"
       />
     );

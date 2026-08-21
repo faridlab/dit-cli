@@ -1,13 +1,14 @@
-// ⌘K palette: navigation, actions, and fuzzy issue quick-open. Issue
-// matching happens on the server (it owns the index); the palette only
-// fuzzy-matches the small static action list locally, so cmdk's built-in
-// filter is switched off and every result the server returns stays visible.
+// ⌘K palette: navigation, actions, fuzzy issue quick-open, and doc-page
+// quick-open. Issue matching happens on the server (it owns the index); the
+// palette only fuzzy-matches the small static action list and the page
+// paths locally, so cmdk's built-in filter is switched off and every result
+// the server returns stays visible.
 
 import { useEffect, useMemo, useState } from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { Command } from "cmdk";
 import { Columns3, FileText, House, ListTodo, Plus, Search } from "lucide-react";
-import { useIssues } from "../lib/queries";
+import { useDocs, useIssues } from "../lib/queries";
 import { useDebouncedValue } from "../lib/hooks";
 import type { Route } from "../lib/router";
 import { PriorityDot, TypeBadge } from "./badges";
@@ -16,10 +17,16 @@ import { Kbd } from "./chrome";
 const NAV_ITEMS: Array<{ label: string; route: Route; keywords: string }> = [
   { label: "Go to Home", route: { name: "home" }, keywords: "home dashboard inbox triage" },
   { label: "Go to Board", route: { name: "board" }, keywords: "board kanban columns" },
-  { label: "Go to Issues", route: { name: "issues" }, keywords: "issues list table" },
+  { label: "Go to Issues", route: { name: "issues", q: null }, keywords: "issues list table" },
   { label: "Go to Docs", route: { name: "docs", p: null }, keywords: "docs pages wiki markdown" },
   { label: "Go to Search", route: { name: "search", q: "" }, keywords: "search dql query" },
 ];
+
+// cmdk group chrome, shared by every group below.
+const GROUP_CLASS =
+  "[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wide [&_[cmdk-group-heading]]:text-zinc-500";
+const ITEM_CLASS =
+  "flex cursor-default items-center gap-2 rounded px-2 py-1.5 text-[13px] text-zinc-300 data-selected:bg-edge data-selected:text-zinc-100";
 
 // Subsequence match with a preference for contiguous runs — good enough for
 // a four-item list and never worse than the server's issue matching.
@@ -40,11 +47,14 @@ export function CommandPalette({
   onOpenChange,
   onNavigate,
   onNewIssue,
+  onOpenDoc,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onNavigate: (route: Route) => void;
   onNewIssue: () => void;
+  /** Opens a doc page in the editor as a preview tab. */
+  onOpenDoc: (path: string) => void;
 }) {
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search, 200);
@@ -60,6 +70,15 @@ export function CommandPalette({
     { q: `title ~ ${trimmed} OR body ~ ${trimmed}`, limit: 8 },
     open && trimmed.length > 0,
   );
+
+  // Pages match locally: the listing is small and already cached by the
+  // explorer, and a path subsequence ("dfla" → docs/flows/auth.md) is a
+  // better fit than any server round trip.
+  const docs = useDocs(open);
+  const pages = useMemo(() => {
+    if (trimmed.length === 0) return [];
+    return (docs.data ?? []).filter((entry) => fuzzyMatch(trimmed, entry.path)).slice(0, 8);
+  }, [docs.data, trimmed]);
 
   const navItems = useMemo(
     () =>
@@ -95,7 +114,7 @@ export function CommandPalette({
               <Command.Input
                 value={search}
                 onValueChange={setSearch}
-                placeholder="Search issues or type a command…"
+                placeholder="Search issues, pages or type a command…"
                 className="h-11 w-full bg-transparent text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none"
               />
               <Kbd>esc</Kbd>
@@ -106,16 +125,13 @@ export function CommandPalette({
               </Command.Empty>
 
               {navItems.length > 0 ? (
-                <Command.Group
-                  heading="Navigate"
-                  className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wide [&_[cmdk-group-heading]]:text-zinc-500"
-                >
+                <Command.Group heading="Navigate" className={GROUP_CLASS}>
                   {navItems.map((item) => (
                     <Command.Item
                       key={item.label}
                       value={item.label}
                       onSelect={() => pick(() => onNavigate(item.route))}
-                      className="flex cursor-default items-center gap-2 rounded px-2 py-1.5 text-[13px] text-zinc-300 data-selected:bg-edge data-selected:text-zinc-100"
+                      className={ITEM_CLASS}
                     >
                       {item.route.name === "home" ? (
                         <House className="size-4 text-zinc-500" aria-hidden />
@@ -135,14 +151,11 @@ export function CommandPalette({
               ) : null}
 
               {showNewIssue ? (
-                <Command.Group
-                  heading="Actions"
-                  className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wide [&_[cmdk-group-heading]]:text-zinc-500"
-                >
+                <Command.Group heading="Actions" className={GROUP_CLASS}>
                   <Command.Item
                     value="new issue"
                     onSelect={() => pick(onNewIssue)}
-                    className="flex cursor-default items-center gap-2 rounded px-2 py-1.5 text-[13px] text-zinc-300 data-selected:bg-edge data-selected:text-zinc-100"
+                    className={ITEM_CLASS}
                   >
                     <Plus className="size-4 text-zinc-500" aria-hidden />
                     New issue
@@ -151,10 +164,7 @@ export function CommandPalette({
               ) : null}
 
               {trimmed.length > 0 ? (
-                <Command.Group
-                  heading="Issues"
-                  className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wide [&_[cmdk-group-heading]]:text-zinc-500"
-                >
+                <Command.Group heading="Issues" className={GROUP_CLASS}>
                   {results.isFetching && (results.data?.items.length ?? 0) === 0 ? (
                     <div className="px-2 py-2 text-xs text-zinc-500">Searching…</div>
                   ) : null}
@@ -173,7 +183,7 @@ export function CommandPalette({
                       key={issue.id}
                       value={issue.id}
                       onSelect={() => pick(() => onNavigate({ name: "issue", id: issue.short_ref }))}
-                      className="flex cursor-default items-center gap-2 rounded px-2 py-1.5 text-[13px] text-zinc-300 data-selected:bg-edge data-selected:text-zinc-100"
+                      className={ITEM_CLASS}
                     >
                       <span className="font-mono text-xs tabular-nums text-zinc-500">
                         {issue.number !== null ? `#${issue.number}` : issue.short_ref}
@@ -184,6 +194,22 @@ export function CommandPalette({
                       <span className="ml-auto shrink-0 font-mono text-[10px] text-zinc-600">
                         {issue.status}
                       </span>
+                    </Command.Item>
+                  ))}
+                </Command.Group>
+              ) : null}
+
+              {pages.length > 0 ? (
+                <Command.Group heading="Pages" className={GROUP_CLASS}>
+                  {pages.map((page) => (
+                    <Command.Item
+                      key={page.path}
+                      value={`page:${page.path}`}
+                      onSelect={() => pick(() => onOpenDoc(page.path))}
+                      className={ITEM_CLASS}
+                    >
+                      <FileText className="size-4 shrink-0 text-zinc-500" aria-hidden />
+                      <span className="truncate font-mono text-xs">{page.path}</span>
                     </Command.Item>
                   ))}
                 </Command.Group>

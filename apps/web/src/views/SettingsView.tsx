@@ -138,7 +138,7 @@ export function SettingsView() {
         and committed like any other change.
       </p>
 
-      <section className="mt-8">
+      <section id="settings-layout" className="mt-8">
         <SectionHeading>Where files live</SectionHeading>
         <p className="mt-1 text-xs text-zinc-600">
           Changing this moves every issue in one commit — history follows the files.
@@ -153,7 +153,7 @@ export function SettingsView() {
         </div>
       </section>
 
-      <section className="mt-8">
+      <section id="settings-numbering" className="mt-8">
         <SectionHeading>Issue numbers</SectionHeading>
         <p className="mt-1 text-xs text-zinc-600">
           When an issue gets the <code className="font-mono text-xs">number:</code> that becomes its
@@ -169,7 +169,7 @@ export function SettingsView() {
         </div>
       </section>
 
-      <section className="mt-8">
+      <section id="settings-templates" className="mt-8">
         <SectionHeading>Templates</SectionHeading>
         <p className="mt-1 text-xs text-zinc-600">
           Bodies seeded on creation, from <code className="font-mono text-xs">.dit/templates/</code>.

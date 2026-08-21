@@ -3,6 +3,7 @@
 // them keeps the redesign tweakable in a single place.
 
 import type { ReactNode } from "react";
+import { Check } from "lucide-react";
 import { cn } from "../lib/cn";
 
 /** Uppercase mono-ish label that opens every section. `size` shrinks inside
@@ -70,6 +71,21 @@ export function ContextChip({
     >
       {children}
     </button>
+  );
+}
+
+/** Checkbox square for pane filter rows (columns, contexts, @me). */
+export function CheckSquare({ on }: { on: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "flex size-[15px] shrink-0 items-center justify-center rounded-[3px] border transition-colors",
+        on ? "border-accent bg-accent text-white" : "border-ctl text-transparent",
+      )}
+    >
+      <Check className="size-3" />
+    </span>
   );
 }
 

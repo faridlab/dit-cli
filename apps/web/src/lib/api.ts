@@ -160,6 +160,16 @@ export function deleteDoc(path: string): Promise<void> {
   return request<void>(docUrl(path), { method: "DELETE" });
 }
 
+/** Move or rename a page. One commit, recorded by git as a rename so the
+ *  history follows; a 409 means the target already exists and nothing
+ *  moved. */
+export function moveDoc(from: string, to: string): Promise<void> {
+  return request<void>("/api/docs/move", {
+    method: "POST",
+    body: JSON.stringify({ from, to }),
+  });
+}
+
 export function getSettings(): Promise<SettingsDto> {
   return request<SettingsDto>("/api/settings");
 }

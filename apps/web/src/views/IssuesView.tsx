@@ -1,61 +1,32 @@
 // All issues in one dense table. Sorting and virtualization live in the
-// shared IssueTable; this view owns fetching, the filter chips (which compose
-// real DQL — the same language the search box speaks), and bulk status edits.
+// shared IssueTable; the filters compose real DQL (the same language the
+// search box speaks) and are set from the Issues side pane, landing in the
+// URL so a filtered list is shareable. This view owns fetching, selection,
+// and bulk status edits.
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { RefreshCw } from "lucide-react";
-import { ContextChip } from "../components/chrome";
 import { IssueTable } from "../components/IssueTable";
 import { Empty, ErrorBox, Loading } from "../components/states";
-import { useBulkPatchIssue, useIssues, useSchema, useStatus } from "../lib/queries";
-import { contextOf } from "../lib/format";
+import { useBulkPatchIssue, useIssues, useSchema } from "../lib/queries";
 import type { FieldPatch } from "../lib/types";
 
 // The table is virtualized, so a large page size costs DOM rows only for
 // what is on screen. Enough for a v0.1 workspace; paging comes later.
 const PAGE_SIZE = 500;
 
-export function IssuesView({ onOpen }: { onOpen: (id: string) => void }) {
+export function IssuesView({
+  q,
+  onOpen,
+}: {
+  q: string | null;
+  onOpen: (id: string) => void;
+}) {
   const schema = useSchema();
-  const status = useStatus();
   const bulk = useBulkPatchIssue();
-
-  const [mine, setMine] = useState(false);
-  const [contexts, setContexts] = useState<ReadonlySet<string>>(new Set());
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
-  const me = status.data?.me ?? null;
-
-  // The chips are not a private filter language: they compose the exact DQL
-  // a power user would type, so what the list shows is always inspectable.
-  const q = useMemo(() => {
-    const parts: string[] = [];
-    if (mine && me !== null) parts.push("assignee = @me");
-    for (const context of contexts) parts.push(`label = context:${context}`);
-    return parts.length > 0 ? parts.join(" AND ") : undefined;
-  }, [mine, me, contexts]);
-
-  const issues = useIssues({ q, limit: PAGE_SIZE });
-
-  // Contexts come from the labels actually present in the workspace — the
-  // workflow defines statuses, the issues themselves define contexts.
-  const availableContexts = useMemo(() => {
-    const set = new Set<string>();
-    for (const issue of issues.data?.items ?? []) {
-      const context = contextOf(issue.labels);
-      if (context !== null) set.add(context);
-    }
-    return [...set].sort();
-  }, [issues.data]);
-
-  const toggleContext = (context: string) => {
-    setContexts((previous) => {
-      const next = new Set(previous);
-      if (next.has(context)) next.delete(context);
-      else next.add(context);
-      return next;
-    });
-  };
+  const issues = useIssues({ q: q ?? undefined, limit: PAGE_SIZE });
 
   const toggleSelect = (id: string) => {
     setSelected((previous) => {
@@ -86,29 +57,21 @@ export function IssuesView({ onOpen }: { onOpen: (id: string) => void }) {
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex flex-wrap items-center gap-2.5 border-b border-edge px-5 py-3">
         <h1 className="shrink-0 text-lg font-semibold text-zinc-100">Issues</h1>
+        {q !== null ? (
+          <span
+            className="max-w-[440px] truncate rounded-[3px] border border-edge bg-card px-2 py-0.5 font-mono text-[11px] text-zinc-400"
+            title={q}
+          >
+            {q}
+          </span>
+        ) : null}
         <span className="shrink-0 whitespace-nowrap font-mono text-[11px] text-dim">
           {issues.data ? issues.data.items.length : 0} shown
           {issues.data && issues.data.total > issues.data.items.length
             ? ` of ${issues.data.total}`
             : ""}
         </span>
-        <span className="ml-auto flex flex-wrap items-center gap-2">
-          <ContextChip
-            on={mine && me !== null}
-            onClick={() => setMine((value) => !value)}
-            title={me === null ? "No git identity configured for @me" : "assignee = @me"}
-          >
-            @me
-          </ContextChip>
-          {availableContexts.map((context) => (
-            <ContextChip
-              key={context}
-              on={contexts.has(context)}
-              onClick={() => toggleContext(context)}
-            >
-              {context}
-            </ContextChip>
-          ))}
+        <span className="ml-auto flex items-center gap-2">
           <button
             type="button"
             onClick={() => void issues.refetch()}
@@ -172,8 +135,8 @@ export function IssuesView({ onOpen }: { onOpen: (id: string) => void }) {
       ) : null}
       {issues.data && issues.data.items.length === 0 ? (
         <Empty
-          title={q ? "No issues match these filters." : "No issues yet"}
-          hint={q ? "Drop a chip, or clear them all." : "Create the first one with ⌘K → New issue."}
+          title={q ? "No issues match these filters" : "No issues yet"}
+          hint={q ? "Clear a filter in the side pane." : "Create the first one with ⌘K → New issue."}
           className="flex-1 justify-center"
         />
       ) : null}

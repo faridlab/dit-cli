@@ -78,8 +78,15 @@ export function useSettings() {
 
 // -- docs (ADR 0010) ------------------------------------------------------------
 
-export function useDocs() {
-  return useQuery({ queryKey: queryKeys.docs, queryFn: api.listDocs, staleTime: STALE_TIME_MS });
+/** `enabled` false keeps occasional surfaces (the palette) from fetching
+ *  until they are actually open. */
+export function useDocs(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.docs,
+    queryFn: api.listDocs,
+    enabled,
+    staleTime: STALE_TIME_MS,
+  });
 }
 
 /** `path` null = the docs landing state (no page selected), query disabled. */
@@ -119,6 +126,24 @@ export function useDeleteDoc() {
       void client.invalidateQueries({ queryKey: queryKeys.docs });
     },
     onError: reportError("Could not delete page"),
+  });
+}
+
+/** Move or rename a page. The old path's cache dies with the path; the new
+ *  one is invalidated so it refetches the relocated bytes. A refusal (409 —
+ *  target occupied) surfaces verbatim: it names the path in the way. */
+export function useMoveDoc() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ from, to }: { from: string; to: string }) => api.moveDoc(from, to),
+    onSuccess: (_data, { from, to }) => {
+      client.removeQueries({ queryKey: queryKeys.doc(from) });
+      void client.invalidateQueries({ queryKey: queryKeys.doc(to) });
+      void client.invalidateQueries({ queryKey: queryKeys.docs });
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : String(error));
+    },
   });
 }
 

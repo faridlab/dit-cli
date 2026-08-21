@@ -7,7 +7,7 @@ import { useCallback, useEffect, useState } from "react";
 export type Route =
   | { name: "home" }
   | { name: "board" }
-  | { name: "issues" }
+  | { name: "issues"; q: string | null }
   | { name: "docs"; p: string | null }
   | { name: "search"; q: string }
   | { name: "issue"; id: string }
@@ -20,7 +20,7 @@ export function routeToHash(route: Route): string {
     case "board":
       return "#/board";
     case "issues":
-      return "#/issues";
+      return route.q === null ? "#/issues" : `#/issues?q=${encodeURIComponent(route.q)}`;
     case "docs":
       return route.p === null ? "#/docs" : `#/docs?p=${encodeURIComponent(route.p)}`;
     case "search":
@@ -46,7 +46,12 @@ export function parseHash(hash: string): Route {
   }
   if (first === "home") return { name: "home" };
   if (first === "board") return { name: "board" };
-  if (first === "issues") return { name: "issues" };
+  if (first === "issues") {
+    // The filter the side pane composes rides in `q` — a filtered list is
+    // a shareable, reloadable thing, not private view state.
+    const q = new URLSearchParams(query ?? "").get("q");
+    return { name: "issues", q: q === null || q.length === 0 ? null : q };
+  }
   if (first === "docs") {
     // The selected page rides in `p` as the full `docs/…` path — kept in
     // the URL so a reload (or a shared link) reopens the same page.
