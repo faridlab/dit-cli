@@ -17,7 +17,8 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
-import { useBoard, useMoveIssue } from "../lib/queries";
+import { Plus } from "lucide-react";
+import { useBoard, useCreateIssue, useMoveIssue } from "../lib/queries";
 import { useBoardColumns } from "../components/panes/BoardPane";
 import type { BoardColumnDto, BoardIssueDto } from "../lib/types";
 import { cn } from "../lib/cn";
@@ -95,6 +96,76 @@ const BoardCard = memo(function BoardCard({
   );
 });
 
+/** The row at the end of every column: a title in, an issue in this status
+ *  out. It is also the empty column's whole face — an empty column offers
+ *  itself, not an apology. Stays open after a create so capturing a burst
+ *  of issues never re-opens anything. */
+function ColumnQuickAdd({ status }: { status: string }) {
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState("");
+  const create = useCreateIssue();
+
+  const submit = () => {
+    const trimmed = title.trim();
+    if (trimmed.length === 0 || create.isPending) return;
+    // Only the status is decided here — the column it was typed into. The
+    // rest is refined on the issue itself, one pause later.
+    create.mutate(
+      { title: trimmed, type: "task", status, labels: [], body: "" },
+      { onSuccess: () => setTitle("") },
+    );
+  };
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-edge px-2 py-2.5 text-[11.5px] text-dim transition-colors hover:border-dim hover:text-zinc-400"
+      >
+        <Plus className="size-3.5" aria-hidden /> New issue
+      </button>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border border-accent bg-card p-2">
+      <input
+        autoFocus
+        value={title}
+        onChange={(event) => setTitle(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            submit();
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            setOpen(false);
+            setTitle("");
+          }
+        }}
+        // Blur with words stays put — a stray click never discards a title;
+        // blur empty collapses back to the affordance.
+        onBlur={() => {
+          if (title.trim().length === 0) setOpen(false);
+        }}
+        placeholder="Issue title"
+        aria-label="New issue in this column"
+        disabled={create.isPending}
+        className="w-full border-none bg-transparent text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none"
+      />
+      <div className="mt-1 flex items-center justify-between gap-2">
+        <span className="text-[10.5px] text-zinc-600">⏎ add · esc close</span>
+        {create.isError ? (
+          <span className="truncate text-[10.5px] text-red-400">
+            {create.error instanceof Error ? create.error.message : "Could not create"}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function Column({
   column,
   onOpen,
@@ -137,11 +208,7 @@ function Column({
         {column.issues.map((issue) => (
           <BoardCard key={issue.id} issue={issue} onOpen={onOpen} />
         ))}
-        {column.issues.length === 0 ? (
-          <p className="rounded-lg border border-dashed border-edge px-2 py-5 text-center text-[11.5px] text-dim">
-            No issues
-          </p>
-        ) : null}
+        <ColumnQuickAdd status={column.id} />
       </div>
     </section>
   );
