@@ -673,10 +673,11 @@ async fn serve_uri(uri: axum::http::Uri) -> Response {
     }
 }
 
-/// The Content-Type for an embedded asset, by file extension. Compiled
-/// unconditionally so its table is testable without an `embed-ui` build —
-/// a wrong MIME here is invisible in dev and breaks only the embedded
+/// The Content-Type for an embedded asset, by file extension. Compiled for
+/// tests too so its table is checkable without an `embed-ui` build — a
+/// wrong MIME here is invisible in dev and breaks only the embedded
 /// production server.
+#[cfg(any(test, feature = "embed-ui"))]
 fn asset_mime(name: &str) -> &'static str {
     match name.rsplit('.').next().unwrap_or("") {
         "html" => "text/html; charset=utf-8",
@@ -693,6 +694,22 @@ fn asset_mime(name: &str) -> &'static str {
         "wasm" => "application/wasm",
         _ => "application/octet-stream",
     }
+}
+
+#[cfg(not(feature = "embed-ui"))]
+async fn serve_uri(_uri: axum::http::Uri) -> Response {
+    // Dev builds have no UI inside them on purpose: the frontend dev server
+    // proxies /api here, and embedding would couple every Rust rebuild to a
+    // Node build. This page is what you see when that contract is forgotten.
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        "<!doctype html><meta charset=\"utf-8\"><title>DIT</title>\
+         <p>This build does not embed the UI.</p>\
+         <p>Either run the frontend dev server (<code>npm run dev</code> in \
+         <code>apps/web</code>) or build with <code>--features embed-ui</code>.</p>",
+    )
+        .into_response()
 }
 
 #[cfg(test)]
@@ -719,20 +736,4 @@ mod tests {
         assert_eq!(asset_mime("dit_wasm-HASH.js"), "text/javascript");
         assert_eq!(asset_mime("noext"), "application/octet-stream");
     }
-}
-
-#[cfg(not(feature = "embed-ui"))]
-async fn serve_uri(_uri: axum::http::Uri) -> Response {
-    // Dev builds have no UI inside them on purpose: the frontend dev server
-    // proxies /api here, and embedding would couple every Rust rebuild to a
-    // Node build. This page is what you see when that contract is forgotten.
-    (
-        StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
-        "<!doctype html><meta charset=\"utf-8\"><title>DIT</title>\
-         <p>This build does not embed the UI.</p>\
-         <p>Either run the frontend dev server (<code>npm run dev</code> in \
-         <code>apps/web</code>) or build with <code>--features embed-ui</code>.</p>",
-    )
-        .into_response()
 }
