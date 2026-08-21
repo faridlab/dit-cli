@@ -11,6 +11,7 @@ export type Route =
   | { name: "docs"; p: string | null }
   | { name: "search"; q: string }
   | { name: "issue"; id: string }
+  | { name: "new-issue" }
   | { name: "settings" };
 
 export function routeToHash(route: Route): string {
@@ -27,6 +28,8 @@ export function routeToHash(route: Route): string {
       return `#/search?q=${encodeURIComponent(route.q)}`;
     case "issue":
       return `#/issue/${encodeURIComponent(route.id)}`;
+    case "new-issue":
+      return "#/new";
     case "settings":
       return "#/settings";
   }
@@ -58,6 +61,7 @@ export function parseHash(hash: string): Route {
     const p = new URLSearchParams(query ?? "").get("p");
     return { name: "docs", p: p === null || p.length === 0 ? null : p };
   }
+  if (first === "new") return { name: "new-issue" };
   if (first === "settings") return { name: "settings" };
   // Home is the landing view: capture, triage, orient — the board is one
   // click away for people who want to go straight to moving cards.

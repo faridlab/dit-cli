@@ -12,7 +12,6 @@ import { invalidateWorkspaceData } from "../lib/queries";
 import { useNavigate, useRoute, type Route } from "../lib/router";
 import { ActivityBar } from "./ActivityBar";
 import { CommandPalette } from "./CommandPalette";
-import { NewIssueDialog } from "./NewIssueDialog";
 import { PaneFrame, PANE_MAX_WIDTH, PANE_MIN_WIDTH, type PaneMode } from "./PaneFrame";
 import { StatusBar } from "./StatusBar";
 import { BoardColumnsProvider, BoardPane } from "./panes/BoardPane";
@@ -26,6 +25,7 @@ import { DocsView } from "../views/DocsView";
 import { HomeView } from "../views/HomeView";
 import { IssueDetailView } from "../views/IssueDetailView";
 import { IssuesView } from "../views/IssuesView";
+import { NewIssueView } from "../views/NewIssueView";
 import { SearchView } from "../views/SearchView";
 import { SettingsView } from "../views/SettingsView";
 
@@ -68,7 +68,6 @@ export function AppShell() {
   const route = useRoute();
   const navigate = useNavigate();
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [newIssueOpen, setNewIssueOpen] = useState(false);
 
   // -- the pane state machine ---------------------------------------------
   // expanded -> slim: automatically, shortly after the pointer or focus
@@ -179,7 +178,9 @@ export function AppShell() {
   }, [navigate]);
 
   const openIssue = useCallback((id: string) => navigate({ name: "issue", id }), [navigate]);
-  const openNewIssue = useCallback(() => setNewIssueOpen(true), []);
+  // New issues are a page, not a dialog: the composer looks like the detail
+  // view it becomes, editor ready, nothing committed until it is created.
+  const openNewIssue = useCallback(() => navigate({ name: "new-issue" }), [navigate]);
   const openSearch = useCallback((q: string) => navigate({ name: "search", q }), [navigate]);
   const selectDoc = useCallback(
     (p: string | null) => navigate({ name: "docs", p }),
@@ -266,8 +267,9 @@ export function AppShell() {
     };
   } else if (route.name === "board") {
     pane = { title: "Board", icon: Columns3, node: <BoardPane /> };
-  } else if (route.name === "issues" || route.name === "issue") {
-    // An open issue keeps the filters pane: the list is one back away.
+  } else if (route.name === "issues" || route.name === "issue" || route.name === "new-issue") {
+    // An open issue keeps the filters pane: the list is one back away. The
+    // composer does too — it is one back away from the same list.
     const q = route.name === "issues" ? route.q : null;
     pane = {
       title: "Issues",
@@ -338,6 +340,7 @@ export function AppShell() {
             ) : null}
             {route.name === "search" ? <SearchView q={route.q} onOpen={openIssue} /> : null}
             {route.name === "issue" ? <IssueDetailView id={route.id} /> : null}
+            {route.name === "new-issue" ? <NewIssueView onCreated={openIssue} /> : null}
             {route.name === "settings" ? <SettingsView /> : null}
           </main>
         </BoardColumnsProvider>
@@ -349,11 +352,6 @@ export function AppShell() {
         onNavigate={navigate}
         onNewIssue={openNewIssue}
         onOpenDoc={previewDoc}
-      />
-      <NewIssueDialog
-        open={newIssueOpen}
-        onOpenChange={setNewIssueOpen}
-        onCreated={(issue) => openIssue(issue.short_ref)}
       />
     </div>
   );

@@ -40,7 +40,7 @@ const ITEMS: ActivityItem[] = [
     shortcut: "⌘4",
     route: { name: "issues", q: null },
     icon: ListTodo,
-    match: (r) => r.name === "issues",
+    match: (r) => r.name === "issues" || r.name === "new-issue",
   },
   {
     label: "Docs",
