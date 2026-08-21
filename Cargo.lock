@@ -380,7 +380,7 @@ dependencies = [
 
 [[package]]
 name = "dit-ai"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "dit-model",
  "thiserror",
@@ -388,7 +388,7 @@ dependencies = [
 
 [[package]]
 name = "dit-cli"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "clap",
  "dit-core",
@@ -399,7 +399,7 @@ dependencies = [
 
 [[package]]
 name = "dit-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "dit-ai",
  "dit-index",
@@ -417,7 +417,7 @@ dependencies = [
 
 [[package]]
 name = "dit-guards"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "axum",
  "dit-core",
@@ -433,7 +433,7 @@ dependencies = [
 
 [[package]]
 name = "dit-index"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "dit-model",
  "dit-query",
@@ -445,7 +445,7 @@ dependencies = [
 
 [[package]]
 name = "dit-model"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -455,7 +455,7 @@ dependencies = [
 
 [[package]]
 name = "dit-parse"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "comrak",
  "dit-model",
@@ -475,7 +475,7 @@ dependencies = [
 
 [[package]]
 name = "dit-server"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "axum",
  "clap",
@@ -496,7 +496,7 @@ dependencies = [
 
 [[package]]
 name = "dit-store"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "dit-model",
  "dit-parse",
@@ -508,7 +508,7 @@ dependencies = [
 
 [[package]]
 name = "dit-vcs"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "dit-model",
  "dit-parse",
@@ -520,7 +520,7 @@ dependencies = [
 
 [[package]]
 name = "dit-wasm"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "dit-model",
  "dit-parse",
