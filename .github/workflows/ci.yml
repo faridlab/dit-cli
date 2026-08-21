@@ -116,6 +116,11 @@ jobs:
       - run: npm ci --prefix apps/web && npm run build --prefix apps/web
       - run: cargo build --release --locked --features embed-ui -p dit-cli --target ${{ matrix.target }}
       - run: tar -czf dit-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release dit
+      # `dit upgrade` refuses any release without this digest — the first
+      # release to carry one is the first built after this step landed.
+      - run: sha256sum dit-${{ matrix.target }}.tar.gz > dit-${{ matrix.target }}.tar.gz.sha256
       - uses: softprops/action-gh-release@v2
         with:
-          files: dit-${{ matrix.target }}.tar.gz
+          files: |
+            dit-${{ matrix.target }}.tar.gz
+            dit-${{ matrix.target }}.tar.gz.sha256
