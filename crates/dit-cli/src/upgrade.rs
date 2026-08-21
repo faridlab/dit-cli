@@ -12,10 +12,16 @@
 //! installing unverified bytes. `scripts/install.sh` remains the bootstrap
 //! path and does not verify.
 
-use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
+
+// The install chain below is unix-only — Windows ships no prebuilt release,
+// so `install` there is a refusal stub — and its imports follow it out.
+#[cfg(unix)]
+use std::fs;
+#[cfg(unix)]
+use std::path::PathBuf;
 
 use sha2::{Digest, Sha256};
 
@@ -255,6 +261,7 @@ fn hex(bytes: &[u8]) -> String {
 /// Pulls the `dit` entry out of the release tarball and stages it next to the
 /// executable — same directory, so the final rename is atomic and never
 /// crosses a filesystem boundary. Returns the staged path.
+#[cfg(unix)]
 fn stage_binary(tarball: &[u8], exe: &Path) -> Result<PathBuf, String> {
     let dir = exe
         .parent()
@@ -264,6 +271,7 @@ fn stage_binary(tarball: &[u8], exe: &Path) -> Result<PathBuf, String> {
     Ok(staged)
 }
 
+#[cfg(unix)]
 fn extract_binary(tarball: &[u8], dest: &Path) -> Result<(), String> {
     let gz = flate2::read::GzDecoder::new(tarball);
     let mut archive = tar::Archive::new(gz);
@@ -301,9 +309,6 @@ fn set_executable(dest: &Path, tar_mode: u32) {
     let mode = tar_mode | 0o755;
     let _ = fs::set_permissions(dest, fs::Permissions::from_mode(mode));
 }
-
-#[cfg(not(unix))]
-fn set_executable(_dest: &Path, _tar_mode: u32) {}
 
 /// Stages, then renames over the executable. On the unix platforms we ship,
 /// renaming over a running binary is allowed: the old inode lives as long as
@@ -373,17 +378,15 @@ mod tests {
         assert!(!checksum_matches(b"\n", &tarball));
     }
 
+    #[cfg(unix)]
     #[test]
     fn extraction_pulls_the_dit_entry_and_marks_it_executable() {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("dit");
         extract_binary(&sample_tarball(), &dest).unwrap();
         assert_eq!(fs::read(&dest).unwrap(), b"dit!\n");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert!(fs::metadata(&dest).unwrap().permissions().mode() & 0o111 != 0);
-        }
+        use std::os::unix::fs::PermissionsExt;
+        assert!(fs::metadata(&dest).unwrap().permissions().mode() & 0o111 != 0);
     }
 
     #[cfg(unix)]
