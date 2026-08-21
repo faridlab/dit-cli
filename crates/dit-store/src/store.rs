@@ -35,6 +35,8 @@ pub enum StoreError {
     Fmt(#[from] dit_parse::fmt::FmtError),
     #[error("`{0}` does not exist in this workspace")]
     NotFound(String),
+    #[error("`{0}` already exists — nothing was overwritten")]
+    Conflict(String),
     #[error("`{0}` matches several issues ({1}) — use the full 26-character id")]
     Ambiguous(String, String),
     #[error(
@@ -428,6 +430,43 @@ impl Transaction {
             return Err(StoreError::NotFound(path.as_str().to_owned()));
         }
         self.push_staged(file, StagedWrite::Remove);
+        Ok(())
+    }
+
+    /// Stage a page move: the bytes land unchanged at the new path while the
+    /// old path is staged for removal, so the whole relocation is one commit
+    /// and git's rename detection (R100 on identical content) keeps the
+    /// history attached to the page. The source must exist — on disk or as a
+    /// write staged earlier in this transaction — and the target must be
+    /// free; a move that overwrote would silently delete someone's page.
+    /// The content is not re-formatted: it is already canonical, and passing
+    /// it through verbatim is what makes the rename detectable.
+    pub fn move_doc(&mut self, from: &DocPath, to: &DocPath) -> Result<(), StoreError> {
+        if from.as_str() == to.as_str() {
+            return Ok(());
+        }
+        let source = self.store.layout.doc_file(from);
+        let target = self.store.layout.doc_file(to);
+        // A write staged earlier in this same transaction is a valid source —
+        // create-then-relocate in one commit must not round-trip the disk.
+        let contents = match self.staged.iter().rev().find(|s| s.path == source) {
+            Some(Staged {
+                write: StagedWrite::Write(contents),
+                ..
+            }) => Some(contents.clone()),
+            // Staged for removal earlier here: the page is being deleted, so
+            // it cannot also be the source of a move.
+            Some(_) => None,
+            None => fs::read_to_string(&source).ok(),
+        };
+        let Some(contents) = contents else {
+            return Err(StoreError::NotFound(from.as_str().to_owned()));
+        };
+        if self.staged.iter().any(|s| s.path == target) || target.exists() {
+            return Err(StoreError::Conflict(to.as_str().to_owned()));
+        }
+        self.push_staged(target, StagedWrite::Write(contents));
+        self.push_staged(source, StagedWrite::Remove);
         Ok(())
     }
 

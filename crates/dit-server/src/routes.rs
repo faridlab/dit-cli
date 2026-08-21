@@ -45,6 +45,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/api/board", get(get_board))
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/docs", get(list_docs))
+        .route("/api/docs/move", post(move_doc))
         .route(
             "/api/docs/{*path}",
             get(get_doc).put(put_doc).delete(delete_doc),
@@ -439,6 +440,30 @@ async fn delete_doc(
         let mut tx = dit.transaction(&me).map_err(ServerError::Dit)?;
         tx.delete_doc(&path).map_err(ServerError::Dit)?;
         tx.commit(&format!("dit docs delete: {path}"))
+            .map_err(ServerError::Dit)?;
+        Ok(())
+    })
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Move or rename a page. One transaction, one commit; identical bytes at
+/// the new path plus removal of the old is what makes git record it as a
+/// rename, keeping the page's history attached. A literal route, not under
+/// the `{*path}` wildcard — and it can never shadow a real page, because a
+/// `DocPath` must end in `.md`.
+async fn move_doc(
+    State(state): State<Arc<AppState>>,
+    Json(input): Json<dto::MoveDocDto>,
+) -> Result<StatusCode, ApiError> {
+    let me = state.me.clone();
+    write_dit(&state, move |dit| {
+        let mut tx = dit.transaction(&me).map_err(ServerError::Dit)?;
+        tx.move_doc(&input.from, &input.to)
+            .map_err(ServerError::Dit)?;
+        // A self-move stages nothing; `commit` reports that as `None` and
+        // it is still a success.
+        tx.commit(&format!("dit docs move: {} -> {}", input.from, input.to))
             .map_err(ServerError::Dit)?;
         Ok(())
     })

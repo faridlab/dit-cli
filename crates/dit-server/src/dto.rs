@@ -238,6 +238,14 @@ pub struct BodyDto {
     pub body: String,
 }
 
+/// A page move: `from` and `to` are workspace-relative doc paths.
+#[derive(Debug, Deserialize, TS)]
+#[ts(export)]
+pub struct MoveDocDto {
+    pub from: String,
+    pub to: String,
+}
+
 #[derive(Debug, Deserialize, TS)]
 #[ts(export)]
 pub struct CommentInputDto {

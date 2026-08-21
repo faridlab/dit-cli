@@ -970,6 +970,24 @@ impl<'a> Transaction<'a> {
         Ok(self.store_tx.add_comment(id, alias, body)?)
     }
 
+    /// Move (rename) a doc page in one commit. Byte-identical content at the
+    /// new path plus removal of the old one is what makes git record a
+    /// rename, so the page's history follows it. An occupied target is a
+    /// `Refuse`, not an error in the write path — nothing is ever partially
+    /// moved.
+    pub fn move_doc(&mut self, from: &str, to: &str) -> Result<(), DitError> {
+        let from_path = DocPath::parse(from)?;
+        let to_path = DocPath::parse(to)?;
+        match self.store_tx.move_doc(&from_path, &to_path) {
+            Ok(()) => Ok(()),
+            Err(dit_store::StoreError::NotFound(name)) => Err(DitError::NotFound(name)),
+            Err(dit_store::StoreError::Conflict(name)) => Err(DitError::Refuse(format!(
+                "a page already exists at `{name}` — nothing was moved"
+            ))),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// Write everything staged, commit it as one git commit, and bring the
     /// index up to date. `Ok(None)` means nothing was staged — not an error,
     /// the caller's "nothing to do" is already true.

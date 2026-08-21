@@ -549,3 +549,96 @@ fn write_and_remove_in_one_transaction_last_write_wins() {
         "# Resurrected\n"
     );
 }
+
+#[test]
+fn move_doc_renames_in_one_changeset_and_rollback_restores_both() {
+    let (tmp, store) = doc_tx();
+    let mut tx = store.transaction(now(), "farid");
+    tx.write_doc(&DocPath::parse("docs/old.md").unwrap(), "# Old\n")
+        .unwrap();
+    tx.finish().unwrap();
+
+    // Moving into a folder that does not exist yet must create it — the
+    // tree in the pane implies folders the file tree never materialized.
+    let mut tx = store.transaction(now(), "farid");
+    tx.move_doc(
+        &DocPath::parse("docs/old.md").unwrap(),
+        &DocPath::parse("notes/deep/new.md").unwrap(),
+    )
+    .unwrap();
+    let applied = tx.finish().unwrap();
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("notes/deep/new.md")).unwrap(),
+        "# Old\n",
+        "content carries over byte-for-byte"
+    );
+    assert!(!tmp.path().join("docs/old.md").exists());
+
+    applied.rollback();
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("docs/old.md")).unwrap(),
+        "# Old\n",
+        "rollback puts the page back where it was"
+    );
+    assert!(!tmp.path().join("notes/deep/new.md").exists());
+}
+
+#[test]
+fn move_doc_refuses_an_occupied_target_and_a_missing_source() {
+    let (tmp, store) = doc_tx();
+    let mut tx = store.transaction(now(), "farid");
+    tx.write_doc(&DocPath::parse("docs/a.md").unwrap(), "# A\n")
+        .unwrap();
+    tx.write_doc(&DocPath::parse("notes/b.md").unwrap(), "# B\n")
+        .unwrap();
+    tx.finish().unwrap();
+
+    let mut tx = store.transaction(now(), "farid");
+    let err = tx
+        .move_doc(
+            &DocPath::parse("docs/a.md").unwrap(),
+            &DocPath::parse("notes/b.md").unwrap(),
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("notes/b.md"), "{err}");
+    // Nothing was staged by the refusal — the tree stays exactly as it was.
+    tx.finish().unwrap();
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("docs/a.md")).unwrap(),
+        "# A\n"
+    );
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("notes/b.md")).unwrap(),
+        "# B\n"
+    );
+
+    let mut tx = store.transaction(now(), "farid");
+    let err = tx
+        .move_doc(
+            &DocPath::parse("docs/never-existed.md").unwrap(),
+            &DocPath::parse("notes/elsewhere.md").unwrap(),
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("does not exist"), "{err}");
+}
+
+#[test]
+fn move_doc_can_relocate_a_page_created_in_the_same_transaction() {
+    // Create and rename in one commit: the staged write is the source, no
+    // disk round trip needed.
+    let (tmp, store) = doc_tx();
+    let mut tx = store.transaction(now(), "farid");
+    tx.write_doc(&DocPath::parse("docs/first.md").unwrap(), "# First\n")
+        .unwrap();
+    tx.move_doc(
+        &DocPath::parse("docs/first.md").unwrap(),
+        &DocPath::parse("epics/first.md").unwrap(),
+    )
+    .unwrap();
+    tx.finish().unwrap();
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("epics/first.md")).unwrap(),
+        "# First\n"
+    );
+    assert!(!tmp.path().join("docs/first.md").exists());
+}

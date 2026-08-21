@@ -972,6 +972,93 @@ fn a_deleted_doc_disappears_in_one_commit() {
 }
 
 #[test]
+fn a_moved_doc_carries_its_content_and_history_in_one_commit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    let mut tx = dit.transaction("farid").unwrap();
+    tx.write_doc("docs/flows/auth.md", "# Auth\n\nbody text\n")
+        .unwrap();
+    tx.commit("dit docs save: docs/flows/auth.md").unwrap();
+
+    let mut tx = dit.transaction("farid").unwrap();
+    tx.move_doc("docs/flows/auth.md", "notes/auth.md").unwrap();
+    tx.commit("dit docs move: docs/flows/auth.md -> notes/auth.md")
+        .unwrap();
+
+    // The new location serves the exact bytes; the old one is gone.
+    assert_eq!(
+        dit.read_doc("notes/auth.md").unwrap(),
+        "# Auth\n\nbody text\n"
+    );
+    assert!(matches!(
+        dit.read_doc("docs/flows/auth.md").unwrap_err(),
+        DitError::NotFound(_)
+    ));
+    let listed = dit.list_docs();
+    let paths: Vec<&str> = listed.iter().map(|d| d.path.as_str()).collect();
+    assert_eq!(paths, vec!["notes/auth.md"]);
+    assert!(!dit.status().dirty);
+
+    // Git recorded it as a rename, so the page's history follows it — the
+    // same guarantee the layout migration gives (ADR 0005).
+    let rename = std::process::Command::new("git")
+        .args(["log", "-1", "--name-status", "--format="])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&rename.stdout).trim(),
+        "R100\tdocs/flows/auth.md\tnotes/auth.md",
+        "the move must be one rename commit, not delete-plus-create"
+    );
+}
+
+#[test]
+fn moving_a_doc_onto_an_existing_page_is_refused_without_writing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    let mut tx = dit.transaction("farid").unwrap();
+    tx.write_doc("docs/a.md", "# A\n").unwrap();
+    tx.write_doc("notes/b.md", "# B\n").unwrap();
+    tx.commit("dit docs save: two pages").unwrap();
+
+    let mut tx = dit.transaction("farid").unwrap();
+    let err = tx.move_doc("docs/a.md", "notes/b.md").unwrap_err();
+    assert!(matches!(err, DitError::Refuse(_)), "{err}");
+    tx.abort();
+
+    // A refused move writes nothing: both pages intact, tree clean.
+    assert_eq!(dit.read_doc("docs/a.md").unwrap(), "# A\n");
+    assert_eq!(dit.read_doc("notes/b.md").unwrap(), "# B\n");
+    assert!(!dit.status().dirty);
+}
+
+#[test]
+fn moving_a_missing_doc_is_not_found_and_a_self_move_is_a_no_op() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    let mut tx = dit.transaction("farid").unwrap();
+    tx.write_doc("docs/stay.md", "# Stay\n").unwrap();
+    tx.commit("dit docs save: docs/stay.md").unwrap();
+
+    let mut tx = dit.transaction("farid").unwrap();
+    assert!(matches!(
+        tx.move_doc("docs/ghost.md", "notes/ghost.md").unwrap_err(),
+        DitError::NotFound(_)
+    ));
+    tx.abort();
+
+    // Renaming a page onto itself stages nothing — no commit, no error.
+    let mut tx = dit.transaction("farid").unwrap();
+    tx.move_doc("docs/stay.md", "docs/stay.md").unwrap();
+    let commit = tx.commit("dit docs move: self").unwrap();
+    assert!(
+        commit.is_none(),
+        "a self-move must not be a commit: {commit:?}"
+    );
+}
+
+#[test]
 fn doc_paths_are_sandboxed_at_the_facade() {
     let tmp = tempfile::tempdir().unwrap();
     let mut dit = workspace(tmp.path());

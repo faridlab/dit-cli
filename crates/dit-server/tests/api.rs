@@ -363,3 +363,73 @@ async fn doc_paths_that_cannot_exist_are_400s_and_missing_pages_are_404s() {
     let (status, _, text) = req(&app, "DELETE", "/api/docs/docs/never-there.md", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{text}");
 }
+
+#[tokio::test]
+async fn moving_a_page_serves_it_from_the_new_path() {
+    let (app, _tmp) = test_app();
+
+    let (_, _, text) = req(
+        &app,
+        "PUT",
+        "/api/docs/docs/flows/auth.md",
+        Some(json!({ "body": "# Auth\n\nbody text\n" })),
+    )
+    .await;
+    assert!(text.contains("auth"), "{text}");
+
+    // Move: 204, then the bytes live at the new path and only there.
+    let (status, _, text) = req(
+        &app,
+        "POST",
+        "/api/docs/move",
+        Some(json!({ "from": "docs/flows/auth.md", "to": "notes/auth.md" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{text}");
+
+    let (status, page, _) = req(&app, "GET", "/api/docs/notes/auth.md", None).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert!(page["body"].as_str().unwrap().contains("body text"));
+
+    let (status, _, _) = req(&app, "GET", "/api/docs/docs/flows/auth.md", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Moving onto an occupied path is refused — 409, nothing overwritten.
+    let (_, _, _) = req(
+        &app,
+        "PUT",
+        "/api/docs/notes/taken.md",
+        Some(json!({ "body": "# Taken\n" })),
+    )
+    .await;
+    let (status, body, text) = req(
+        &app,
+        "POST",
+        "/api/docs/move",
+        Some(json!({ "from": "notes/auth.md", "to": "notes/taken.md" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body} {text}");
+    assert!(text.contains("nothing was moved"), "{text}");
+    let (_, untouched, _) = req(&app, "GET", "/api/docs/notes/taken.md", None).await;
+    assert!(untouched["body"].as_str().unwrap().contains("Taken"));
+
+    // A missing source is a 404, and a malformed path a 400 — same shapes
+    // as the rest of the docs surface.
+    let (status, _, _) = req(
+        &app,
+        "POST",
+        "/api/docs/move",
+        Some(json!({ "from": "docs/ghost.md", "to": "notes/ghost.md" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = req(
+        &app,
+        "POST",
+        "/api/docs/move",
+        Some(json!({ "from": "docs/ok.md", "to": "docs/UPPER.md" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
