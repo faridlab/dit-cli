@@ -92,6 +92,16 @@ tower = "0.5"
 # select over both halves at once.
 futures-util = { version = "0.3", default-features = false }
 
+# Self-update (`dit upgrade`, dit-cli only): HTTP against the GitHub releases
+# API, plus the archive and digest machinery a verified download needs. All
+# pinned — 3.2.1 is the newest ureq that honors this workspace's rust-version
+# (1.82), and sha2 stays on 0.10 for the same reason. No other crate sees
+# these; the delivery layer owns the updater.
+ureq   = { version = "=3.2.1" }
+tar    = { version = "=0.4.46" }
+flate2 = { version = "=1.1.9" }
+sha2   = { version = "=0.10.9" }
+
 # Test-only, but declared here so every crate pins the same version.
 tempfile = "3"
 proptest = "1"

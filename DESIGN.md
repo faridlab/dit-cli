@@ -1205,10 +1205,13 @@ dit release plan|verify|diff|tag      # §15
 dit board --as-of <tag|date>          # §14.3b
 dit index rebuild [--vectors|--events]
 dit merge-driver <base> <ours> <theirs> <marker> <path>
-dit doctor                            # git version, merge driver, repo link, watch limit, D/F ref (Mode B)
+dit upgrade [version]                 # replace this binary with a release (checksum-verified)
+dit doctor                            # git version, merge driver, repo link, watch limit, D/F ref (Mode B), binary freshness
 ```
 
-`dit doctor` is not an accessory. It checks the things that, when wrong, cause silent data loss: minimum git version, `merge.dit-md.driver` configured with an absolute path that actually exists, `fs.inotify.max_user_watches`, D/F conflicts in branch names, and FTS5 integrity.
+`dit doctor` is not an accessory. It checks the things that, when wrong, cause silent data loss: minimum git version, `merge.dit-md.driver` configured with an absolute path that actually exists, `fs.inotify.max_user_watches`, D/F conflicts in branch names, and FTS5 integrity. It also asks GitHub whether this binary is the latest release — a warning when behind, a note when the check cannot run (doctor must stay useful offline).
+
+`dit upgrade` (alias `update`) downloads the latest release — or an exact one, `dit upgrade 0.1.9` — verifies the tarball against the release's `.sha256` asset, and renames the staged binary over the running executable. A release without a checksum asset is refused outright: the first verifiable release is the first one built after checksums landed in CI, and `scripts/install.sh` stays as the unverified bootstrap path. New `dit-cli` deps, recorded here per the no-silent-dependency rule (§9): `ureq` (pinned `=3.2.1`, the newest release honoring the workspace's rust-version 1.82; rustls, no native TLS), `tar` (`=0.4.46`), `flate2` (`=1.1.9`), `sha2` (`=0.10.9`) — one HTTP client and the archive/digest machinery a verified self-update needs, visible only to the delivery layer. The update URL is a constant of the project's own repo; no workspace file is ever consulted (that would be invariant 7's RCE-via-pull-request).
 
 ---
 

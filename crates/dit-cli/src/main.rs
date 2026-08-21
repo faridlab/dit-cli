@@ -10,6 +10,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
+
+mod upgrade;
 use dit_core::{
     DataLayout, DiagnosticLevel, Dit, DitError, FieldPatch, IndexedIssue, IssueDraft, IssueId,
     IssueKind, Priority, ReindexMode,
@@ -76,6 +78,13 @@ enum Command {
     },
     /// Register this binary as the repository's merge driver.
     InstallDriver,
+    /// Upgrade this binary to the latest release, or an exact one
+    /// (`dit upgrade 0.1.9`). Downloads are checksum-verified.
+    #[command(alias = "update")]
+    Upgrade {
+        /// An exact version, e.g. 0.1.9 or v0.1.9. Default: the latest release.
+        version: Option<String>,
+    },
     /// List and edit the issue templates `.dit/templates/` holds.
     Templates {
         #[command(subcommand)]
@@ -369,6 +378,23 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
                 };
                 println!("[{tag}] {}: {}", d.code, d.message);
             }
+            // The one diagnostic that is about this binary, not the workspace.
+            // Freshness is a warning (never a failure) and an unreachable
+            // check is a note — doctor must stay useful offline.
+            match upgrade::freshness() {
+                upgrade::Freshness::Current { latest } => {
+                    println!(
+                        "[ ok  ] version: {} (latest is {latest})",
+                        env!("CARGO_PKG_VERSION")
+                    );
+                }
+                upgrade::Freshness::Behind { current, latest } => {
+                    println!("[WARN ] version: {current} — latest is {latest}; run 'dit upgrade'");
+                }
+                upgrade::Freshness::Unknown { current, reason } => {
+                    println!("[ ok  ] version: {current} (freshness check skipped: {reason})");
+                }
+            }
             if failed {
                 Ok(ExitCode::from(1))
             } else {
@@ -417,6 +443,21 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
             dit.install_merge_driver(&exe)?;
             println!("merge driver registered: {}", exe.display());
             Ok(ExitCode::SUCCESS)
+        }
+        Command::Upgrade { version } => {
+            // No workspace needed: this command is about the binary itself.
+            // Its failures are download/verify problems, not workspace
+            // errors, so they print and fail the exit code directly.
+            match upgrade::upgrade(version.as_deref()) {
+                Ok(line) => {
+                    println!("{line}");
+                    Ok(ExitCode::SUCCESS)
+                }
+                Err(e) => {
+                    eprintln!("dit upgrade: {e}");
+                    Ok(ExitCode::FAILURE)
+                }
+            }
         }
         Command::Templates { cmd } => templates(cmd),
         Command::Docs { cmd } => match cmd {
