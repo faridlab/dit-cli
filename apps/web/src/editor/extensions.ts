@@ -25,10 +25,19 @@ import { BulletList, ListItem, OrderedList } from "@tiptap/extension-list";
 import Link from "@tiptap/extension-link";
 import CodeBlock from "@tiptap/extension-code-block";
 import HardBreak from "@tiptap/extension-hard-break";
-import { Extension, InputRule, mergeAttributes, Node } from "@tiptap/core";
+import {
+  Extension,
+  InputRule,
+  mergeAttributes,
+  Node,
+  type Editor,
+} from "@tiptap/core";
+import type { Node as PmNode } from "@tiptap/pm/model";
+import type { NodeView } from "@tiptap/pm/view";
 import { Plugin } from "@tiptap/pm/state";
 
 import { SlashMenu } from "./SlashMenu";
+import { sanitizeSvg } from "./sanitizeSvg";
 
 // -- extensions of TipTap's own, adjusted to the bridge's attrs ---------------
 
@@ -149,6 +158,110 @@ const DitListItem = ListItem.extend({
   },
 });
 
+/** The `dit-diagram` editing surface (ADR 0012): the sanitized drawing on
+ *  top, the literal source under it, one toggle between the two. Only the
+ *  source is writable — the drawing is always a re-render of those bytes,
+ *  never markup the editor keeps. The block stays an ordinary fenced code
+ *  block to git and to the bridge; this view is dressing on the same
+ *  storage. */
+function DiagramView(
+  name: string,
+  editor: Editor,
+  node: PmNode,
+  getPos: () => number | undefined,
+): NodeView {
+  const wrap = document.createElement("div");
+  wrap.className = "dit-diagram";
+
+  const state = document.createElement("span");
+  state.className = "dit-diagram-state";
+
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "dit-diagram-btn";
+  toggle.addEventListener("click", () => {
+    setMode(wrap.dataset.mode === "preview" ? "source" : "preview");
+  });
+
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.className = "dit-diagram-btn";
+  copy.textContent = "Copy SVG";
+  copy.addEventListener("click", () => {
+    void navigator.clipboard
+      .writeText(source())
+      .then(() => {
+        copy.textContent = "Copied";
+        window.setTimeout(() => {
+          copy.textContent = "Copy SVG";
+        }, 1200);
+      })
+      .catch(() => {
+        // No clipboard access — surface the bytes so they can be copied.
+        setMode("source");
+      });
+  });
+
+  const label = document.createElement("span");
+  label.className = "dit-diagram-label";
+  label.textContent = "Diagram";
+  const bar = document.createElement("div");
+  bar.className = "dit-diagram-bar";
+  bar.append(label, state, toggle, copy);
+
+  const canvas = document.createElement("div");
+  canvas.className = "dit-diagram-canvas";
+
+  const pre = document.createElement("pre");
+  const code = document.createElement("code");
+  code.className = "language-dit-diagram";
+  pre.append(code);
+  wrap.append(bar, canvas, pre);
+
+  // The node this view was built for goes stale as the doc moves; the doc at
+  // our position is the truth. Falls back to the mount-time node if the
+  // position cannot be resolved.
+  const source = (): string => {
+    const pos = getPos();
+    if (typeof pos !== "number") return node.textContent;
+    return editor.state.doc.nodeAt(pos)?.textContent ?? node.textContent;
+  };
+
+  const setMode = (mode: "preview" | "source"): void => {
+    wrap.dataset.mode = mode;
+    toggle.textContent = mode === "preview" ? "Edit source" : "Show diagram";
+    if (mode === "preview") {
+      const result = sanitizeSvg(source());
+      // A refusal falls back to the source below with the reason next to the
+      // label — never a blank card and never the unsanitized drawing.
+      state.textContent = result.ok ? "" : `not rendered — ${result.error}`;
+      if (result.ok) canvas.innerHTML = result.svg;
+    } else {
+      state.textContent =
+        source().trim().length === 0 ? "paste SVG source — it renders as a diagram" : "";
+    }
+  };
+
+  // First paint follows the bytes: a valid drawing opens rendered, anything
+  // else opens as source.
+  setMode(sanitizeSvg(node.textContent).ok ? "preview" : "source");
+
+  return {
+    dom: wrap,
+    contentDOM: code,
+    update: (updated) => {
+      if (updated.type.name !== name) return false;
+      // A language change flips which surface the block needs; let the view
+      // be rebuilt instead of morphing it in place.
+      return updated.attrs.language === node.attrs.language;
+    },
+    // The bar and canvas are ours; only edits inside the code are the doc's.
+    ignoreMutation: (mutation) => !code.contains(mutation.target),
+    stopEvent: (event) =>
+      event.target instanceof Element && (bar.contains(event.target) || canvas.contains(event.target)),
+  };
+}
+
 /** A code block's `language` is the full info string (`` `dit:query` `` included). */
 const DitCodeBlock = CodeBlock.extend({
   addAttributes() {
@@ -157,6 +270,25 @@ const DitCodeBlock = CodeBlock.extend({
         default: "",
         parseHTML: (element) => /language-([\w:.-]+)/.exec(element.className)?.[1] ?? "",
       },
+    };
+  },
+  addNodeView() {
+    return ({ node, editor, getPos }) => {
+      if (node.attrs.language !== "dit-diagram") {
+        // Every other fence renders exactly what the renderHTML path
+        // produces — a node view is taken only so diagrams can differ.
+        const pre = document.createElement("pre");
+      const code = document.createElement("code");
+      if (node.attrs.language) code.className = `language-${node.attrs.language}`;
+      pre.append(code);
+      return {
+        dom: pre,
+        contentDOM: code,
+        update: (updated) => {
+          if (updated.type.name !== this.name) return false;
+          return updated.attrs.language === node.attrs.language;
+        },
+      };
     };
   },
 });

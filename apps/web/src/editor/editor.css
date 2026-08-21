@@ -220,6 +220,73 @@
   border-color: var(--color-accent-hi);
 }
 
+/* A diagram block (`dit-diagram`, ADR 0012): the drawing on top, its literal
+ * source below. */
+.dit-diagram {
+  background: var(--color-app);
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  margin: 0.8em 0;
+  padding: 0.6em 0.75em;
+}
+.dit-diagram-bar {
+  align-items: center;
+  color: var(--color-dim);
+  display: flex;
+  font-family: var(--font-sans);
+  font-size: 10px;
+  gap: 8px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.dit-diagram-label {
+  color: #a1a1aa;
+}
+.dit-diagram-state {
+  flex: 1;
+}
+.dit-diagram-btn {
+  background: transparent;
+  border: 1px solid var(--color-edge);
+  border-radius: 4px;
+  color: var(--color-dim);
+  cursor: pointer;
+  font: inherit;
+  padding: 2px 8px;
+}
+.dit-diagram-btn:hover {
+  border-color: var(--color-ctl);
+  color: #d4d4d8;
+}
+.dit-diagram-canvas {
+  padding: 0.6em 0 0;
+  user-select: none;
+}
+.dit-diagram-canvas svg {
+  display: block;
+  height: auto;
+  margin: 0 auto;
+  max-width: 100%;
+}
+/* The un-shown half is hidden rather than removed: ProseMirror still owns
+ * the source text, so the block stays an ordinary editable code block. */
+.dit-diagram[data-mode="source"] .dit-diagram-canvas {
+  display: none;
+}
+.dit-diagram[data-mode="preview"] pre {
+  display: none;
+}
+.dit-diagram pre {
+  background: transparent;
+  border: 0;
+  margin: 0.6em 0 0;
+  overflow-x: auto;
+  padding: 0;
+}
+.dit-diagram.ProseMirror-selectednode {
+  border-color: var(--color-accent-hi);
+}
+
 .dit-htmlinline {
   background: var(--color-card);
   border: 1px solid var(--color-edge);

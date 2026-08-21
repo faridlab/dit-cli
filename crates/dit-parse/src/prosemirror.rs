@@ -1144,6 +1144,33 @@ mod tests {
     }
 
     #[test]
+    fn dit_diagram_block_round_trips_verbatim() {
+        // A diagram is an ordinary fenced block whose info string is the
+        // convention; the bytes inside are SVG source. The bridge must store
+        // and return them untouched — it never interprets the drawing, so a
+        // payload like <script> survives as literal text and stays inert
+        // until the client-side sanitizer renders it (ADR 0012).
+        let svg = concat!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 400 100\">\n",
+            "  <title>DIT pipeline</title>\n",
+            "  <rect x=\"4\" y=\"4\" width=\"80\" height=\"24\" fill=\"#0a0a0a\" />\n",
+            "  <text x=\"44\" y=\"20\" text-anchor=\"middle\" font-size=\"9\">markdown</text>\n",
+            "  <script>alert('not executed by the bridge')</script>\n",
+            "</svg>\n",
+        );
+        let input = format!("```dit-diagram\n{svg}```\n");
+        both(&input);
+
+        // The language attr is what the editor's diagram NodeView keys on.
+        let canonical = crate::fmt::format_body(&input).unwrap();
+        let doc = markdown_to_doc(&canonical).unwrap();
+        assert_eq!(doc["content"][0]["type"], "codeBlock");
+        assert_eq!(doc["content"][0]["attrs"]["language"], "dit-diagram");
+        assert_eq!(doc["content"][0]["content"][0]["text"], json!(svg));
+        pm_is_stable(&input);
+    }
+
+    #[test]
     fn wikilinks_short_and_titled() {
         both("see [[docs/flows/auth-session]] here\n");
         both("see [[docs/flows/auth-session|the auth flow]] here\n");

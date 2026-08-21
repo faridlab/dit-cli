@@ -22,6 +22,7 @@ import {
   Quote,
   Table,
   Type,
+  Workflow,
 } from "lucide-react";
 
 type SlashItem = {
@@ -103,6 +104,24 @@ const ITEMS: SlashItem[] = [
     icon: Code2,
     command: ({ editor, range }) =>
       editor.chain().focus().deleteRange(range).toggleCodeBlock().run(),
+  },
+  {
+    label: "Diagram",
+    keywords: "diagram drawing svg figure visual architecture flowchart",
+    icon: Workflow,
+    command: ({ editor, range }) =>
+      // A diagram is a fence whose bytes are SVG — paste or generate them,
+      // and the block renders the drawing (ADR 0012).
+      editor
+        .chain()
+        .focus()
+        .deleteRange(range)
+        .insertContent({
+          type: "codeBlock",
+          attrs: { language: "dit-diagram" },
+          content: [],
+        })
+        .run(),
   },
   {
     label: "Table",

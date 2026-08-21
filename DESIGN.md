@@ -1779,6 +1779,8 @@ Fenced code blocks win because of their **graceful degradation**: in GitHub, Obs
 
 Planned blocks: `dit-query` (DQL-produced table/board, Dataview-style), `dit-issues` (embedded issue list), `dit-board`, `mermaid`, `dit-note` / `dit-warning` (callouts).
 
+One diagram kind is decided. `dit-diagram` (ADR 0012): the fence's bytes are a standalone SVG document, and the editor renders the drawing through a sanitizing NodeView — the source text stays the only writable half. No renderer dependency, no layout engine in the tab, and the file format is unchanged (an info-string convention over already-legal CommonMark, so §18 does not move).
+
 In the editor, each of these blocks is rendered as an interactive TipTap NodeView; in the file, it stays plain text.
 
 ---
@@ -1801,7 +1803,7 @@ You are right that §7.4 already touches on this. Here is the complete shape of 
 | Page templates | `docs/.templates/*.md` | Copy + fill in the placeholders |
 | Macros / dynamic content | `dit-query`, `dit-issues` blocks (§12.5) | Live in `dit ui` (the server has SQLite). In static publication: **pre-render in CI** via `dit docs export --resolve-queries`, producing a timestamped snapshot — not live, because §6.4 decided that WASM does not execute queries. |
 | Jira issue macro | `[[Q2R7VN8]]` or a `dit-issues` block | Wiki-link + index |
-| Diagrams | `mermaid` blocks | Rendered in the UI and on GitHub |
+| Diagrams | `dit-diagram` blocks (ADR 0012) | SVG source in a fence, rendered sanitized in the editor, readable source everywhere else |
 | Per-space **write** permissions | CODEOWNERS + branch protection | Needs setup; CODEOWNERS by itself is only advisory |
 | Per-space **read** permissions | **Not supported** | Git hosts grant permissions per **repo**, never per directory. If you need it, split it into a separate DIT repo — and Mode A (§5.0) makes that cheap. |
 | Export to PDF/Word | `dit docs export` (v1.x, optional) | Detects pandoc/typst on PATH and degrades gracefully — both are large external binaries, so neither may become a mandatory dependency |
