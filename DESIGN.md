@@ -1777,9 +1777,9 @@ status = todo
 
 Fenced code blocks win because of their **graceful degradation**: in GitHub, Obsidian, VSCode, or `cat`, they show up as an ordinary code block whose contents are readable. Directive syntax shows up as raw `:::query` text, which is confusing. And comrak already preserves fenced blocks with any info string, with no extra configuration (verified).
 
-Planned blocks: `dit-query` (DQL-produced table/board, Dataview-style), `dit-issues` (embedded issue list), `dit-board`, `mermaid`, `dit-note` / `dit-warning` (callouts).
+Planned blocks: `dit-query` (DQL-produced table/board, Dataview-style), `dit-issues` (embedded issue list), `dit-board`, `dit-note` / `dit-warning` (callouts).
 
-One diagram kind is decided. `dit-diagram` (ADR 0012): the fence's bytes are a standalone SVG document, and the editor renders the drawing through a sanitizing NodeView — the source text stays the only writable half. No renderer dependency, no layout engine in the tab, and the file format is unchanged (an info-string convention over already-legal CommonMark, so §18 does not move).
+Two diagram kinds are decided. `dit-diagram` (ADR 0012): the fence's bytes are a standalone SVG document, and the editor renders the drawing through a sanitizing NodeView — the source text stays the only writable half. No renderer dependency, no layout engine in the tab, and the file format is unchanged (an info-string convention over already-legal CommonMark, so §18 does not move). `mermaid` (ADR 0013) renders too: the editor loads mermaid.js lazily — a doc with no mermaid fence never downloads it — under `securityLevel: "strict"`. The security gates are per-source: untrusted `dit-diagram` bytes pass the editor's own allowlist sanitizer, while mermaid's output is gated by mermaid's built-in DOMPurify (its strict-mode output legitimately contains `<style>` and `foreignObject`, which our allowlist strips by design); the CSP backs both. Where they differ is reach: mermaid renders on GitHub as well, `dit-diagram` only where DIT's editor runs.
 
 In the editor, each of these blocks is rendered as an interactive TipTap NodeView; in the file, it stays plain text.
 
@@ -1803,7 +1803,7 @@ You are right that §7.4 already touches on this. Here is the complete shape of 
 | Page templates | `docs/.templates/*.md` | Copy + fill in the placeholders |
 | Macros / dynamic content | `dit-query`, `dit-issues` blocks (§12.5) | Live in `dit ui` (the server has SQLite). In static publication: **pre-render in CI** via `dit docs export --resolve-queries`, producing a timestamped snapshot — not live, because §6.4 decided that WASM does not execute queries. |
 | Jira issue macro | `[[Q2R7VN8]]` or a `dit-issues` block | Wiki-link + index |
-| Diagrams | `dit-diagram` blocks (ADR 0012) | SVG source in a fence, rendered sanitized in the editor, readable source everywhere else |
+| Diagrams | `dit-diagram` blocks (ADR 0012), `mermaid` fences (ADR 0013) | `dit-diagram`: SVG source in a fence, rendered sanitized in the editor, readable source everywhere else. `mermaid`: plain mermaid text, rendered in the editor by a lazily loaded renderer and natively by GitHub |
 | Per-space **write** permissions | CODEOWNERS + branch protection | Needs setup; CODEOWNERS by itself is only advisory |
 | Per-space **read** permissions | **Not supported** | Git hosts grant permissions per **repo**, never per directory. If you need it, split it into a separate DIT repo — and Mode A (§5.0) makes that cheap. |
 | Export to PDF/Word | `dit docs export` (v1.x, optional) | Detects pandoc/typst on PATH and degrades gracefully — both are large external binaries, so neither may become a mandatory dependency |

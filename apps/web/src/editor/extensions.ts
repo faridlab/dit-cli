@@ -37,6 +37,7 @@ import type { NodeView } from "@tiptap/pm/view";
 import { Plugin } from "@tiptap/pm/state";
 
 import { SlashMenu } from "./SlashMenu";
+import { MermaidView } from "./mermaidView";
 import { sanitizeSvg } from "./sanitizeSvg";
 
 // -- extensions of TipTap's own, adjusted to the bridge's attrs ---------------
@@ -274,10 +275,16 @@ const DitCodeBlock = CodeBlock.extend({
   },
   addNodeView() {
     return ({ node, editor, getPos }) => {
-      if (node.attrs.language !== "dit-diagram") {
-        // Every other fence renders exactly what the renderHTML path
-        // produces — a node view is taken only so diagrams can differ.
-        const pre = document.createElement("pre");
+      // The two diagram kinds differ by fence (ADR 0012 / ADR 0013); every
+      // other fence renders exactly what the renderHTML path produces — a
+      // node view is taken only so diagrams can differ.
+      if (node.attrs.language === "dit-diagram") {
+        return DiagramView(this.name, editor, node, getPos);
+      }
+      if (node.attrs.language === "mermaid") {
+        return MermaidView(this.name, editor, node, getPos);
+      }
+      const pre = document.createElement("pre");
       const code = document.createElement("code");
       if (node.attrs.language) code.className = `language-${node.attrs.language}`;
       pre.append(code);

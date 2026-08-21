@@ -10,6 +10,7 @@ import Suggestion, { exitSuggestion, type SuggestionProps } from "@tiptap/sugges
 import { ReactRenderer } from "@tiptap/react";
 import {
   Code2,
+  GitFork,
   Heading1,
   Heading2,
   Heading3,
@@ -119,6 +120,24 @@ const ITEMS: SlashItem[] = [
         .insertContent({
           type: "codeBlock",
           attrs: { language: "dit-diagram" },
+          content: [],
+        })
+        .run(),
+  },
+  {
+    label: "Mermaid",
+    keywords: "mermaid flowchart graph sequence diagram chart",
+    icon: GitFork,
+    command: ({ editor, range }) =>
+      // A mermaid fence holds diagram text, rendered in the editor by a
+      // lazily loaded renderer (ADR 0013) and natively by GitHub.
+      editor
+        .chain()
+        .focus()
+        .deleteRange(range)
+        .insertContent({
+          type: "codeBlock",
+          attrs: { language: "mermaid" },
           content: [],
         })
         .run(),
