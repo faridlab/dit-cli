@@ -396,7 +396,7 @@ fn init_scaffolds_the_visible_layout() {
     assert!(attrs.contains("*.md merge=dit-md"), "{attrs}");
     assert!(attrs.contains("**/comments/*.md merge=dit-md"), "{attrs}");
 
-    // Issue templates are seeded (the description/criteria/UAT shape).
+    // Issue templates are seeded (the evidence-first shape).
     assert!(tmp.path().join(".dit/templates/default.md").is_file());
     assert!(tmp.path().join(".dit/templates/bug.md").is_file());
 
@@ -641,26 +641,41 @@ fn an_empty_body_is_seeded_from_the_issue_template() {
     let tmp = tempfile::tempdir().unwrap();
     let mut dit = Dit::init(tmp.path(), &std::env::current_exe().unwrap()).unwrap();
 
+    // A kind with no template of its own (task) falls back to default.md.
+    let mut draft = draft_with("Blank", "");
+    draft.kind = IssueKind::Task;
     let mut tx = dit.transaction("farid").unwrap();
-    let id = tx.create_issue(draft_with("Blank", "")).unwrap();
+    let id = tx.create_issue(draft).unwrap();
     tx.commit("create").unwrap();
-
     let path = &dit.get(id.as_str()).unwrap().unwrap().path;
     let body = std::fs::read_to_string(tmp.path().join(path)).unwrap();
     assert!(
-        body.contains("## Criteria") && body.contains("## User acceptance test"),
+        body.contains("## Summary")
+            && body.contains("## Acceptance criteria")
+            && body.contains("## Do not"),
         "the default template's sections are seeded:\n{body}"
+    );
+
+    // The issue's own kind seeds the body when no template is named.
+    let mut tx = dit.transaction("farid").unwrap();
+    let id = tx.create_issue(draft_with("Crash", "")).unwrap();
+    tx.commit("create").unwrap();
+    let path = &dit.get(id.as_str()).unwrap().unwrap().path;
+    let body = std::fs::read_to_string(tmp.path().join(path)).unwrap();
+    assert!(
+        body.contains("## Steps to reproduce") && body.contains("## Guard"),
+        "the bug template's sections are seeded:\n{body}"
     );
 
     // A named template wins over the kind default.
     let mut tx = dit.transaction("farid").unwrap();
     let id = tx
-        .create_issue_from_template(draft_with("Crash", ""), "bug")
+        .create_issue_from_template(draft_with("Crash", ""), "story")
         .unwrap();
     tx.commit("create").unwrap();
     let path = &dit.get(id.as_str()).unwrap().unwrap().path;
     let body = std::fs::read_to_string(tmp.path().join(path)).unwrap();
-    assert!(body.contains("## Steps to reproduce"), "{body}");
+    assert!(body.contains("## Model"), "{body}");
 
     // A name that is not a template is an error, not a silent default.
     let mut tx = dit.transaction("farid").unwrap();

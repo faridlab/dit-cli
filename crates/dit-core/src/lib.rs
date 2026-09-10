@@ -226,8 +226,10 @@ impl Dit {
         if !attrs_path.exists() {
             dit_store::atomic::write(&attrs_path, GIT_ATTRIBUTES)?;
         }
-        // Issue templates (description / criteria / user acceptance test):
-        // seeded once; hand edits survive every later init.
+        // Issue templates (the evidence-first shape: summary grounded in
+        // code pointers, plan, rejected alternative, assertable criteria,
+        // tests, scope fence): seeded once; hand edits survive every later
+        // init.
         let templates = [
             ("default", TEMPLATE_DEFAULT),
             ("bug", TEMPLATE_BUG),
@@ -1495,74 +1497,27 @@ const GIT_ATTRIBUTES: &str = "\
 **/comments/*.md merge=dit-md
 ";
 
-/// The default issue template: the three sections every issue owes a reader
-/// — what is going on, what "done" means, and how a human verifies it.
-const TEMPLATE_DEFAULT: &str = "\
-## Description
+/// The default issue template: the evidence-first shape every issue owes a
+/// reader — a summary grounded in code pointers, the plan, the recorded
+/// rejected alternative, assertable criteria, load-bearing tests, and a
+/// scope fence. Each stock template lives as a plain markdown file under
+/// templates/ so a template change is a file swap, not string-constant
+/// surgery; include_str! embeds it at compile time so the single-binary
+/// install stays self-contained (a runtime path would make `init` depend
+/// on this checkout being present).
+const TEMPLATE_DEFAULT: &str = include_str!("../templates/default.md");
 
-<!-- What is going on? What did you expect instead? -->
+/// A bug report that can be acted on: exact reproduction, the mechanism
+/// rather than the symptom, and a guard so the class does not return.
+const TEMPLATE_BUG: &str = include_str!("../templates/bug.md");
 
-## Criteria
+/// A story carries its data contract (field tables, enums) and the numbered
+/// behaviour rules before its criteria, and records the shape it rejected.
+const TEMPLATE_STORY: &str = include_str!("../templates/story.md");
 
-<!-- What must be true when this is done? One bullet each. -->
-
-- [ ]
-
-## User acceptance test
-
-<!-- How does a user verify this? Steps a real person can follow. -->
-
-1.
-";
-
-/// A bug adds the reproduction steps that turn "it's broken" into a report.
-const TEMPLATE_BUG: &str = "\
-## Description
-
-<!-- What is broken? What did you expect instead? -->
-
-## Steps to reproduce
-
-1.
-
-## Criteria
-
-- [ ]
-
-## User acceptance test
-
-1.
-";
-
-/// A story states the want in the user's words before the criteria.
-const TEMPLATE_STORY: &str = "\
-## Story
-
-As a … , I want … , so that … .
-
-## Criteria
-
-- [ ]
-
-## User acceptance test
-
-1.
-";
-
-/// A spike is a question with a deadline, not a deliverable.
-const TEMPLATE_SPIKE: &str = "\
-## Question
-
-<!-- What must this spike answer before time runs out? -->
-
-## Findings
-
-<!-- What was learned, with links to the evidence. -->
-
-## Recommendation
-
-<!-- What should happen next. -->
-";
+/// A spike is a question with a deadline, not a deliverable - and it ends in
+/// one named outcome, not in time running out.
+const TEMPLATE_SPIKE: &str = include_str!("../templates/spike.md");
 
 /// Render markdown to safe HTML — the only rendering path the UI uses, so
 /// the sanitizer and the wire format can never drift apart.
