@@ -67,15 +67,17 @@
 .dit-rich li {
   margin: 0.2em 0;
 }
-.dit-rich li > p {
+/* Paragraphs sit inside the NodeView's `.dit-li-content` wrapper, so the
+   selectors go through it rather than matching direct children of the li. */
+.dit-rich li > .dit-li-content > p {
   margin: 0.15em 0;
 }
-/* A tight list has no blank line between items — neither here. */
-.dit-rich [data-tight] li > p + p {
-  margin-top: 0.15em;
-}
-.dit-rich li > p + p {
+.dit-rich li > .dit-li-content > p + p {
   margin-top: 0.45em;
+}
+/* A tight list has no blank line between items — neither here. */
+.dit-rich [data-tight] li > .dit-li-content > p + p {
+  margin-top: 0.15em;
 }
 
 /* Task items: the NodeView's checkbox replaces the bullet. */

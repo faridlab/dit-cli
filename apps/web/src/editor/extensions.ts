@@ -83,8 +83,11 @@ const DitListItem = ListItem.extend({
   addNodeView() {
     return ({ node, getPos, editor }) => {
       const item = document.createElement("li");
+      // ProseMirror renders the item's blocks into `contentDOM` only while
+      // it hangs under `dom`; a detached wrapper shows an empty bullet.
       const content = document.createElement("div");
       content.className = "dit-li-content";
+      item.append(content);
       let checkbox: HTMLInputElement | null = null;
       let current = node;
 
@@ -105,7 +108,8 @@ const DitListItem = ListItem.extend({
             }),
           );
         });
-        item.append(checkbox);
+        // The checkbox stands in for the bullet, so it precedes the text.
+        item.prepend(checkbox);
       };
 
       const sync = () => {
