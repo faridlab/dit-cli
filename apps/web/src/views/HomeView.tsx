@@ -26,18 +26,15 @@ import { cn } from "../lib/cn";
 import { Kbd, SectionHeading } from "../components/chrome";
 import { IssueHandle, PriorityDot, TypeBadge } from "../components/badges";
 import { ErrorBox, Loading } from "../components/states";
+import { INBOX_QUERY, NEXT_QUERY } from "../lib/dql";
+import { useRegisterPeekList } from "../lib/peeklist";
 
-// Real DQL, not the mock's: `~` is full-text over title/body, so set
-// membership uses `=`. The queries the section headers display are the
-// queries actually run.
-// Urgent-first is ASC here: priority is the text p0..p4, so p0 sorts before
-// p4 and DESC would float the least urgent to the top.
-const NEXT_QUERY = "label = next AND assignee = @me ORDER BY priority ASC";
-const INBOX_QUERY = "label = inbox ORDER BY created DESC";
+// The queries the section headers display are the queries actually run;
+// they live in lib/dql so the sidebar's Inbox entry runs the exact same one.
 
 // The pool powers everything that is grouped client-side (epics, open
 // count). 200 issues keeps Home bounded on big workspaces; the counts are
-// labeled from it, not pretended to be exhaustive. The side pane runs the
+// labeled from it, not pretended to be exhaustive. The sidebar section runs the
 // same pool query — one fetch, two surfaces.
 const POOL_LIMIT = 200;
 
@@ -96,13 +93,13 @@ function CaptureForm({ defaultStatus }: { defaultStatus: string | undefined }) {
       onSubmit={submit}
       className="flex items-center gap-2.5 rounded-lg border border-ctl bg-card px-3.5 py-3"
     >
-      <Plus className="size-[18px] shrink-0 text-zinc-500" aria-hidden />
+      <Plus className="size-[18px] shrink-0 text-muted" aria-hidden />
       <input
         value={text}
         onChange={(event) => setText(event.target.value)}
         placeholder="Capture anything — one line becomes an issue in the inbox"
         aria-label="Quick capture"
-        className="w-full flex-1 border-none bg-transparent text-[15px] text-zinc-200 placeholder:text-zinc-600 focus:outline-none"
+        className="w-full flex-1 border-none bg-transparent text-[15px] text-ink placeholder:text-faint focus:outline-none"
       />
       <Kbd>⏎</Kbd>
     </form>
@@ -150,7 +147,7 @@ function NextActions({
             <button
               type="button"
               onClick={() => onSearch(NEXT_QUERY)}
-              className="text-xs text-zinc-500 hover:text-zinc-200"
+              className="text-xs text-muted hover:text-ink"
             >
               Open in Search →
             </button>
@@ -174,11 +171,11 @@ function NextActions({
               <IssueHandle shortRef={issue.short_ref} number={issue.number} />
               <TypeBadge type={issue.type} />
               <PriorityDot priority={issue.priority} />
-              <span className="truncate text-[14.5px] text-zinc-200">{issue.title}</span>
-              <span className="hidden truncate font-mono text-[11px] text-zinc-400 min-[1100px]:block">
+              <span className="truncate text-[14.5px] text-ink">{issue.title}</span>
+              <span className="hidden truncate font-mono text-[11px] text-ink-2 min-[1100px]:block">
                 {energyOf(issue.labels)}
               </span>
-              <span className="hidden truncate text-xs text-zinc-500 min-[1100px]:block">
+              <span className="hidden truncate text-xs text-muted min-[1100px]:block">
                 {epicTitle(issue.epic)}
               </span>
               <span className={cn("text-right text-xs", dueTone(issue.due))}>
@@ -259,7 +256,7 @@ function EpicRollup({
               className="rounded-lg border border-edge bg-card p-4 text-left transition-colors hover:border-dim"
             >
               <div className="flex items-center gap-2">
-                <span className="truncate text-[15px] font-semibold text-zinc-100">{epic.name}</span>
+                <span className="truncate text-[15px] font-semibold text-ink">{epic.name}</span>
                 <span className="rounded-full border border-doing-line bg-doing-bg px-2 py-px font-mono text-[10px] text-doing-text">
                   {epic.open} open
                 </span>
@@ -270,7 +267,7 @@ function EpicRollup({
                   style={{ width: `${pct}%` }}
                 />
               </div>
-              <div className="mt-2.5 font-mono text-[11px] text-zinc-500">
+              <div className="mt-2.5 font-mono text-[11px] text-muted">
                 {epic.done}/{epic.total} done · {epic.open} open
               </div>
               <div className="mt-2.5 flex justify-between text-xs text-dim">
@@ -317,12 +314,12 @@ function InboxRow({
   };
 
   const actionClass =
-    "rounded-md border border-ctl px-2.5 py-1 text-xs text-zinc-300 hover:border-zinc-400 hover:text-zinc-100 disabled:opacity-50";
+    "rounded-md border border-ctl px-2.5 py-1 text-xs text-ink-2 hover:border-dim hover:text-ink disabled:opacity-50";
 
   return (
     <div className="flex items-center gap-3 rounded-lg border border-edge bg-card/50 px-3.5 py-3 transition-colors hover:border-ctl">
       <IssueHandle shortRef={issue.short_ref} number={issue.number} />
-      <span className="min-w-0 flex-1 truncate text-[14.5px] text-zinc-200" title={issue.title}>
+      <span className="min-w-0 flex-1 truncate text-[14.5px] text-ink" title={issue.title}>
         {issue.title}
       </span>
       <span className="flex gap-1.5">
@@ -417,6 +414,18 @@ export function HomeView({
   const epicTitle = (id: string | null) => (id ? (byId.get(id)?.title ?? null) : null) ?? "—";
   const openCount = items.filter((issue) => !isDone(issue.status)).length;
 
+  // Down the page: next actions first, then the inbox — the order the issue
+  // panel walks with J/K. The epic cards are entry points, not a queue.
+  useRegisterPeekList(
+    useMemo(
+      () => [
+        ...(next.data?.items ?? []).map((issue) => issue.id),
+        ...(inbox.data?.items ?? []).map((issue) => issue.id),
+      ],
+      [next.data, inbox.data],
+    ),
+  );
+
   if (pool.isPending) {
     return <Loading label="Loading workspace…" className="flex-1 items-center justify-center" />;
   }
@@ -427,7 +436,7 @@ export function HomeView({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex items-center gap-3.5 border-b border-edge px-[22px] py-3.5">
-        <h1 className="text-xl font-semibold tracking-[-0.01em] text-zinc-100">Home</h1>
+        <h1 className="text-xl font-semibold tracking-[-0.01em] text-ink">Home</h1>
         <SyncPill conn={conn} dirty={status.data?.dirty ?? false} />
         <span className="ml-auto font-mono text-[11px] text-dim">
           {openCount} open · {next.data?.total ?? 0} next · {inbox.data?.total ?? 0} in inbox

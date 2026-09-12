@@ -2,7 +2,7 @@
 // move is optimistic — the card follows the cursor into its new column and
 // the PATCH is confirmed behind it; a failure snaps the board back.
 
-import { memo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -22,6 +22,7 @@ import { useBoard, useCreateIssue, useMoveIssue } from "../lib/queries";
 import { useBoardColumns } from "../components/panes/BoardPane";
 import type { BoardColumnDto, BoardIssueDto } from "../lib/types";
 import { cn } from "../lib/cn";
+import { useRegisterPeekList } from "../lib/peeklist";
 import { AssigneeCircles, IssueHandle, LabelChips, PriorityDot, TypeBadge } from "../components/badges";
 import { Empty, ErrorBox, Loading } from "../components/states";
 import { energyOf, relativeTime } from "../lib/format";
@@ -72,21 +73,21 @@ const BoardCard = memo(function BoardCard({
         </span>
         {issue.estimate !== null ? (
           <span
-            className="font-mono text-[10.5px] text-zinc-500"
+            className="font-mono text-[10.5px] text-muted"
             title="estimate"
           >
             {issue.estimate}
           </span>
         ) : null}
       </div>
-      <p className="mt-2 line-clamp-2 text-sm leading-normal text-zinc-200">{issue.title}</p>
+      <p className="mt-2 line-clamp-2 text-sm leading-normal text-ink">{issue.title}</p>
       <div className="mt-2.5 flex items-center justify-between gap-2">
         {/* The board DTO carries no epic or due date, so the footer shows
             what the endpoint actually has — everything else lives on the
             issue screen. */}
         <LabelChips labels={issue.labels} max={2} />
         <span className="flex shrink-0 items-center gap-2">
-          <span className="text-[10px] text-zinc-600" title={issue.updated}>
+          <span className="text-[10px] text-faint" title={issue.updated}>
             {relativeTime(issue.updated)}
           </span>
           <AssigneeCircles assignees={issue.assignees} />
@@ -121,7 +122,7 @@ function ColumnQuickAdd({ status }: { status: string }) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-edge px-2 py-2.5 text-[11.5px] text-dim transition-colors hover:border-dim hover:text-zinc-400"
+        className="flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-edge px-2 py-2.5 text-[11.5px] text-dim transition-colors hover:border-dim hover:text-ink-2"
       >
         <Plus className="size-3.5" aria-hidden /> New issue
       </button>
@@ -152,12 +153,12 @@ function ColumnQuickAdd({ status }: { status: string }) {
         placeholder="Issue title"
         aria-label="New issue in this column"
         disabled={create.isPending}
-        className="w-full border-none bg-transparent text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none"
+        className="w-full border-none bg-transparent text-sm text-ink placeholder:text-faint focus:outline-none"
       />
       <div className="mt-1 flex items-center justify-between gap-2">
-        <span className="text-[10.5px] text-zinc-600">⏎ add · esc close</span>
+        <span className="text-[10.5px] text-faint">⏎ add · esc close</span>
         {create.isError ? (
-          <span className="truncate text-[10.5px] text-red-400">
+          <span className="truncate text-[10.5px] text-crit-text">
             {create.error instanceof Error ? create.error.message : "Could not create"}
           </span>
         ) : null}
@@ -181,13 +182,13 @@ function Column({
   return (
     <section className="flex w-[262px] shrink-0 flex-col border-r border-card last:border-r-0">
       <header className="flex items-center gap-2 px-3.5 pb-2.5 pt-3.5">
-        <h2 className="text-xs font-semibold uppercase tracking-[0.06em] text-zinc-400">
+        <h2 className="text-xs font-semibold uppercase tracking-[0.06em] text-ink-2">
           {column.label}
         </h2>
         <span
           className={cn(
             "rounded-md px-[7px] py-px font-mono text-[10.5px] tabular-nums",
-            overLimit ? "bg-amber-950/60 text-amber-400" : "bg-edge text-zinc-500",
+            overLimit ? "bg-warn-bg text-warn-text" : "bg-edge text-muted",
           )}
           title={overLimit ? `WIP limit ${limit} exceeded` : limit !== null ? `WIP limit ${limit}` : undefined}
         >
@@ -195,7 +196,7 @@ function Column({
           {limit !== null ? `/${limit}` : ""}
         </span>
         {overLimit ? (
-          <span className="text-[10.5px] text-amber-400">over WIP</span>
+          <span className="text-[10.5px] text-warn-text">over WIP</span>
         ) : null}
       </header>
       <div
@@ -223,12 +224,24 @@ export function BoardView({ onOpen }: { onOpen: (id: string) => void }) {
   // open the issue.
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
 
+  // Column by column, top to bottom: the order the issue panel walks with
+  // J/K. Hidden columns are not on screen, so they are not in it.
+  useRegisterPeekList(
+    useMemo(
+      () =>
+        (board.data?.columns ?? [])
+          .filter((column) => !hidden.has(column.id))
+          .flatMap((column) => column.issues.map((issue) => issue.id)),
+      [board.data, hidden],
+    ),
+  );
+
   if (board.isPending) return <Loading label="Loading board…" />;
   if (board.isError) {
     return <ErrorBox error={board.error} onRetry={() => void board.refetch()} title="Could not load the board" />;
   }
 
-  // Hidden columns (toggled from the Board side pane) are filtered out
+  // Hidden columns (toggled from the Board section of the sidebar) are filtered out
   // here, so their drop targets unmount too — a card can never land in a
   // column you cannot see.
   const allColumns = board.data.columns;
@@ -285,7 +298,7 @@ export function BoardView({ onOpen }: { onOpen: (id: string) => void }) {
     return (
       <Empty
         title="Every column is hidden"
-        hint="Show columns again from the side pane."
+        hint="Show columns again from the sidebar."
         className="flex-1 justify-center"
       />
     );
@@ -301,7 +314,7 @@ export function BoardView({ onOpen }: { onOpen: (id: string) => void }) {
     >
       <div className="flex min-h-0 flex-1 flex-col">
         <header className="flex items-center gap-3 border-b border-edge px-5 py-3">
-          <h1 className="text-lg font-semibold text-zinc-100">Board</h1>
+          <h1 className="text-lg font-semibold text-ink">Board</h1>
           <span className="ml-auto text-[11.5px] text-dim">
             open an issue and change its status — the card moves here
           </span>
@@ -320,7 +333,7 @@ export function BoardView({ onOpen }: { onOpen: (id: string) => void }) {
               <TypeBadge type={activeIssue.type} />
               <PriorityDot priority={activeIssue.priority} />
             </div>
-            <p className="mt-2 text-sm leading-normal text-zinc-100">{activeIssue.title}</p>
+            <p className="mt-2 text-sm leading-normal text-ink">{activeIssue.title}</p>
           </div>
         ) : null}
       </DragOverlay>

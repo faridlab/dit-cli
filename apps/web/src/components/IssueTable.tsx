@@ -9,6 +9,7 @@ import { ArrowDown, ArrowUp, Check } from "lucide-react";
 import { fullTimestamp, priorityRank, relativeTime } from "../lib/format";
 import type { IssueDto, StatusDto } from "../lib/types";
 import { cn } from "../lib/cn";
+import { useRegisterPeekList } from "../lib/peeklist";
 import { AssigneeCircles, IssueHandle, LabelChips, PriorityDot, StatusPill, TypeBadge } from "./badges";
 
 type SortKey = "updated" | "created" | "priority" | "title" | "status";
@@ -67,8 +68,8 @@ function SortHeader({
       type="button"
       onClick={() => onSort(sortKey)}
       className={cn(
-        "flex items-center gap-0.5 text-left text-[10px] font-medium uppercase tracking-[0.07em] hover:text-zinc-300",
-        active ? "text-zinc-300" : "text-zinc-500",
+        "flex items-center gap-0.5 text-left text-[10px] font-medium uppercase tracking-[0.07em] hover:text-ink",
+        active ? "text-ink-2" : "text-muted",
         className,
       )}
     >
@@ -105,7 +106,7 @@ function RowCheckbox({
       }}
       className={cn(
         "flex size-[14px] shrink-0 items-center justify-center rounded-[3px] border transition-colors",
-        checked ? "border-accent bg-accent text-white" : "border-ctl hover:border-zinc-500",
+        checked ? "border-accent bg-accent text-on-accent" : "border-ctl hover:border-dim",
       )}
     >
       {checked ? <Check className="size-3" strokeWidth={3} aria-hidden /> : null}
@@ -160,6 +161,10 @@ export function IssueTable({
     return sorted;
   }, [issues, sortKey, sortDir, statusOrder]);
 
+  // The table owns the sort, so the table is what knows the on-screen order
+  // the issue panel walks with J/K.
+  useRegisterPeekList(useMemo(() => rows.map((issue) => issue.id), [rows]));
+
   const onSort = (key: SortKey) => {
     if (key === sortKey) {
       setSortDir((dir) => (dir === "asc" ? "desc" : "asc"));
@@ -189,7 +194,7 @@ export function IssueTable({
     <div className="flex min-h-0 flex-1 flex-col">
       <div className={cn(gridClass, "border-b border-edge bg-app pb-1.5 pt-2", padClass)}>
         {selectable ? <span /> : null}
-        <span className="text-[10px] font-medium uppercase tracking-[0.07em] text-zinc-500">
+        <span className="text-[10px] font-medium uppercase tracking-[0.07em] text-muted">
           #
         </span>
         <span />
@@ -211,7 +216,7 @@ export function IssueTable({
         />
         <span
           className={cn(
-            "text-[10px] font-medium uppercase tracking-[0.07em] text-zinc-500",
+            "text-[10px] font-medium uppercase tracking-[0.07em] text-muted",
             labelsVisibility,
           )}
         >
@@ -262,19 +267,19 @@ export function IssueTable({
                     <IssueHandle shortRef={issue.short_ref} number={issue.number} />
                     <TypeBadge type={issue.type} />
                     <PriorityDot priority={issue.priority} />
-                    <span className="truncate text-[13px] text-zinc-200">{issue.title}</span>
+                    <span className="truncate text-[13px] text-ink">{issue.title}</span>
                     <span className={statusVisibility}>
                       {status ? (
                         <StatusPill status={status} />
                       ) : (
-                        <span className="font-mono text-[11px] text-zinc-500">{issue.status}</span>
+                        <span className="font-mono text-[11px] text-muted">{issue.status}</span>
                       )}
                     </span>
                     <span className={labelsVisibility}>
                       <LabelChips labels={issue.labels} />
                     </span>
                     <span
-                      className="text-right font-mono text-[11px] tabular-nums text-zinc-500"
+                      className="text-right font-mono text-[11px] tabular-nums text-muted"
                       title={fullTimestamp(issue.updated)}
                     >
                       {relativeTime(issue.updated)}
