@@ -550,7 +550,10 @@ const ISSUES: IssueDto[] = Array.from({ length: 36 }, (_, index) => {
     epic: seeded(n + 17) > 0.35 ? (EPICS[n % EPICS.length]?.id ?? null) : null,
     estimate: seeded(n + 13) > 0.5 ? Math.ceil(seeded(n + 15) * 8) : null,
     sprint: null,
-    due: n % 7 === 0 ? isoDate(0) : n % 11 === 0 ? isoDate(3) : n === 4 ? isoDate(-2) : null,
+    due: n % 7 === 0 ? isoDate(0) : n % 11 === 0 ? isoDate(3) : n === 4 ? isoDate(-2) : n % 3 === 0 ? isoDate(n % 17) : null,
+    // Enough scheduled work for the plan views to have something to draw,
+    // and enough unscheduled work for the tray to be worth having.
+    start: n % 3 === 0 ? isoDate((n % 17) - 4) : null,
     created,
     updated,
     body,
@@ -576,6 +579,7 @@ for (const [i, epic] of EPICS.entries()) {
     estimate: null,
     sprint: null,
     due: null,
+    start: null,
     created: new Date(Date.now() - 24 * 24 * 3600_000).toISOString(),
     updated: new Date(Date.now() - 6 * 3600_000).toISOString(),
     body: "",
@@ -684,6 +688,25 @@ function eventsFor(issue: IssueDto): FieldEventDto[] {
     EVENTS.set(issue.id, events);
   }
   return events;
+}
+
+/** Every issue's events as one workspace-wide stream, newest first, with a
+ *  global `seq` — the shape the real `/api/activity` endpoint returns. */
+function mockEvents(): Array<
+  FieldEventDto & { issue_id: string; short_ref: string; number: number | null; title: string }
+> {
+  const rows = ISSUES.flatMap((issue) =>
+    eventsFor(issue).map((event) => ({
+      ...event,
+      issue_id: issue.id,
+      short_ref: issue.short_ref,
+      number: issue.number,
+      title: issue.title,
+    })),
+  );
+  // A global position in the commit graph: ordered by time, then numbered.
+  rows.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+  return rows.map((row, index) => ({ ...row, seq: index + 1 })).reverse();
 }
 
 function escapeHtml(text: string): string {
@@ -832,6 +855,70 @@ export function installMockApi(): void {
       return jsonResponse(board);
     }
 
+    // The workspace activity feed and its time-travel summary. The mock
+    // synthesizes events from the issues it already has, so the Timeline has
+    // something to draw without a server.
+    if (path === "/api/activity" && method === "GET") {
+      const limit = Number(url.searchParams.get("limit") ?? 100);
+      const beforeSeq = url.searchParams.get("before_seq");
+      const all = mockEvents();
+      const filtered =
+        beforeSeq === null ? all : all.filter((event) => event.seq < Number(beforeSeq));
+      const events = filtered.slice(0, limit);
+      return jsonResponse({
+        events,
+        next_before_seq: events.length === limit ? (events[events.length - 1]?.seq ?? null) : null,
+      });
+    }
+    if (path === "/api/activity/summary" && method === "GET") {
+      const all = mockEvents();
+      const maxSeq = all.length > 0 ? (all[0]?.seq ?? 0) : 0;
+      const raw = url.searchParams.get("seq");
+      const seq = raw === null ? maxSeq : Math.min(Number(raw), maxSeq);
+      const days = new Map<string, number>();
+      for (const event of all) {
+        const day = event.ts.slice(0, 10);
+        days.set(day, (days.get(day) ?? 0) + 1);
+      }
+      const counts = (upTo: number) => {
+        const status = new Map<string, string>();
+        for (const event of [...all].reverse()) {
+          if (event.seq <= upTo && event.field === "status" && event.new_value) {
+            status.set(event.issue_id, event.new_value);
+          }
+        }
+        const out = { todo: 0, doing: 0, done: 0 };
+        for (const value of status.values()) {
+          const category = STATUSES.find((s) => s.id === value)?.category ?? "todo";
+          out[category as "todo" | "doing" | "done"] += 1;
+        }
+        return out;
+      };
+      const after = all.filter((event) => event.seq > seq);
+      return jsonResponse({
+        seq,
+        max_seq: maxSeq,
+        days: [...days.entries()]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([day, count]) => ({ day, count })),
+        at_cutoff: counts(seq),
+        now: counts(maxSeq),
+        since: {
+          touched: new Set(after.map((event) => event.issue_id)).size,
+          created: new Set(
+            after.filter((event) => event.old_value === null).map((event) => event.issue_id),
+          ).size,
+          finished: new Set(
+            after
+              .filter((event) => event.field === "status" && event.new_value === "done")
+              .map((event) => event.issue_id),
+          ).size,
+          reprioritized: new Set(
+            after.filter((event) => event.field === "priority").map((event) => event.issue_id),
+          ).size,
+        },
+      });
+    }
     if (path === "/api/issues" && method === "GET") {
       const q = url.searchParams.get("q") ?? "";
       const limit = Number(url.searchParams.get("limit") ?? ISSUES.length);
@@ -867,6 +954,7 @@ export function installMockApi(): void {
         estimate: null,
         sprint: null,
         due: null,
+    start: null,
         created: now,
         updated: now,
         body: (body.body as string) ?? "",
