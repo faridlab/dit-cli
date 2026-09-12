@@ -21,7 +21,7 @@ function ConnBadge({ state }: { state: ConnectionState }) {
     <span
       className={cn(
         "flex items-center gap-1.5",
-        state === "live" ? "text-emerald-400" : state === "off" ? "text-zinc-500" : "text-amber-400",
+        state === "live" ? "text-done-text" : state === "off" ? "text-muted" : "text-warn-text",
       )}
       title={
         state === "live"
@@ -32,7 +32,7 @@ function ConnBadge({ state }: { state: ConnectionState }) {
       <span
         className={cn(
           "inline-block size-1.5 rounded-full",
-          state === "live" ? "bg-emerald-400" : state === "off" ? "bg-zinc-600" : "bg-amber-400",
+          state === "live" ? "bg-done-text" : state === "off" ? "bg-dim" : "bg-warn-text",
         )}
       />
       {label}
@@ -45,14 +45,14 @@ export function StatusBar({ conn }: { conn: ConnectionState }) {
 
   if (status.isError) {
     return (
-      <footer className="flex h-7 items-center gap-3 border-t border-edge bg-app px-3.5 font-mono text-[11px] text-zinc-500">
-        <span className="flex items-center gap-1.5 text-red-400">
+      <footer className="flex h-7 items-center gap-3 border-t border-edge bg-app px-3.5 font-mono text-[11px] text-muted">
+        <span className="flex items-center gap-1.5 text-crit-text">
           <CircleAlert className="size-3" aria-hidden />
           server unreachable
         </span>
         <button
           type="button"
-          className="underline decoration-dotted hover:text-zinc-300"
+          className="underline decoration-dotted hover:text-ink"
           onClick={() => void status.refetch()}
         >
           retry
@@ -65,33 +65,33 @@ export function StatusBar({ conn }: { conn: ConnectionState }) {
   const repo = data ? data.repo.split("/").filter(Boolean).pop() ?? data.repo : "…";
 
   return (
-    <footer className="flex h-7 items-center gap-4 border-t border-edge bg-app px-3.5 font-mono text-[11px] text-zinc-500">
+    <footer className="flex h-7 items-center gap-4 border-t border-edge bg-app px-3.5 font-mono text-[11px] text-muted">
       <span className="flex items-center gap-1.5" title={data ? data.repo : undefined}>
-        <span className="text-zinc-400">{repo}</span>
+        <span className="text-ink-2">{repo}</span>
       </span>
       {data ? (
         <span className="flex items-center gap-1.5">
           <GitBranch className="size-3" aria-hidden />
           {data.branch}
-          <span className="text-zinc-600">@</span>
+          <span className="text-faint">@</span>
           {shortSha(data.head)}
         </span>
       ) : null}
       {data?.dirty ? (
-        <span className="flex items-center gap-1 text-amber-400" title="The repo has uncommitted changes">
+        <span className="flex items-center gap-1 text-warn-text" title="The repo has uncommitted changes">
           <CircleAlert className="size-3" aria-hidden />
           dirty
         </span>
       ) : data && !data.dirty ? (
         <span className="flex items-center gap-1" title="No uncommitted changes">
-          <CircleCheck className="size-3 text-emerald-600" aria-hidden />
+          <CircleCheck className="size-3 text-done-text" aria-hidden />
           clean
         </span>
       ) : null}
       <span className="ml-auto flex items-center gap-4">
         {data?.me ? (
           <span title="the alias your writes are attributed to">
-            <span className="text-zinc-400">{data.me}</span>
+            <span className="text-ink-2">{data.me}</span>
           </span>
         ) : null}
         {data ? <span>v{data.version}</span> : null}

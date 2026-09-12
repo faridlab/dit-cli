@@ -267,7 +267,7 @@ const SlashList = forwardRef<SlashListHandle, SuggestionProps<SlashItem>>(
                   className="dit-slash-item"
                   onMouseEnter={() => setSelected(index)}
                 >
-                  <Icon className="size-4 shrink-0 text-zinc-500" aria-hidden />
+                  <Icon className="size-4 shrink-0 text-muted" aria-hidden />
                   {item.label}
                 </Command.Item>
               );

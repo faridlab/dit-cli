@@ -20,7 +20,7 @@ export function SectionHeading({
   return (
     <h2
       className={cn(
-        "font-semibold uppercase text-zinc-400",
+        "font-semibold uppercase text-ink-2",
         size === "md" ? "text-[13px] tracking-[0.06em]" : "text-[11px] tracking-[0.07em]",
         className,
       )}
@@ -35,7 +35,7 @@ export function Kbd({ children, className }: { children: ReactNode; className?: 
   return (
     <kbd
       className={cn(
-        "rounded-[3px] border border-ctl bg-card px-1.5 py-px font-mono text-[10px] text-zinc-500",
+        "rounded-[3px] border border-ctl bg-card px-1.5 py-px font-mono text-[10px] text-muted",
         className,
       )}
     >
@@ -65,8 +65,8 @@ export function ContextChip({
       className={cn(
         "rounded-full border px-2.5 py-0.5 font-mono text-[11px] transition-colors",
         on
-          ? "border-accent bg-white/[0.04] text-zinc-200"
-          : "border-edge text-zinc-400 hover:border-zinc-400 hover:text-zinc-200",
+          ? "border-accent bg-hover text-ink"
+          : "border-edge text-ink-2 hover:border-dim hover:text-ink",
       )}
     >
       {children}
@@ -81,7 +81,7 @@ export function CheckSquare({ on }: { on: boolean }) {
       aria-hidden
       className={cn(
         "flex size-[15px] shrink-0 items-center justify-center rounded-[3px] border transition-colors",
-        on ? "border-accent bg-accent text-white" : "border-ctl text-transparent",
+        on ? "border-accent bg-accent text-on-accent" : "border-ctl text-transparent",
       )}
     >
       <Check className="size-3" />
@@ -91,10 +91,10 @@ export function CheckSquare({ on }: { on: boolean }) {
 
 /** Standard 30px control: fields in the detail rail, selects in dialogs. */
 export const INPUT_CLASS =
-  "h-[30px] rounded-md border border-ctl bg-card px-2 text-[12.5px] text-zinc-200 outline-none transition-colors focus:border-accent placeholder:text-zinc-600";
+  "h-[30px] rounded-md border border-ctl bg-card px-2 text-[12.5px] text-ink outline-none transition-colors focus:border-accent placeholder:text-faint";
 
 export const BUTTON_PRIMARY =
-  "rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hi disabled:opacity-50";
+  "rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent transition-colors hover:bg-accent-hi disabled:opacity-50";
 
 export const BUTTON_OUTLINED =
-  "rounded-md border border-ctl px-3 py-1.5 text-xs text-zinc-400 transition-colors hover:border-zinc-400 hover:text-zinc-200 disabled:opacity-50";
+  "rounded-md border border-ctl px-3 py-1.5 text-xs text-ink-2 transition-colors hover:border-dim hover:text-ink disabled:opacity-50";

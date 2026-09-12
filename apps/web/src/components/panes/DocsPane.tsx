@@ -1,4 +1,4 @@
-// The Docs side pane: a VS Code-style file explorer over the doc roots
+// The Docs sidebar section: a VS Code-style file explorer over the doc roots
 // (ADR 0010). The tree is built client-side from the flat page listing —
 // folders exist because pages live under them, plus hand-made folders
 // (git has no empty directories, so those live in this browser until a
@@ -33,6 +33,7 @@ import { useDeleteDoc, useDocs, useMoveDoc, usePutDoc } from "../../lib/queries"
 import { cn } from "../../lib/cn";
 import type { DocEntryDto } from "../../lib/types";
 import { ErrorBox, Loading } from "../states";
+import { SectionHeading } from "../chrome";
 
 const DOC_ROOTS = ["docs", "notes", "epics", "changelogs"] as const;
 const FILE_DRAG_PREFIX = "file:";
@@ -171,9 +172,9 @@ function loadExpanded(): Set<string> {
 // -- rows ---------------------------------------------------------------------
 
 const menuContent =
-  "min-w-[168px] rounded-md border border-ctl bg-card p-1 text-xs text-zinc-300 shadow-xl";
+  "min-w-[168px] rounded-md border border-ctl bg-card p-1 text-xs text-ink-2 shadow-xl";
 const menuItem =
-  "flex cursor-default select-none items-center gap-2 rounded px-2 py-1.5 outline-none data-highlighted:bg-edge data-highlighted:text-zinc-100";
+  "flex cursor-default select-none items-center gap-2 rounded px-2 py-1.5 outline-none data-highlighted:bg-edge data-highlighted:text-ink";
 
 /** An inline text entry that commits on Enter, cancels on Escape or blur —
  *  the one interaction every editor row (new file, rename) shares. */
@@ -206,7 +207,7 @@ function InlineInput({
         }
       }}
       onClick={(event) => event.stopPropagation()}
-      className="h-[24px] w-full min-w-0 rounded border border-accent bg-card px-1.5 font-mono text-xs text-zinc-100 outline-none"
+      className="h-[24px] w-full min-w-0 rounded border border-accent bg-card px-1.5 font-mono text-xs text-ink outline-none"
     />
   );
 }
@@ -248,7 +249,7 @@ function FileRow({
         className="flex items-center gap-1.5 py-0.5 pr-2"
         style={{ paddingLeft: 8 + depth * 12 }}
       >
-        <FileText className="size-3.5 shrink-0 text-zinc-500" aria-hidden />
+        <FileText className="size-3.5 shrink-0 text-muted" aria-hidden />
         <InlineInput
           initial={node.name.replace(/\.md$/, "")}
           placeholder="page name"
@@ -282,13 +283,13 @@ function FileRow({
           className={cn(
             "flex h-[26px] w-full items-center gap-1.5 rounded-md pr-2 text-left font-mono text-xs",
             active
-              ? "bg-edge text-zinc-100"
-              : "text-zinc-400 hover:bg-card hover:text-zinc-200",
+              ? "bg-edge text-ink"
+              : "text-ink-2 hover:bg-card hover:text-ink",
             isDragging && "opacity-30",
           )}
           style={{ paddingLeft: 8 + depth * 12 }}
         >
-          <FileText className="size-3.5 shrink-0 text-zinc-500" aria-hidden />
+          <FileText className="size-3.5 shrink-0 text-muted" aria-hidden />
           <span className="truncate">{node.name}</span>
           {dirty ? (
             <span
@@ -301,10 +302,10 @@ function FileRow({
       <ContextMenu.Portal>
         <ContextMenu.Content className={menuContent}>
           <ContextMenu.Item className={menuItem} onSelect={() => onRenameStart(node.path)}>
-            Rename <span className="ml-auto text-zinc-600">F2</span>
+            Rename <span className="ml-auto text-faint">F2</span>
           </ContextMenu.Item>
           <ContextMenu.Item
-            className={cn(menuItem, "text-red-300 data-highlighted:bg-red-950/40 data-highlighted:text-red-200")}
+            className={cn(menuItem, "text-crit-text data-highlighted:bg-crit-bg data-highlighted:text-crit-text")}
             onSelect={() => onDelete(node.path)}
           >
             Delete
@@ -355,14 +356,14 @@ function DirRow({
             title={node.path}
             className={cn(
               "flex h-[26px] w-full items-center gap-1.5 rounded-md pr-2 text-left font-mono text-xs",
-              active ? "bg-edge text-zinc-100" : "text-zinc-300 hover:bg-card hover:text-zinc-100",
+              active ? "bg-edge text-ink" : "text-ink-2 hover:bg-card hover:text-ink",
               isOver && "bg-card ring-1 ring-inset ring-accent",
             )}
             style={{ paddingLeft: 8 + depth * 12 }}
           >
             <ChevronRight
               className={cn(
-                "size-3.5 shrink-0 text-zinc-500 transition-transform",
+                "size-3.5 shrink-0 text-muted transition-transform",
                 expanded && "rotate-90",
               )}
               aria-hidden
@@ -387,7 +388,7 @@ function DirRow({
             </ContextMenu.Item>
             {deletable ? (
               <ContextMenu.Item
-                className={cn(menuItem, "text-red-300 data-highlighted:bg-red-950/40 data-highlighted:text-red-200")}
+                className={cn(menuItem, "text-crit-text data-highlighted:bg-crit-bg data-highlighted:text-crit-text")}
                 onSelect={() => onDelete(node.path)}
               >
                 Delete
@@ -657,7 +658,7 @@ export function DocsPane({
                 className="flex items-center gap-1.5 py-0.5 pr-2"
                 style={{ paddingLeft: 8 + (depth + 1) * 12 }}
               >
-                <FileText className="size-3.5 shrink-0 text-zinc-500" aria-hidden />
+                <FileText className="size-3.5 shrink-0 text-muted" aria-hidden />
                 <InlineInput
                   initial=""
                   placeholder="page-name.md"
@@ -671,7 +672,7 @@ export function DocsPane({
                 className="flex items-center gap-1.5 py-0.5 pr-2"
                 style={{ paddingLeft: 8 + (depth + 1) * 12 }}
               >
-                <Folder className="size-3.5 shrink-0 text-zinc-500" aria-hidden />
+                <Folder className="size-3.5 shrink-0 text-muted" aria-hidden />
                 <InlineInput
                   initial=""
                   placeholder="folder-name"
@@ -710,11 +711,14 @@ export function DocsPane({
       {/* The explorer's action row — creation on the left (into the selected
           folder), the tree's state on the right. */}
       <div className="flex shrink-0 items-center gap-0.5 px-2 py-1">
+        <SectionHeading size="sm" className="mr-1.5 pl-1">
+          Pages
+        </SectionHeading>
         <button
           type="button"
           title={`New page in ${selectedDir}/`}
           onClick={() => createIn(selectedDir)}
-          className="flex size-6 items-center justify-center rounded text-zinc-500 hover:bg-card hover:text-zinc-200"
+          className="flex size-6 items-center justify-center rounded text-muted hover:bg-card hover:text-ink"
         >
           <FilePlus2 className="size-4" aria-hidden />
         </button>
@@ -722,7 +726,7 @@ export function DocsPane({
           type="button"
           title={`New folder in ${selectedDir}/`}
           onClick={() => createFolderIn(selectedDir)}
-          className="flex size-6 items-center justify-center rounded text-zinc-500 hover:bg-card hover:text-zinc-200"
+          className="flex size-6 items-center justify-center rounded text-muted hover:bg-card hover:text-ink"
         >
           <FolderPlus className="size-4" aria-hidden />
         </button>
@@ -731,7 +735,7 @@ export function DocsPane({
             type="button"
             title="Refresh"
             onClick={() => void docs.refetch()}
-            className="flex size-6 items-center justify-center rounded text-zinc-500 hover:bg-card hover:text-zinc-200"
+            className="flex size-6 items-center justify-center rounded text-muted hover:bg-card hover:text-ink"
           >
             <RefreshCw className="size-4" aria-hidden />
           </button>
@@ -739,7 +743,7 @@ export function DocsPane({
             type="button"
             title={allExpanded ? "Collapse all folders" : "Expand all folders"}
             onClick={toggleExpandAll}
-            className="flex size-6 items-center justify-center rounded text-zinc-500 hover:bg-card hover:text-zinc-200"
+            className="flex size-6 items-center justify-center rounded text-muted hover:bg-card hover:text-ink"
           >
             {allExpanded ? (
               <ChevronsDownUp className="size-4" aria-hidden />

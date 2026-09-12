@@ -33,7 +33,7 @@ const PRIORITY_OPTIONS: Priority[] = ["p0", "p1", "p2", "p3", "p4"];
 function FieldRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex w-[128px] flex-col gap-1">
-      <span className="text-[10.5px] font-medium uppercase tracking-[0.05em] text-zinc-500">
+      <span className="text-[10.5px] font-medium uppercase tracking-[0.05em] text-muted">
         {label}
       </span>
       {children}
@@ -92,11 +92,11 @@ export function NewIssueView({ onCreated }: { onCreated: (shortRef: string) => v
         <a
           href="#/issues"
           title="Back to issues"
-          className="rounded-md p-1 text-zinc-500 hover:bg-card hover:text-zinc-300"
+          className="rounded-md p-1 text-muted hover:bg-card hover:text-ink"
         >
           <ArrowLeft className="size-4" aria-hidden />
         </a>
-        <span className="rounded bg-edge px-1.5 py-0.5 font-mono text-[10.5px] font-medium text-zinc-400">
+        <span className="rounded bg-edge px-1.5 py-0.5 font-mono text-[10.5px] font-medium text-ink-2">
           NEW
         </span>
         <TypeBadge type={type} />
@@ -113,7 +113,7 @@ export function NewIssueView({ onCreated }: { onCreated: (shortRef: string) => v
           placeholder="Issue title"
           aria-label="Title"
           autoFocus
-          className="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1.5 py-0.5 text-base font-semibold text-zinc-100 placeholder:text-zinc-600 hover:border-ctl focus:border-accent focus:outline-none"
+          className="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1.5 py-0.5 text-base font-semibold text-ink placeholder:text-faint hover:border-ctl focus:border-accent focus:outline-none"
         />
         {create.isPending ? <span className="text-[11.5px] text-dim">Creating…</span> : null}
       </header>
@@ -191,9 +191,9 @@ export function NewIssueView({ onCreated }: { onCreated: (shortRef: string) => v
               {create.isPending ? "Creating…" : "Create issue"}
             </button>
             <span className="text-[11.5px] text-dim">⌘Enter creates · nothing is committed until then</span>
-            {validation ? <p className="text-xs text-red-400">{validation}</p> : null}
+            {validation ? <p className="text-xs text-crit-text">{validation}</p> : null}
             {create.isError ? (
-              <p className="text-xs text-red-400">
+              <p className="text-xs text-crit-text">
                 {create.error instanceof Error
                   ? create.error.message
                   : "Could not create the issue"}

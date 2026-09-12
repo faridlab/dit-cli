@@ -66,7 +66,7 @@ export function BodyEditor({ issueId, body }: { issueId: string; body: string })
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-2">
         <EditorModeToggle mode={mode} onChange={setMode} showPreview={false} />
-        <span className="text-[11px] text-zinc-500">
+        <span className="text-[11px] text-muted">
           {save.isPending ? "Saving…" : dirty ? "Unsaved changes" : ""}
         </span>
       </div>

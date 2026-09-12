@@ -1,5 +1,5 @@
 // DQL search results. The query box and the examples live in the Search
-// side pane (and in the URL); this view's whole job is: send the text, show
+// sidebar (and in the URL); this view's whole job is: send the text, show
 // what comes back, and show the server's parse error verbatim. Those
 // messages are written to be read by humans; paraphrasing them would only
 // lose information.
@@ -29,10 +29,10 @@ export function SearchView({ q, onOpen }: { q: string; onOpen: (id: string) => v
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex items-center gap-3 border-b border-edge px-5 py-3">
-        <h1 className="shrink-0 text-lg font-semibold text-zinc-100">Search</h1>
+        <h1 className="shrink-0 text-lg font-semibold text-ink">Search</h1>
         {trimmed.length > 0 ? (
           <span
-            className="max-w-[520px] truncate rounded-[3px] border border-edge bg-card px-2 py-0.5 font-mono text-[11px] text-zinc-400"
+            className="max-w-[520px] truncate rounded-[3px] border border-edge bg-card px-2 py-0.5 font-mono text-[11px] text-ink-2"
             title={trimmed}
           >
             {trimmed}
@@ -52,7 +52,7 @@ export function SearchView({ q, onOpen }: { q: string; onOpen: (id: string) => v
 
       {trimmed.length === 0 ? (
         <Empty
-          title="Type a DQL query in the side pane"
+          title="Type a DQL query in the sidebar"
           hint="…or pick an example there. Fields: title, status, type, priority, assignee, label, updated. Operators: =, !=, ~, IN, AND, OR, ORDER BY, LIMIT."
           className="flex-1 justify-center"
         />
@@ -77,7 +77,7 @@ export function SearchView({ q, onOpen }: { q: string; onOpen: (id: string) => v
       {results.data && results.data.items.length === 0 ? (
         <Empty
           title="No issues match this query"
-          hint="Loosen the filter, or check the field names against the examples in the side pane."
+          hint="Loosen the filter, or check the field names against the examples in the sidebar."
           className="flex-1 justify-center"
         />
       ) : null}

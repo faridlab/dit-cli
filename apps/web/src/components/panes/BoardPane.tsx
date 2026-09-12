@@ -1,4 +1,4 @@
-// The Board side pane plus the column-visibility state it owns. The board
+// The Board sidebar section plus the column-visibility state it owns. The board
 // (main area) and the pane sit far apart in the tree, so the hidden-column
 // set travels through a context the shell provides above both — visible
 // columns are view state shared by two surfaces, not a property of either.
@@ -75,7 +75,7 @@ export function BoardPane() {
             <button
               type="button"
               onClick={showAll}
-              className="ml-auto text-[11px] text-zinc-500 transition-colors hover:text-zinc-200"
+              className="ml-auto text-[11px] text-muted transition-colors hover:text-ink"
             >
               Show all
             </button>
@@ -98,13 +98,13 @@ export function BoardPane() {
               )}
             >
               <CheckSquare on={on} />
-              <span className="truncate text-xs uppercase tracking-[0.05em] text-zinc-300">
+              <span className="truncate text-xs uppercase tracking-[0.05em] text-ink-2">
                 {column.label}
               </span>
               <span
                 className={cn(
                   "ml-auto shrink-0 rounded px-1.5 py-px font-mono text-[10.5px] tabular-nums",
-                  overLimit ? "bg-amber-950/60 text-amber-400" : "bg-edge text-zinc-500",
+                  overLimit ? "bg-warn-bg text-warn-text" : "bg-edge text-muted",
                 )}
                 title={
                   overLimit ? `WIP limit ${limit} exceeded` : limit !== null ? `WIP limit ${limit}` : undefined
@@ -118,7 +118,7 @@ export function BoardPane() {
         })}
       </section>
 
-      <p className="px-1 font-mono text-[10.5px] text-zinc-600">
+      <p className="px-1 font-mono text-[10.5px] text-faint">
         {total} issues · {columns.length - hidden.size} of {columns.length} columns shown
       </p>
     </div>

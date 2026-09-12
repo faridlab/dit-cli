@@ -31,13 +31,13 @@ export function SelectField({
       <SelectPrimitive.Trigger
         aria-label={ariaLabel}
         className={cn(
-          "inline-flex h-[30px] w-full items-center justify-between gap-1 rounded-md border border-ctl bg-card px-2 text-left text-xs text-zinc-200 hover:border-zinc-500 focus:border-accent focus:outline-none disabled:opacity-50",
+          "inline-flex h-[30px] w-full items-center justify-between gap-1 rounded-md border border-ctl bg-card px-2 text-left text-xs text-ink hover:border-dim focus:border-accent focus:outline-none disabled:opacity-50",
           className,
         )}
       >
         <SelectPrimitive.Value />
         <SelectPrimitive.Icon>
-          <ChevronDown className="size-3.5 text-zinc-500" aria-hidden />
+          <ChevronDown className="size-3.5 text-muted" aria-hidden />
         </SelectPrimitive.Icon>
       </SelectPrimitive.Trigger>
       <SelectPrimitive.Portal>
@@ -51,11 +51,11 @@ export function SelectField({
               <SelectPrimitive.Item
                 key={option.value}
                 value={option.value}
-                className="flex cursor-default select-none items-center justify-between rounded px-2 py-1 text-xs text-zinc-300 outline-none data-highlighted:bg-edge data-highlighted:text-zinc-100 data-state-checked:text-zinc-100"
+                className="flex cursor-default select-none items-center justify-between rounded px-2 py-1 text-xs text-ink-2 outline-none data-highlighted:bg-edge data-highlighted:text-ink data-state-checked:text-ink"
               >
                 <SelectPrimitive.ItemText>{option.label}</SelectPrimitive.ItemText>
                 <SelectPrimitive.ItemIndicator>
-                  <Check className="size-3.5 text-teal-400" aria-hidden />
+                  <Check className="size-3.5 text-accent" aria-hidden />
                 </SelectPrimitive.ItemIndicator>
               </SelectPrimitive.Item>
             ))}

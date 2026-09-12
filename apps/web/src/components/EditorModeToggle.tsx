@@ -24,7 +24,7 @@ export function EditorModeToggle({
   showPreview: boolean;
 }) {
   return (
-    <div className="flex overflow-hidden rounded-md border border-zinc-700" role="group" aria-label="Editor mode">
+    <div className="flex overflow-hidden rounded-md border border-ctl" role="group" aria-label="Editor mode">
       {MODES.filter((m) => m.id !== "preview" || showPreview).map(({ id, label, Icon }, index) => (
         <button
           key={id}
@@ -33,8 +33,8 @@ export function EditorModeToggle({
           aria-pressed={mode === id}
           className={cn(
             "flex items-center gap-1 px-2 py-1 text-[11px]",
-            index > 0 && "border-l border-zinc-700",
-            mode === id ? "bg-zinc-800 text-zinc-100" : "text-zinc-500 hover:text-zinc-300",
+            index > 0 && "border-l border-ctl",
+            mode === id ? "bg-sunken text-ink" : "text-muted hover:text-ink",
           )}
         >
           <Icon className="size-3" aria-hidden />

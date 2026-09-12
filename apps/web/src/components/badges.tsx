@@ -57,7 +57,7 @@ export function AssigneeCircles({ assignees }: { assignees: string[] }) {
         </span>
       ))}
       {overflow > 0 ? (
-        <span className="inline-flex size-[22px] items-center justify-center rounded-full border border-ctl bg-card font-mono text-[9px] leading-none text-zinc-400">
+        <span className="inline-flex size-[22px] items-center justify-center rounded-full border border-ctl bg-card font-mono text-[9px] leading-none text-ink-2">
           +{overflow}
         </span>
       ) : null}
@@ -66,7 +66,7 @@ export function AssigneeCircles({ assignees }: { assignees: string[] }) {
 }
 
 const CHIP_CLASS =
-  "rounded-[3px] border border-white/[0.06] bg-white/[0.04] px-1.5 font-mono text-[10px] leading-4 text-zinc-400";
+  "rounded-[3px] border border-edge bg-hover px-1.5 font-mono text-[10px] leading-4 text-ink-2";
 
 export function LabelChips({ labels, max = 3 }: { labels: string[]; max?: number }) {
   if (labels.length === 0) return null;
@@ -87,10 +87,10 @@ export function LabelChips({ labels, max = 3 }: { labels: string[]; max?: number
 export function StatusPill({ status }: { status: StatusDto }) {
   const tone =
     status.category === "done"
-      ? "text-emerald-400 bg-emerald-950/50 border-emerald-900/60"
+      ? "text-done-text bg-done-bg border-done-line"
       : status.category === "doing"
-        ? "text-sky-400 bg-sky-950/50 border-sky-900/60"
-        : "text-zinc-400 bg-zinc-800/60 border-zinc-700";
+        ? "text-doing-text bg-doing-bg border-doing-line"
+        : "text-todo-text bg-todo-bg border-todo-line";
   return (
     <span
       className={cn(
@@ -114,7 +114,7 @@ export function IssueHandle({
   number: number | null;
 }) {
   return (
-    <span className="font-mono text-xs tabular-nums text-zinc-500">
+    <span className="font-mono text-xs tabular-nums text-muted">
       {number !== null ? `#${number}` : shortRef}
     </span>
   );

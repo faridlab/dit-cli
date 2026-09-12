@@ -1,4 +1,4 @@
-// The Search side pane: the query box and the example queries. Typing here
+// The Search sidebar section: the query box and the example queries. Typing here
 // drives the same route (`#/search?q=…`) the palette and the dashboard
 // links use, so every entry point agrees on what a search is.
 
@@ -40,14 +40,14 @@ export function SearchPane({
     <div className="flex flex-col gap-4 p-3">
       <form onSubmit={submit}>
         <div className="flex items-center gap-2 rounded-md border border-ctl bg-app px-2.5 transition-colors focus-within:border-accent">
-          <Search className="size-4 shrink-0 text-zinc-500" aria-hidden />
+          <Search className="size-4 shrink-0 text-muted" aria-hidden />
           <input
             value={input}
             onChange={(event) => setInput(event.target.value)}
             placeholder="status != done AND …"
             aria-label="DQL query"
             spellCheck={false}
-            className="h-[34px] w-full flex-1 bg-transparent font-mono text-[12.5px] text-zinc-200 placeholder:text-zinc-600 focus:outline-none"
+            className="h-[34px] w-full flex-1 bg-transparent font-mono text-[12.5px] text-ink placeholder:text-faint focus:outline-none"
           />
           <Kbd>⏎</Kbd>
         </div>
@@ -66,8 +66,8 @@ export function SearchPane({
               title={example.dql}
               className="flex flex-col gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-card"
             >
-              <span className="text-[12.5px] text-zinc-300">{example.label}</span>
-              <span className="truncate font-mono text-[10.5px] text-zinc-600">
+              <span className="text-[12.5px] text-ink-2">{example.label}</span>
+              <span className="truncate font-mono text-[10.5px] text-faint">
                 {example.dql}
               </span>
             </button>

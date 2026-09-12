@@ -26,11 +26,11 @@ export function TokenGate({
   };
 
   return (
-    <main className="flex min-h-dvh items-center justify-center bg-zinc-950 p-6">
-      <div className="w-full max-w-sm rounded-lg border border-zinc-800 bg-zinc-900 p-6">
-        <h1 className="text-lg font-semibold text-zinc-100">DIT</h1>
-        <p className="mt-2 text-sm text-zinc-400">
-          Open the URL printed by <code className="font-mono text-xs text-zinc-300">dit serve</code>{" "}
+    <main className="flex min-h-dvh items-center justify-center bg-app p-6">
+      <div className="w-full max-w-sm rounded-lg border border-edge bg-card p-6">
+        <h1 className="text-lg font-semibold text-ink">DIT</h1>
+        <p className="mt-2 text-sm text-ink-2">
+          Open the URL printed by <code className="font-mono text-xs text-ink-2">dit serve</code>{" "}
           in this browser, or paste your session token below.
         </p>
         <form onSubmit={submit} className="mt-4 flex flex-col gap-2">
@@ -42,17 +42,17 @@ export function TokenGate({
             autoComplete="off"
             autoFocus
             aria-label="Session token"
-            className="h-8 rounded border border-zinc-700 bg-zinc-950 px-2 font-mono text-xs text-zinc-200 placeholder:text-zinc-600 focus:border-sky-600 focus:outline-none"
+            className="h-8 rounded border border-ctl bg-app px-2 font-mono text-xs text-ink placeholder:text-faint focus:border-accent focus:outline-none"
           />
-          {error ? <p className="text-xs text-red-400">{error}</p> : null}
+          {error ? <p className="text-xs text-crit-text">{error}</p> : null}
           <button
             type="submit"
-            className="h-8 rounded bg-sky-700 text-xs font-medium text-white hover:bg-sky-600"
+            className="h-8 rounded bg-accent text-xs font-medium text-on-accent hover:bg-accent-hi"
           >
             Unlock workspace
           </button>
         </form>
-        <p className="mt-3 text-[11px] text-zinc-600">
+        <p className="mt-3 text-[11px] text-faint">
           The token is kept in sessionStorage for this tab only — closing the tab logs you out.
         </p>
       </div>

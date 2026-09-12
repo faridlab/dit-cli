@@ -64,17 +64,17 @@ export function circleColor(name: string): string {
 export function priorityDot(priority: Priority | null): string {
   switch (priority) {
     case "p0":
-      return "bg-red-500";
+      return "bg-p0";
     case "p1":
-      return "bg-orange-400";
+      return "bg-p1";
     case "p2":
-      return "bg-sky-400";
+      return "bg-p2";
     case "p3":
-      return "bg-zinc-500";
+      return "bg-p3";
     case "p4":
-      return "bg-zinc-700";
+      return "bg-p4";
     default:
-      return "border border-zinc-600";
+      return "border border-dashed border-dim";
   }
 }
 
@@ -98,24 +98,24 @@ export function typeLetter(type: IssueType): string | null {
 export function typeBadgeClass(type: IssueType): string {
   switch (type) {
     case "bug":
-      return "bg-red-900 text-red-400";
+      return "bg-crit-bg text-crit-text";
     case "story":
-      return "bg-violet-950 text-violet-400";
+      return "bg-accent-soft text-context";
     case "spike":
-      return "bg-amber-900 text-amber-400";
+      return "bg-warn-bg text-warn-text";
     case "chore":
-      return "bg-zinc-700 text-zinc-400";
+      return "bg-todo-bg text-todo-text";
     default:
-      return "bg-zinc-700 text-zinc-500";
+      return "bg-doing-bg text-doing-text";
   }
 }
 
 /** Due dates read as neutral until they are today — then they turn orange,
  * the only escalation color outside priorities. Past due escalates too. */
 export function dueTone(iso: string | null): string {
-  if (!iso) return "text-zinc-500";
+  if (!iso) return "text-muted";
   const today = new Date().toISOString().slice(0, 10);
-  return iso.slice(0, 10) <= today ? "text-orange-400" : "text-zinc-500";
+  return iso.slice(0, 10) <= today ? "text-warn-text" : "text-muted";
 }
 
 /** Compact due copy for dense rows: "today", "in 3d", "2d overdue". */

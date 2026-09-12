@@ -73,15 +73,15 @@ function TabBar({
             className={cn(
               "group relative flex min-w-0 max-w-[200px] shrink-0 cursor-pointer select-none items-center gap-1.5 border-r border-edge px-2.5",
               isActive
-                ? "bg-app text-zinc-100"
-                : "text-zinc-400 hover:bg-card/60 hover:text-zinc-200",
+                ? "bg-app text-ink"
+                : "text-ink-2 hover:bg-card/60 hover:text-ink",
             )}
           >
             {isActive ? (
               <span className="absolute inset-x-0 top-0 h-[1.5px] bg-accent" aria-hidden />
             ) : null}
             <FileText
-              className={cn("size-3.5 shrink-0", pinned ? "text-zinc-400" : "text-zinc-500")}
+              className={cn("size-3.5 shrink-0", pinned ? "text-ink-2" : "text-muted")}
               aria-hidden
             />
             <button
@@ -106,7 +106,7 @@ function TabBar({
                   onClose(path);
                 }}
                 title="Close tab"
-                className="flex size-4 shrink-0 items-center justify-center rounded text-zinc-500 hover:bg-edge hover:text-zinc-100"
+                className="flex size-4 shrink-0 items-center justify-center rounded text-muted hover:bg-edge hover:text-ink"
               >
                 <X className="size-3" aria-hidden />
               </button>
@@ -214,7 +214,7 @@ export function DocsView({
         <div className="flex flex-1 items-center justify-center">
           <Empty
             title="No page open"
-            hint="Pick a page from the side pane — single click previews it, double click pins it as a tab. Every page is a Markdown file in the repo."
+            hint="Pick a page from the sidebar — single click previews it, double click pins it as a tab. Every page is a Markdown file in the repo."
           />
         </div>
       ) : doc.isPending ? (
@@ -228,17 +228,17 @@ export function DocsView({
       ) : doc.data === undefined ? null : (
         <>
           <div className="flex h-[42px] shrink-0 items-center gap-3 border-b border-edge px-4">
-            <span className="truncate font-mono text-xs text-zinc-300">{p}</span>
+            <span className="truncate font-mono text-xs text-ink-2">{p}</span>
             {(() => {
               const entry = (docs.data ?? []).find((candidate) => candidate.path === p);
               return entry ? (
-                <span className="shrink-0 font-mono text-[10px] text-zinc-600">
+                <span className="shrink-0 font-mono text-[10px] text-faint">
                   {formatBytes(entry.bytes)} · {relativeTime(new Date(entry.updated_ms).toISOString())}
                 </span>
               ) : null;
             })()}
             <span className="ml-auto flex shrink-0 items-center gap-2">
-              <span className="text-[11px] text-zinc-500">
+              <span className="text-[11px] text-muted">
                 {put.isPending ? "Saving…" : draft !== undefined && draft !== doc.data.body ? "Unsaved" : ""}
               </span>
               <EditorModeToggle mode={editMode} onChange={setEditMode} showPreview={false} />
@@ -247,7 +247,7 @@ export function DocsView({
                 onClick={removeSelected}
                 disabled={remove.isPending}
                 title="Delete page"
-                className="flex items-center gap-1.5 rounded-md border border-transparent px-2.5 py-1.5 text-xs text-zinc-500 transition-colors hover:border-red-900/60 hover:bg-red-950/30 hover:text-red-300 disabled:opacity-50"
+                className="flex items-center gap-1.5 rounded-md border border-transparent px-2.5 py-1.5 text-xs text-muted transition-colors hover:border-crit-line hover:bg-crit-bg hover:text-crit-text disabled:opacity-50"
               >
                 <Trash2 className="size-3.5" aria-hidden />
                 Delete
