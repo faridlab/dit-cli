@@ -354,6 +354,7 @@ sprint: 2026-W33
 created: 2026-08-16T09:12:00Z
 updated: 2026-08-16T11:40:00Z
 due: 2026-08-30
+start: 2026-08-20               # optional — only issues someone actually scheduled
 blocked_by: [01K3M5QQQQ0000000000ZZZZ]
 ---
 
@@ -1166,8 +1167,31 @@ Do not build both at the same time. Two API surfaces (`invoke()` and `fetch()`) 
 - **Command palette**: `cmdk` — target: every action doable without a mouse (the Linear feel)
 - **Graph view**: `d3-force` or `cytoscape` for issue dependencies and document backlinks (the Obsidian feel)
 - **Diagrams**: Mermaid for rendering business flows
+- **Typography**: IBM Plex Sans + IBM Plex Mono, self-hosted via `@fontsource` (OFL-1.1, latin subset, three weights ≈ 104 KB). The content-security policy allows `font-src 'self'` only, so a webfont either ships inside the binary or is not used at all; a system stack would render the same dense UI differently on every OS.
+- **Theming**: light and dark from one token set in `styles.css`. Components name only semantic tokens (`bg-app`, `text-ink`, `border-edge`, `text-done-text`), never a palette step, so a theme change never touches a component. The viewer's choice is per-browser (`localStorage`), never workspace data — an explicit choice stamps `data-theme` on `<html>`, and "system" stamps nothing and follows `prefers-color-scheme`.
 
-Views provided: Board, List/Table, Timeline/Gantt, Graph, Docs (with a backlink panel), Changelog, Insights.
+Views provided: Board, List/Table, Timeline, Roadmap, Gantt, Graph, Docs (with a backlink panel), Changelog, Insights.
+
+**The three plan views, and what keeps them honest.** All three read the same
+two optional date fields and derive everything else:
+
+- **Timeline** is §14 made visible. `GET /api/activity` pages the whole
+  workspace's `field_events` by `seq` (cursor, never offset — a backfill
+  landing mid-scroll must not make rows repeat), and
+  `GET /api/activity/summary?seq=` answers §14.3b's "what did the board look
+  like then" with the aggregate query written there, plus §14.3c's semantic
+  diff. Nothing is snapshotted: the answer is recomputed per request, which
+  is the only reason it can be asked of any point in history.
+- **Gantt** draws `start` and `due`. `start` is the one field these views
+  added, and it is optional: an issue with only a `due` gets an inferred
+  start from its estimate, drawn dashed and never written back. Dragging a
+  bar commits the real fields through the ordinary patch endpoint, so a
+  reschedule appears in the history like any other edit.
+- **Roadmap** draws epics. An epic with its own dates uses them; otherwise
+  its bar is the span of the issues inside it, derived on read — a roadmap
+  that cannot drift from the work underneath it. Release lanes wait for §15:
+  claiming a version shipped without git proving it is exactly the
+  record-keeping DIT exists to replace.
 
 An Obsidian touch: `[[Q2R7VN8]]` and `[[docs/flows/auth-session]]` as wiki-links between issues and documents, with a backlink panel and a local graph. This is what makes DIT feel like a *project knowledge base*, not just an issue tracker.
 
