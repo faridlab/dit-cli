@@ -1,33 +1,84 @@
 // A hash router, small enough to own. The app runs same-origin inside the
 // server binary, so there is no server-side routing to cooperate with — the
 // fragment is the whole routing story and it survives reloads for free.
+//
+// An open issue is part of the route, not private state: the list views
+// carry `?issue=<short_ref>` while the panel is open, so a reload or a
+// shared link reopens the same panel over the same list. The full page is
+// its own route and remembers where it was opened from.
 
 import { useCallback, useEffect, useState } from "react";
 
+/** The views an issue panel can sit over. */
+export type PeekHost = "home" | "board" | "issues" | "search" | "timeline" | "roadmap" | "gantt";
+
+const PEEK_HOSTS: readonly string[] = [
+  "home",
+  "board",
+  "issues",
+  "search",
+  "timeline",
+  "roadmap",
+  "gantt",
+];
+
 export type Route =
-  | { name: "home" }
-  | { name: "board" }
-  | { name: "issues"; q: string | null }
+  | { name: "home"; issue?: string | null }
+  | { name: "board"; issue?: string | null }
+  | { name: "issues"; q: string | null; issue?: string | null; starred?: boolean }
   | { name: "docs"; p: string | null }
-  | { name: "search"; q: string }
-  | { name: "issue"; id: string }
+  | { name: "search"; q: string; issue?: string | null }
+  /** The three plan views. Each hosts the issue panel like any list. */
+  | { name: "timeline"; issue?: string | null; seq?: number | null }
+  | { name: "roadmap"; issue?: string | null }
+  | { name: "gantt"; issue?: string | null }
+  | { name: "issue"; id: string; from?: PeekHost | null }
   | { name: "new-issue" }
   | { name: "settings" };
+
+/** Query string from pairs, skipping empties, in a stable order so the same
+ *  route always produces the same URL (and never a spurious history entry). */
+function query(pairs: Array<[string, string | null | undefined]>): string {
+  const parts = pairs
+    .filter((pair): pair is [string, string] => pair[1] !== null && pair[1] !== undefined && pair[1].length > 0)
+    .map(([key, value]) => `${key}=${encodeURIComponent(value)}`);
+  return parts.length > 0 ? `?${parts.join("&")}` : "";
+}
 
 export function routeToHash(route: Route): string {
   switch (route.name) {
     case "home":
-      return "#/home";
+      return `#/home${query([["issue", route.issue]])}`;
     case "board":
-      return "#/board";
+      return `#/board${query([["issue", route.issue]])}`;
     case "issues":
-      return route.q === null ? "#/issues" : `#/issues?q=${encodeURIComponent(route.q)}`;
+      return `#/issues${query([
+        ["q", route.q],
+        // A private shortlist cannot be a server query, so it rides as its
+        // own flag rather than pretending to be DQL.
+        ["starred", route.starred === true ? "1" : null],
+        ["issue", route.issue],
+      ])}`;
     case "docs":
-      return route.p === null ? "#/docs" : `#/docs?p=${encodeURIComponent(route.p)}`;
+      return `#/docs${query([["p", route.p]])}`;
     case "search":
-      return `#/search?q=${encodeURIComponent(route.q)}`;
+      return `#/search${query([
+        ["q", route.q],
+        ["issue", route.issue],
+      ])}`;
+    case "timeline":
+      return `#/timeline${query([
+        // Where you are standing in history, as a position in the commit
+        // graph — a date only maps to one through an author's clock.
+        ["seq", route.seq === null || route.seq === undefined ? null : String(route.seq)],
+        ["issue", route.issue],
+      ])}`;
+    case "roadmap":
+      return `#/roadmap${query([["issue", route.issue]])}`;
+    case "gantt":
+      return `#/gantt${query([["issue", route.issue]])}`;
     case "issue":
-      return `#/issue/${encodeURIComponent(route.id)}`;
+      return `#/issue/${encodeURIComponent(route.id)}${query([["from", route.from]])}`;
     case "new-issue":
       return "#/new";
     case "settings":
@@ -37,35 +88,108 @@ export function routeToHash(route: Route): string {
 
 export function parseHash(hash: string): Route {
   const path = hash.replace(/^#/, "");
-  const [head = "", query] = path.split("?", 2);
+  const [head = "", queryString] = path.split("?", 2);
   const segments = head.split("/").filter((s) => s.length > 0);
   const first = segments[0] ?? "";
+  const params = new URLSearchParams(queryString ?? "");
+  const nonEmpty = (key: string): string | null => {
+    const value = params.get(key);
+    return value === null || value.length === 0 ? null : value;
+  };
+  // The open panel rides in `issue` as the issue's permanent short ref.
+  const issue = nonEmpty("issue");
+
   if (first === "issue" && segments[1]) {
-    return { name: "issue", id: decodeURIComponent(segments[1]) };
+    const from = params.get("from");
+    return {
+      name: "issue",
+      id: decodeURIComponent(segments[1]),
+      from: from !== null && PEEK_HOSTS.includes(from) ? (from as PeekHost) : null,
+    };
   }
-  if (first === "search") {
-    const q = new URLSearchParams(query ?? "").get("q") ?? "";
-    return { name: "search", q };
-  }
-  if (first === "home") return { name: "home" };
-  if (first === "board") return { name: "board" };
+  if (first === "search") return { name: "search", q: params.get("q") ?? "", issue };
+  if (first === "home") return { name: "home", issue };
+  if (first === "board") return { name: "board", issue };
   if (first === "issues") {
-    // The filter the side pane composes rides in `q` — a filtered list is
-    // a shareable, reloadable thing, not private view state.
-    const q = new URLSearchParams(query ?? "").get("q");
-    return { name: "issues", q: q === null || q.length === 0 ? null : q };
+    // The filter the sidebar composes rides in `q` — a filtered list is
+    // a shareable, reloadable thing, not private view state. `starred` is
+    // the exception: it names this browser's own shortlist, so a link
+    // carrying it shows the recipient *their* stars, not the sender's.
+    return { name: "issues", q: nonEmpty("q"), issue, starred: params.get("starred") === "1" };
   }
   if (first === "docs") {
     // The selected page rides in `p` as the full `docs/…` path — kept in
     // the URL so a reload (or a shared link) reopens the same page.
-    const p = new URLSearchParams(query ?? "").get("p");
-    return { name: "docs", p: p === null || p.length === 0 ? null : p };
+    return { name: "docs", p: nonEmpty("p") };
   }
+  if (first === "timeline") {
+    const raw = nonEmpty("seq");
+    const seq = raw === null ? null : Number.parseInt(raw, 10);
+    return { name: "timeline", issue, seq: seq === null || Number.isNaN(seq) ? null : seq };
+  }
+  if (first === "roadmap") return { name: "roadmap", issue };
+  if (first === "gantt") return { name: "gantt", issue };
   if (first === "new") return { name: "new-issue" };
   if (first === "settings") return { name: "settings" };
   // Home is the landing view: capture, triage, orient — the board is one
   // click away for people who want to go straight to moving cards.
-  return { name: "home" };
+  return { name: "home", issue: null };
+}
+
+/** The view an issue panel would open over: the current one where it can
+ *  host a panel, otherwise the one the full page was opened from. */
+export function peekHost(route: Route): PeekHost {
+  if (PEEK_HOSTS.includes(route.name)) return route.name as PeekHost;
+  if (route.name === "issue") return route.from ?? "issues";
+  return "issues";
+}
+
+/** The issue whose panel is open over this route, if any. */
+export function peekOf(route: Route): string | null {
+  switch (route.name) {
+    case "home":
+    case "board":
+    case "issues":
+    case "search":
+    case "timeline":
+    case "roadmap":
+    case "gantt":
+      return route.issue ?? null;
+    default:
+      return null;
+  }
+}
+
+/** The same route with the panel opened on `id` (or closed, for `null`).
+ *  From anywhere that cannot host a panel — the full page, docs, settings —
+ *  this lands on the list the panel belongs over. */
+export function withPeek(route: Route, id: string | null): Route {
+  switch (route.name) {
+    case "home":
+      return { name: "home", issue: id };
+    case "board":
+      return { name: "board", issue: id };
+    case "issues":
+      return { name: "issues", q: route.q, starred: route.starred, issue: id };
+    case "search":
+      return { name: "search", q: route.q, issue: id };
+    case "timeline":
+      return { name: "timeline", seq: route.seq, issue: id };
+    case "roadmap":
+      return { name: "roadmap", issue: id };
+    case "gantt":
+      return { name: "gantt", issue: id };
+    default: {
+      const host = peekHost(route);
+      if (host === "home") return { name: "home", issue: id };
+      if (host === "board") return { name: "board", issue: id };
+      if (host === "search") return { name: "search", q: "", issue: id };
+      if (host === "timeline") return { name: "timeline", issue: id };
+      if (host === "roadmap") return { name: "roadmap", issue: id };
+      if (host === "gantt") return { name: "gantt", issue: id };
+      return { name: "issues", q: null, issue: id };
+    }
+  }
 }
 
 export function navigate(route: Route): void {

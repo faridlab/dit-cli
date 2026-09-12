@@ -1,4 +1,4 @@
-// The Issues side pane: the list's filters. Each toggle composes the exact
+// The Issues sidebar section: the list's filters. Each toggle composes the exact
 // DQL a power user would type (the same language the search box speaks) and
 // puts it in the URL, so a filtered list is a shareable, reloadable thing
 // rather than private view state. The pane re-parses its own canonical
@@ -38,7 +38,7 @@ function FilterRow({
       title={title}
       className={cn(
         "flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left font-mono text-xs transition-colors hover:bg-card",
-        on ? "bg-white/[0.03] text-zinc-100" : "text-zinc-400",
+        on ? "bg-hover text-ink" : "text-ink-2",
       )}
     >
       <CheckSquare on={on} />
@@ -95,7 +95,7 @@ export function IssuesPane({
             <button
               type="button"
               onClick={() => onFilter(null)}
-              className="ml-auto text-[11px] text-zinc-500 transition-colors hover:text-zinc-200"
+              className="ml-auto text-[11px] text-muted transition-colors hover:text-ink"
             >
               Clear all
             </button>
@@ -122,7 +122,7 @@ export function IssuesPane({
           inspectable, never a private filter language. */}
       {q !== null ? (
         <p
-          className="rounded-md border border-edge bg-card px-2.5 py-2 font-mono text-[10.5px] leading-relaxed text-zinc-500"
+          className="rounded-md border border-edge bg-card px-2.5 py-2 font-mono text-[10.5px] leading-relaxed text-muted"
           title="The exact query the list runs"
         >
           {q}

@@ -1,20 +1,29 @@
-// Workbench layout (the VS Code shape): activity bar, side pane, main
-// area, status bar, plus the two global overlays. Route state, the
-// ⌘K / ⌘B / ⌘1-⌘5 listeners, and the pane expand/slim state machine live
-// here so the views below stay purely about data.
+// Workbench layout: sidebar, main area, status bar, plus the two global
+// overlays. Route state, the ⌘K / ⌘B / ⌘1-⌘5 listeners, and the sidebar
+// width live here so the views below stay purely about data.
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Columns3, FileText, House, ListTodo, Search, Settings } from "lucide-react";
 import { useLiveEvents } from "../lib/events";
 import { useDocTabs } from "../lib/doctabs";
 import { invalidateWorkspaceData } from "../lib/queries";
-import { useNavigate, useRoute, type Route } from "../lib/router";
-import { ActivityBar } from "./ActivityBar";
+import { peekHost, peekOf, useNavigate, useRoute, withPeek } from "../lib/router";
+import { stepPeek, usePeekList } from "../lib/peeklist";
 import { CommandPalette } from "./CommandPalette";
-import { PaneFrame, PANE_MAX_WIDTH, PANE_MIN_WIDTH, type PaneMode } from "./PaneFrame";
+import { IssuePeek } from "./issue/IssuePeek";
+import {
+  SHORTCUT_VIEWS,
+  Sidebar,
+  SIDEBAR_DEFAULT_WIDTH,
+  SIDEBAR_MAX_WIDTH,
+  SIDEBAR_MIN_WIDTH,
+  type SidebarMode,
+} from "./Sidebar";
 import { StatusBar } from "./StatusBar";
 import { BoardColumnsProvider, BoardPane } from "./panes/BoardPane";
+import { GanttOptionsProvider, GanttPane } from "./panes/GanttPane";
+import { RoadmapOptionsProvider, RoadmapPane } from "./panes/RoadmapPane";
+import { TimelinePane } from "./panes/TimelinePane";
 import { DocsPane } from "./panes/DocsPane";
 import { HomePane } from "./panes/HomePane";
 import { IssuesPane } from "./panes/IssuesPane";
@@ -28,35 +37,28 @@ import { IssuesView } from "../views/IssuesView";
 import { NewIssueView } from "../views/NewIssueView";
 import { SearchView } from "../views/SearchView";
 import { SettingsView } from "../views/SettingsView";
+import { GanttView } from "../views/GanttView";
+import { RoadmapView } from "../views/RoadmapView";
+import { TimelineView } from "../views/TimelineView";
 
-// The rail order (Home, Search, Board, Issues, Docs) is also the ⌘1..⌘5
-// shortcut order; the activity bar and this table must agree.
-const SHORTCUT_VIEWS: Route[] = [
-  { name: "home" },
-  { name: "search", q: "" },
-  { name: "board" },
-  { name: "issues", q: null },
-  { name: "docs", p: null },
-];
+const SIDEBAR_WIDTH_KEY = "dit.sidebar.width";
 
-const PANE_WIDTH_KEY = "dit.pane.width";
-const DEFAULT_PANE_WIDTH = 268;
-
-function loadPaneWidth(): number {
+function loadSidebarWidth(): number {
   try {
-    const raw = window.localStorage.getItem(PANE_WIDTH_KEY);
+    const raw = window.localStorage.getItem(SIDEBAR_WIDTH_KEY);
     const parsed = raw === null ? Number.NaN : Number.parseInt(raw, 10);
-    if (Number.isNaN(parsed)) return DEFAULT_PANE_WIDTH;
-    return Math.min(PANE_MAX_WIDTH, Math.max(PANE_MIN_WIDTH, parsed));
+    if (Number.isNaN(parsed)) return SIDEBAR_DEFAULT_WIDTH;
+    return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, parsed));
   } catch {
-    return DEFAULT_PANE_WIDTH;
+    return SIDEBAR_DEFAULT_WIDTH;
   }
 }
 
-// How long the pointer (or focus) must stay in the main area before the
-// pane gives up its width. Long enough that a sweep across the screen does
-// not collapse it, short enough to feel like it notices you working.
-const SLIM_DELAY_MS = 450;
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  return /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
+}
 
 export function AppShell() {
   const queryClient = useQueryClient();
@@ -69,84 +71,101 @@ export function AppShell() {
   const navigate = useNavigate();
   const [paletteOpen, setPaletteOpen] = useState(false);
 
-  // -- the pane state machine ---------------------------------------------
-  // expanded -> slim: automatically, shortly after the pointer or focus
-  //   lands in the main area — the content you are working in gets the
-  //   width, the pane stays a labeled strip rather than vanishing.
-  // slim -> expanded: hover, focus or click on the strip.
-  // expanded <-> hidden: ⌘B. A hidden pane stays hidden; only ⌘B restores
-  //   it, so the shortcut is a decision, not something the pointer undoes.
-  const [paneMode, setPaneMode] = useState<PaneMode>("expanded");
-  const [paneWidth, setPaneWidth] = useState(loadPaneWidth);
-  // True while the pointer is over the pane or its resize handle — the
-  // auto-slim timer must never fire against a pane in use. Kept in a ref
-  // (not state) so reading it does not re-render on every pointer move.
-  const paneHover = useRef(false);
-  const slimTimer = useRef<number | null>(null);
+  // -- the sidebar --------------------------------------------------------
+  // ⌘B hides it and ⌘B brings it back; the pointer never does either, so
+  // the shortcut is a decision, not something a sweep across the screen
+  // undoes. The width is remembered per browser.
+  const [sidebarMode, setSidebarMode] = useState<SidebarMode>("expanded");
+  const [sidebarWidth, setSidebarWidth] = useState(loadSidebarWidth);
 
-  const cancelSlim = useCallback(() => {
-    if (slimTimer.current !== null) {
-      window.clearTimeout(slimTimer.current);
-      slimTimer.current = null;
-    }
+  const toggleSidebar = useCallback(() => {
+    setSidebarMode((mode) => (mode === "hidden" ? "expanded" : "hidden"));
   }, []);
 
-  const paneInteract = useCallback(() => {
-    paneHover.current = true;
-    cancelSlim();
-    setPaneMode((mode) => (mode === "slim" ? "expanded" : mode));
-  }, [cancelSlim]);
-
-  const paneLeave = useCallback(() => {
-    paneHover.current = false;
-  }, []);
-
-  const scheduleSlim = useCallback(() => {
-    if (paneHover.current) return;
-    cancelSlim();
-    slimTimer.current = window.setTimeout(() => {
-      slimTimer.current = null;
-      setPaneMode((mode) => (mode === "expanded" ? "slim" : mode));
-    }, SLIM_DELAY_MS);
-  }, [cancelSlim]);
-
-  const togglePane = useCallback(() => {
-    cancelSlim();
-    setPaneMode((mode) => (mode === "hidden" ? "expanded" : "hidden"));
-  }, [cancelSlim]);
-
-  const persistPaneWidth = useCallback((width: number) => {
+  const onResizeEnd = useCallback((width: number) => {
+    setSidebarWidth(width);
     try {
-      window.localStorage.setItem(PANE_WIDTH_KEY, String(width));
+      window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(width));
     } catch {
       // A blocked or full localStorage only loses the remembered width.
     }
   }, []);
 
-  // Dragging the resize handle moves the pointer across the main area,
-  // which would otherwise slim the pane mid-drag; the handle claims the
-  // hover flag for the length of the gesture.
-  const onResizeStart = useCallback(() => {
-    paneHover.current = true;
-    cancelSlim();
-  }, [cancelSlim]);
+  // -- the issue panel ------------------------------------------------------
+  // An issue opens beside the list, not instead of it: the route keeps the
+  // list (and its filter) and gains `?issue=`. The full page is a deliberate
+  // second step — ⌘↵ or the expand button.
+  const peekId = peekOf(route);
+  // Subscribing to the on-screen order is what keeps the panel's next/prev
+  // buttons honest when a filter changes underneath it.
+  const peekList = usePeekList();
+  const peekIndex = peekId === null ? -1 : peekList.indexOf(peekId);
 
-  const onResizeEnd = useCallback(
-    (width: number) => {
-      paneHover.current = false;
-      setPaneWidth(width);
-      persistPaneWidth(width);
-    },
-    [persistPaneWidth],
+  const openIssue = useCallback(
+    (id: string) => navigate(withPeek(route, id)),
+    [navigate, route],
   );
-
-  useEffect(() => cancelSlim, [cancelSlim]);
+  const closePeek = useCallback(() => navigate(withPeek(route, null)), [navigate, route]);
+  const expandPeek = useCallback(
+    (id: string) => navigate({ name: "issue", id, from: peekHost(route) }),
+    [navigate, route],
+  );
+  const stepPeekTo = useCallback(
+    (delta: -1 | 1) => {
+      const next = stepPeek(peekId, delta);
+      if (next !== null && next !== peekId) navigate(withPeek(route, next));
+    },
+    [navigate, peekId, route],
+  );
+  // New issues are a page, not a dialog: the composer looks like the detail
+  // view it becomes, editor ready, nothing committed until it is created.
+  const openNewIssue = useCallback(() => navigate({ name: "new-issue" }), [navigate]);
+  const openSearch = useCallback((q: string) => navigate({ name: "search", q }), [navigate]);
+  const selectDoc = useCallback(
+    (p: string | null) => navigate({ name: "docs", p }),
+    [navigate],
+  );
+  // Filtering from the sidebar stays inside the list you are on: the
+  // shortlist narrowed by a context is still the shortlist.
+  const filterIssues = useCallback(
+    (q: string | null) =>
+      navigate({
+        name: "issues",
+        q,
+        starred: route.name === "issues" ? route.starred : undefined,
+      }),
+    [navigate, route],
+  );
 
   // -- keyboard -------------------------------------------------------------
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const mod = event.metaKey || event.ctrlKey;
-      if (!mod || event.altKey) return;
+      if (!mod) {
+        // Bare-letter shortcuts, only while nobody is typing: `c` creates,
+        // and J/K walk the list whenever a panel is open over it. Escape
+        // closes the panel from anywhere it is not busy abandoning an edit.
+        if (event.altKey || event.shiftKey || isTypingTarget(event.target)) return;
+        if (event.key === "c") {
+          event.preventDefault();
+          openNewIssue();
+        } else if (event.key === "Escape" && peekId !== null) {
+          event.preventDefault();
+          closePeek();
+        } else if ((event.key === "j" || event.key === "k") && peekId !== null) {
+          event.preventDefault();
+          stepPeekTo(event.key === "j" ? 1 : -1);
+        }
+        return;
+      }
+      if (event.altKey) return;
+      // ⌘↵ promotes the open panel to the full page — the one place the
+      // page is reached without a click.
+      if (event.key === "Enter" && peekId !== null) {
+        event.preventDefault();
+        expandPeek(peekId);
+        return;
+      }
       const key = event.key.toLowerCase();
       if (key === "k" || key === "p") {
         // ⌘K is the palette; ⌘P rides along as the quick-open reflex every
@@ -155,11 +174,11 @@ export function AppShell() {
         setPaletteOpen((open) => !open);
       } else if (key === "b") {
         event.preventDefault();
-        togglePane();
+        toggleSidebar();
       } else if (key === ",") {
         event.preventDefault();
         navigate({ name: "settings" });
-      } else if (key >= "1" && key <= "5") {
+      } else if (key >= "1" && key <= "8") {
         const target = SHORTCUT_VIEWS[Number(key) - 1];
         if (target) {
           event.preventDefault();
@@ -169,27 +188,13 @@ export function AppShell() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [navigate, togglePane]);
+  }, [closePeek, expandPeek, navigate, openNewIssue, peekId, stepPeekTo, toggleSidebar]);
 
   // `dit serve` opens the browser without a fragment; default to Home so
   // the address bar always reflects where you are.
   useEffect(() => {
     if (window.location.hash === "") navigate({ name: "home" });
   }, [navigate]);
-
-  const openIssue = useCallback((id: string) => navigate({ name: "issue", id }), [navigate]);
-  // New issues are a page, not a dialog: the composer looks like the detail
-  // view it becomes, editor ready, nothing committed until it is created.
-  const openNewIssue = useCallback(() => navigate({ name: "new-issue" }), [navigate]);
-  const openSearch = useCallback((q: string) => navigate({ name: "search", q }), [navigate]);
-  const selectDoc = useCallback(
-    (p: string | null) => navigate({ name: "docs", p }),
-    [navigate],
-  );
-  const filterIssues = useCallback(
-    (q: string | null) => navigate({ name: "issues", q }),
-    [navigate],
-  );
 
   // -- docs tabs -------------------------------------------------------------
   // Tab list, pins and per-path drafts live here (not in DocsView) so they
@@ -252,34 +257,25 @@ export function AppShell() {
     [docsTabs, docsP, selectDoc],
   );
 
-  // The pane is a pure function of the route: each view names its own
-  // secondary surface. The pane fetches its own data (shared TanStack cache
-  // keys keep it in agreement with the main view), so no state is drilled
-  // down from here.
-  let pane: { title: string; icon: typeof House; node: ReactNode } | null = null;
+  // The sidebar's lower section is a pure function of the route: each view
+  // names its own secondary surface. The section fetches its own data
+  // (shared TanStack cache keys keep it in agreement with the main view),
+  // so no state is drilled down from here.
+  let section: { title: string; node: ReactNode } | null = null;
   if (route.name === "home") {
-    pane = { title: "Home", icon: House, node: <HomePane onOpen={openIssue} /> };
+    section = { title: "Home", node: <HomePane onOpen={openIssue} /> };
   } else if (route.name === "search") {
-    pane = {
-      title: "Search",
-      icon: Search,
-      node: <SearchPane q={route.q} onSearch={openSearch} />,
-    };
+    section = { title: "Search", node: <SearchPane q={route.q} onSearch={openSearch} /> };
   } else if (route.name === "board") {
-    pane = { title: "Board", icon: Columns3, node: <BoardPane /> };
+    section = { title: "Board", node: <BoardPane /> };
   } else if (route.name === "issues" || route.name === "issue" || route.name === "new-issue") {
-    // An open issue keeps the filters pane: the list is one back away. The
+    // An open issue keeps the filters: the list is one back away. The
     // composer does too — it is one back away from the same list.
     const q = route.name === "issues" ? route.q : null;
-    pane = {
-      title: "Issues",
-      icon: ListTodo,
-      node: <IssuesPane q={q} onFilter={filterIssues} />,
-    };
+    section = { title: "Issues", node: <IssuesPane q={q} onFilter={filterIssues} /> };
   } else if (route.name === "docs") {
-    pane = {
+    section = {
       title: "Docs",
-      icon: FileText,
       node: (
         <DocsPane
           p={route.p}
@@ -291,44 +287,46 @@ export function AppShell() {
         />
       ),
     };
+  } else if (route.name === "timeline") {
+    section = { title: "Timeline", node: <TimelinePane seq={route.seq ?? null} /> };
+  } else if (route.name === "roadmap") {
+    section = { title: "Roadmap", node: <RoadmapPane /> };
+  } else if (route.name === "gantt") {
+    section = { title: "Gantt", node: <GanttPane /> };
   } else if (route.name === "settings") {
-    pane = { title: "Settings", icon: Settings, node: <SettingsPane /> };
+    section = { title: "Settings", node: <SettingsPane /> };
   }
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden bg-app text-zinc-200">
+    <div className="flex h-dvh flex-col overflow-hidden bg-app text-ink">
       <div className="flex min-h-0 flex-1">
-        <ActivityBar route={route} onNavigate={navigate} onNewIssue={openNewIssue} />
-        {/* The provider spans both pane and main: hidden board columns are
-            view state the two surfaces share, not a property of either. */}
+        {/* The provider spans both sidebar and main: hidden board columns
+            are view state the two surfaces share, not a property of either. */}
         <BoardColumnsProvider>
-          {pane ? (
-            <PaneFrame
-              mode={paneMode}
-              width={paneWidth}
-              title={pane.title}
-              icon={pane.icon}
-              onInteract={paneInteract}
-              onLeave={paneLeave}
-              onCollapse={togglePane}
-              onResizeStart={onResizeStart}
-              onResize={setPaneWidth}
-              onResizeEnd={onResizeEnd}
-            >
-              {pane.node}
-            </PaneFrame>
-          ) : null}
-          <main
-            onPointerEnter={scheduleSlim}
-            onFocusCapture={scheduleSlim}
-            className="flex min-w-0 flex-1 flex-col"
-          >
+         <GanttOptionsProvider>
+          <RoadmapOptionsProvider>
+          <Sidebar
+            route={route}
+            mode={sidebarMode}
+            width={sidebarWidth}
+            section={section}
+            onNavigate={navigate}
+            onNewIssue={openNewIssue}
+            onOpenPalette={() => setPaletteOpen(true)}
+            onToggle={toggleSidebar}
+            onResizeStart={() => undefined}
+            onResize={setSidebarWidth}
+            onResizeEnd={onResizeEnd}
+          />
+          {/* `relative` so the issue panel can sit over the view without
+              taking the list off screen. */}
+          <main className="relative flex min-w-0 flex-1 flex-col">
             {route.name === "home" ? (
               <HomeView conn={conn} onOpen={openIssue} onSearch={openSearch} />
             ) : null}
             {route.name === "board" ? <BoardView onOpen={openIssue} /> : null}
             {route.name === "issues" ? (
-              <IssuesView q={route.q} onOpen={openIssue} />
+              <IssuesView q={route.q} starred={route.starred === true} onOpen={openIssue} />
             ) : null}
             {route.name === "docs" ? (
               <DocsView
@@ -339,10 +337,44 @@ export function AppShell() {
               />
             ) : null}
             {route.name === "search" ? <SearchView q={route.q} onOpen={openIssue} /> : null}
-            {route.name === "issue" ? <IssueDetailView id={route.id} /> : null}
-            {route.name === "new-issue" ? <NewIssueView onCreated={openIssue} /> : null}
+            {route.name === "timeline" ? (
+              <TimelineView
+                seq={route.seq ?? null}
+                onOpen={openIssue}
+                onSeek={(seq) => navigate({ name: "timeline", seq, issue: route.issue })}
+              />
+            ) : null}
+            {route.name === "roadmap" ? <RoadmapView onOpen={openIssue} /> : null}
+            {route.name === "gantt" ? <GanttView onOpen={openIssue} /> : null}
+            {route.name === "issue" ? (
+              <IssueDetailView
+                id={route.id}
+                from={peekHost(route)}
+                onCollapse={() => navigate(withPeek(route, route.id))}
+              />
+            ) : null}
+            {/* A created issue opens as the page the composer just became —
+                the panel is for triaging a list, not for filling one in. */}
+            {route.name === "new-issue" ? (
+              <NewIssueView onCreated={(id) => navigate({ name: "issue", id, from: "issues" })} />
+            ) : null}
             {route.name === "settings" ? <SettingsView /> : null}
+
+            {peekId !== null ? (
+              <IssuePeek
+                key={peekId}
+                id={peekId}
+                route={route}
+                onClose={closePeek}
+                onExpand={() => expandPeek(peekId)}
+                onStep={stepPeekTo}
+                canStepBack={peekIndex > 0}
+                canStepForward={peekIndex >= 0 && peekIndex < peekList.length - 1}
+              />
+            ) : null}
           </main>
+          </RoadmapOptionsProvider>
+         </GanttOptionsProvider>
         </BoardColumnsProvider>
       </div>
       <StatusBar conn={conn} />
@@ -350,6 +382,7 @@ export function AppShell() {
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
         onNavigate={navigate}
+        onOpenIssue={openIssue}
         onNewIssue={openNewIssue}
         onOpenDoc={previewDoc}
       />
