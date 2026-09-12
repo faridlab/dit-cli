@@ -553,6 +553,7 @@ fn issue(cmd: Issue, me: &str) -> Result<ExitCode, DitError> {
                 estimate,
                 sprint: None,
                 due: None,
+                start: None,
                 blocked_by: vec![],
                 body: body.unwrap_or_default(),
                 // The number is facade-owned (ADR 0007): numbering policy
@@ -733,6 +734,7 @@ fn parse_patch(fields: &[String]) -> Result<FieldPatch, String> {
             "labels" => patch.labels = Some(split_list(value)),
             "sprint" => patch.sprint = Some(value.to_owned()),
             "due" => patch.due = Some(value.to_owned()),
+            "start" => patch.start = Some(value.to_owned()),
             "estimate" => {
                 patch.estimate = Some(
                     value

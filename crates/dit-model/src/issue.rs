@@ -111,6 +111,10 @@ pub struct Issue {
     pub updated: String,
     /// `YYYY-MM-DD`, or None.
     pub due: Option<String>,
+    /// When the work is planned to begin — `YYYY-MM-DD`, or None. Optional
+    /// on purpose: most issues never need one, and a scheduled bar can be
+    /// inferred from `due` and the estimate without writing anything back.
+    pub start: Option<String>,
     pub blocked_by: Vec<IssueId>,
     /// The markdown body below the frontmatter.
     pub body: String,
@@ -134,6 +138,7 @@ pub struct IssueDraft {
     pub estimate: Option<u32>,
     pub sprint: Option<String>,
     pub due: Option<String>,
+    pub start: Option<String>,
     pub blocked_by: Vec<IssueId>,
     pub body: String,
 }
@@ -161,6 +166,7 @@ pub struct FieldPatch {
     pub estimate: Option<u32>,
     pub sprint: Option<String>,
     pub due: Option<String>,
+    pub start: Option<String>,
     pub blocked_by: Option<Vec<IssueId>>,
 }
 
@@ -186,6 +192,7 @@ impl FieldPatch {
             (self.estimate.is_some(), "estimate"),
             (self.sprint.is_some(), "sprint"),
             (self.due.is_some(), "due"),
+            (self.start.is_some(), "start"),
             (self.blocked_by.is_some(), "blocked_by"),
         ] {
             if present {
@@ -237,6 +244,9 @@ impl Issue {
         if let Some(d) = &patch.due {
             self.due = Some(d.clone());
         }
+        if let Some(d) = &patch.start {
+            self.start = Some(d.clone());
+        }
         if let Some(b) = &patch.blocked_by {
             self.blocked_by = b.clone();
         }
@@ -266,6 +276,7 @@ mod tests {
             created: "2026-08-16T09:12:00Z".into(),
             updated: "2026-08-16T11:40:00Z".into(),
             due: None,
+            start: None,
             blocked_by: vec![],
             body: "## Context\n\nUsers on 3G get logged out.".into(),
         }

@@ -111,3 +111,27 @@ mod tests {
         assert_eq!(back, e);
     }
 }
+
+/// A day in the activity histogram: how many field changes landed on it.
+/// `day` is a `YYYY-MM-DD` string in UTC, the same calendar the timestamps
+/// are written in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DayCount {
+    pub day: String,
+    pub count: usize,
+}
+
+/// What changed between a point in history and now, counted rather than
+/// listed — the "semantic diff" of DESIGN.md §14.3c. Every number here is
+/// derived from `field_events` on read; none of it is stored.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangeSummary {
+    /// Issues with at least one field change after the cutoff.
+    pub touched: usize,
+    /// Issues whose first recorded event is after the cutoff — born since.
+    pub created: usize,
+    /// Issues that entered a terminal status after the cutoff.
+    pub finished: usize,
+    /// Issues whose priority changed after the cutoff.
+    pub reprioritized: usize,
+}

@@ -30,6 +30,7 @@ fn draft(title: &str) -> IssueDraft {
         estimate: Some(3),
         sprint: None,
         due: None,
+        start: None,
         blocked_by: vec![],
         body: "## Context\n\nIt breaks.".to_owned(),
     }

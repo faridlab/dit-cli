@@ -22,7 +22,7 @@
 
 use std::path::Path;
 
-use dit_model::{Comment, FieldEvent, Issue, IssueId, StoredFieldEvent};
+use dit_model::{ChangeSummary, Comment, DayCount, FieldEvent, Issue, IssueId, StoredFieldEvent};
 use dit_query::{compile, Compiled, Query, SqlVal};
 use rusqlite::{params, Connection, OptionalExtension};
 use time::OffsetDateTime;
@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS issues (
   estimate  INTEGER,
   sprint    TEXT,
   due       TEXT,
+  start     TEXT,
   created   TEXT NOT NULL,
   updated   TEXT NOT NULL,
   body      TEXT NOT NULL
@@ -128,7 +129,7 @@ END;
 /// Bumped whenever the schema below changes shape. The index is disposable —
 /// an on-disk file stamped with an older version is dropped and rebuilt from
 /// git rather than migrated in place (§6: SQLite is only an index).
-const INDEX_VERSION: i64 = 2;
+const INDEX_VERSION: i64 = 3;
 
 /// The default row cap when a query names no limit. A cap exists because the
 /// API serves people, not exports; a workspace that genuinely holds more
@@ -225,8 +226,8 @@ impl Index {
         )?;
         tx.execute(
             "INSERT INTO issues (id, number, path, blob_sha, short_ref, title, type, status, \
-             priority, reporter, epic, estimate, sprint, due, created, updated, body) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+             priority, reporter, epic, estimate, sprint, due, start, created, updated, body) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
             params![
                 issue.id.as_str(),
                 issue.number,
@@ -242,6 +243,7 @@ impl Index {
                 issue.estimate,
                 issue.sprint,
                 issue.due,
+                issue.start,
                 issue.created,
                 issue.updated,
                 issue.body,
@@ -392,7 +394,7 @@ impl Index {
             .conn
             .query_row(
                 "SELECT path, blob_sha, title, type, status, priority, reporter, epic, estimate, \
-                 sprint, due, created, updated, body, number FROM issues WHERE id = ?1",
+                 sprint, due, start, created, updated, body, number FROM issues WHERE id = ?1",
                 params![id.as_str()],
                 issue_columns,
             )
@@ -411,7 +413,7 @@ impl Index {
         let limit = compiled.limit.unwrap_or(DEFAULT_LIMIT) as i64;
         let mut sql = format!(
             "SELECT id, path, blob_sha, title, type, status, priority, reporter, epic, estimate, \
-             sprint, due, created, updated, body, number FROM issues WHERE {}",
+             sprint, due, start, created, updated, body, number FROM issues WHERE {}",
             compiled.where_sql
         );
         if compiled.order_sql.is_empty() {
@@ -558,6 +560,179 @@ impl Index {
         Ok(out)
     }
 
+    /// One page of the workspace's field history, newest first. `before_seq`
+    /// is the cursor: pass the `seq` of the last row you received to get the
+    /// next page. Paging by `seq` rather than by offset means a backfill
+    /// landing mid-scroll cannot make rows repeat or vanish.
+    pub fn activity(
+        &self,
+        before_seq: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<StoredFieldEvent>, IndexError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT seq, issue_id, field, old_value, new_value, author, commit_sha, parent_sha, \
+                    ts, source \
+             FROM field_events \
+             WHERE (?1 IS NULL OR seq < ?1) \
+             ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![before_seq, limit as i64], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+                r.get::<_, String>(7)?,
+                r.get::<_, String>(8)?,
+                r.get::<_, String>(9)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (seq, issue_id, field, old, new, author, commit, parent, ts, source_raw) = row?;
+            let source = dit_model::EventSource::parse(&source_raw).ok_or_else(|| {
+                IndexError::Corrupt(format!("unknown event source `{source_raw}`"))
+            })?;
+            out.push(StoredFieldEvent {
+                seq,
+                issue_id,
+                field,
+                old_value: old,
+                new_value: new,
+                author,
+                commit_sha: commit,
+                parent_sha: parent,
+                ts,
+                source,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Events per calendar day from `since_day` (a `YYYY-MM-DD`) onward,
+    /// oldest first. This is the one place a timestamp is allowed to decide
+    /// anything, and only because "which day did this land on" is a question
+    /// about wall clocks by definition.
+    pub fn activity_days(&self, since_day: &str) -> Result<Vec<DayCount>, IndexError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT substr(ts, 1, 10) AS day, COUNT(*) FROM field_events \
+             WHERE substr(ts, 1, 10) >= ?1 GROUP BY day ORDER BY day",
+        )?;
+        let rows = stmt.query_map(params![since_day], |r| {
+            Ok(DayCount {
+                day: r.get::<_, String>(0)?,
+                count: r.get::<_, i64>(1)? as usize,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// The status of every issue that existed at `cutoff_seq`, as it stood
+    /// then (DESIGN.md §14.3b). Three things make this correct, and all three
+    /// are lessons from running it:
+    ///
+    ///  - The latest `seq` decides, never the latest timestamp: a merge
+    ///    commit diffed per parent produces rows with identical timestamps,
+    ///    and ordering by those returns two contradictory current values.
+    ///  - `source = 'file'` only: mixing file and derived events into one
+    ///    status timeline silently applies last-writer-wins, whereas
+    ///    effective status is `resolve(file, derived)`.
+    ///  - Issues not yet born simply have no events at or below the cutoff,
+    ///    so they never appear.
+    pub fn status_as_of(&self, cutoff_seq: i64) -> Result<Vec<(String, String)>, IndexError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT e.issue_id, e.new_value FROM field_events e \
+             WHERE e.field = 'status' AND e.source = 'file' AND e.seq <= ?1 \
+               AND e.seq = (SELECT MAX(i.seq) FROM field_events i \
+                            WHERE i.issue_id = e.issue_id AND i.field = 'status' \
+                              AND i.source = 'file' AND i.seq <= ?1) \
+             ORDER BY e.issue_id",
+        )?;
+        let rows = stmt.query_map(params![cutoff_seq], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, status) = row?;
+            // A status set to nothing is a deleted issue, not a board entry.
+            if let Some(status) = status {
+                out.push((id, status));
+            }
+        }
+        Ok(out)
+    }
+
+    /// What changed after `cutoff_seq`, counted. `terminal_statuses` names
+    /// what this workspace calls done — the workflow is configurable, so the
+    /// caller supplies it rather than this layer guessing.
+    pub fn changes_since(
+        &self,
+        cutoff_seq: i64,
+        terminal_statuses: &[String],
+    ) -> Result<ChangeSummary, IndexError> {
+        let touched: i64 = self.conn.query_row(
+            "SELECT COUNT(DISTINCT issue_id) FROM field_events WHERE seq > ?1",
+            params![cutoff_seq],
+            |r| r.get(0),
+        )?;
+        // Born since: every event this issue has is after the cutoff.
+        let created: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM (SELECT issue_id FROM field_events \
+             GROUP BY issue_id HAVING MIN(seq) > ?1)",
+            params![cutoff_seq],
+            |r| r.get(0),
+        )?;
+        let reprioritized: i64 = self.conn.query_row(
+            "SELECT COUNT(DISTINCT issue_id) FROM field_events \
+             WHERE field = 'priority' AND seq > ?1",
+            params![cutoff_seq],
+            |r| r.get(0),
+        )?;
+        let mut finished = 0i64;
+        if !terminal_statuses.is_empty() {
+            // One parameter per status: a workflow has a handful of them, and
+            // building the list by hand keeps the values bound rather than
+            // interpolated.
+            let placeholders = (2..terminal_statuses.len() + 2)
+                .map(|n| format!("?{n}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "SELECT COUNT(DISTINCT issue_id) FROM field_events \
+                 WHERE field = 'status' AND seq > ?1 AND new_value IN ({placeholders})"
+            );
+            let mut values: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(cutoff_seq)];
+            for status in terminal_statuses {
+                values.push(Box::new(status.clone()));
+            }
+            let refs: Vec<&dyn rusqlite::ToSql> = values.iter().map(|v| v.as_ref()).collect();
+            finished = self.conn.query_row(&sql, refs.as_slice(), |r| r.get(0))?;
+        }
+        Ok(ChangeSummary {
+            touched: touched as usize,
+            created: created as usize,
+            finished: finished as usize,
+            reprioritized: reprioritized as usize,
+        })
+    }
+
+    /// The last `seq` the index has recorded — "now" for time travel. Zero
+    /// when nothing has been indexed yet.
+    pub fn max_event_seq(&self) -> Result<i64, IndexError> {
+        Ok(self
+            .conn
+            .query_row("SELECT COALESCE(MAX(seq), 0) FROM field_events", [], |r| {
+                r.get(0)
+            })?)
+    }
+
     /// Stored events for one issue (optionally one field), in event order.
     /// Ordered by `seq` — the position in the commit graph — because merge
     /// commits carry several identical timestamps and any timestamp ordering
@@ -697,6 +872,7 @@ struct IssueCols {
     estimate: Option<i64>,
     sprint: Option<String>,
     due: Option<String>,
+    start: Option<String>,
     created: String,
     updated: String,
     body: String,
@@ -718,10 +894,11 @@ fn issue_columns(r: &rusqlite::Row<'_>) -> rusqlite::Result<IssueCols> {
         estimate: r.get(8)?,
         sprint: r.get(9)?,
         due: r.get(10)?,
-        created: r.get(11)?,
-        updated: r.get(12)?,
-        body: r.get(13)?,
-        number: r.get::<_, Option<i64>>(14)?.map(|n| n as u32),
+        start: r.get(11)?,
+        created: r.get(12)?,
+        updated: r.get(13)?,
+        body: r.get(14)?,
+        number: r.get::<_, Option<i64>>(15)?.map(|n| n as u32),
     })
 }
 
@@ -745,11 +922,12 @@ fn issue_columns_with_skip(r: &rusqlite::Row<'_>, n: usize) -> IssueCols {
         estimate: r.get(n + 8).unwrap_or(None),
         sprint: get_opt(9).unwrap_or(None),
         due: get_opt(10).unwrap_or(None),
-        created: get(11).unwrap_or_default(),
-        updated: get(12).unwrap_or_default(),
-        body: get(13).unwrap_or_default(),
+        start: get_opt(11).unwrap_or(None),
+        created: get(12).unwrap_or_default(),
+        updated: get(13).unwrap_or_default(),
+        body: get(14).unwrap_or_default(),
         number: r
-            .get::<_, Option<i64>>(n + 14)
+            .get::<_, Option<i64>>(n + 15)
             .unwrap_or(None)
             .map(|n| n as u32),
     }
@@ -795,6 +973,7 @@ fn hydrate(
             created: cols.created,
             updated: cols.updated,
             due: cols.due,
+            start: cols.start,
             blocked_by: Vec::new(),
             body: cols.body,
         },
@@ -826,6 +1005,7 @@ mod tests {
             created: "2026-08-16T09:12:00Z".into(),
             updated: "2026-08-16T11:40:00Z".into(),
             due: None,
+            start: None,
             blocked_by: vec![],
             body: "Users on 3G get logged out.".into(),
         }
@@ -1042,6 +1222,154 @@ mod tests {
 
         idx.remove_comment(&late.id).unwrap();
         assert_eq!(idx.comments_for(&issue.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn activity_pages_newest_first_and_hands_back_a_cursor() {
+        let mut idx = Index::in_memory().unwrap();
+        for n in 1..=5 {
+            idx.record_field_events(&[event(
+                "status",
+                Some("todo"),
+                Some("in_progress"),
+                &format!("c{n}"),
+                &format!("c{}", n - 1),
+            )])
+            .unwrap();
+        }
+
+        let first = idx.activity(None, 2).unwrap();
+        assert_eq!(first.len(), 2);
+        // Newest first: a feed reads downward from now.
+        assert!(first[0].seq > first[1].seq);
+
+        let cursor = first[1].seq;
+        let second = idx.activity(Some(cursor), 2).unwrap();
+        assert_eq!(second.len(), 2);
+        assert!(second[0].seq < cursor);
+
+        // The whole history is reachable by walking the cursor.
+        let all = idx.activity(None, 100).unwrap();
+        assert_eq!(all.len(), 5);
+    }
+
+    #[test]
+    fn the_histogram_counts_events_per_day() {
+        let mut idx = Index::in_memory().unwrap();
+        let mut at = |ts: &str, commit: &str| {
+            let mut e = event("status", Some("todo"), Some("done"), commit, "");
+            e.ts = ts.into();
+            idx.record_field_events(&[e]).unwrap();
+        };
+        at("2026-09-01T09:00:00Z", "c1");
+        at("2026-09-01T23:59:59Z", "c2");
+        at("2026-09-03T10:00:00Z", "c3");
+
+        let days = idx.activity_days("2026-09-01").unwrap();
+        assert_eq!(
+            days,
+            vec![
+                DayCount {
+                    day: "2026-09-01".into(),
+                    count: 2
+                },
+                DayCount {
+                    day: "2026-09-03".into(),
+                    count: 1
+                },
+            ]
+        );
+
+        // The window is a floor, not a filter on everything.
+        assert_eq!(idx.activity_days("2026-09-02").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn status_as_of_reads_the_board_at_a_point_in_history() {
+        let mut idx = Index::in_memory().unwrap();
+        let one = "01K3M9ZXQ2R7VN8P4TDBCEFGHJ";
+        let two = "01K3M5QQQQ0000000000ZZZZZZ";
+        let mut push = |issue: &str, old: Option<&str>, new: &str, commit: &str| {
+            let mut e = event("status", old, Some(new), commit, "");
+            e.issue_id = issue.into();
+            idx.record_field_events(&[e]).unwrap();
+        };
+        push(one, None, "todo", "c1");
+        push(two, None, "todo", "c2");
+        push(one, Some("todo"), "in_progress", "c3");
+        push(one, Some("in_progress"), "done", "c4");
+
+        // After the second commit only two issues exist, both todo.
+        let early = idx.status_as_of(2).unwrap();
+        assert_eq!(early.len(), 2);
+        assert_eq!(early.iter().filter(|(_, s)| s == "todo").count(), 2);
+
+        // After the third, one has moved on.
+        let mid: Vec<_> = idx.status_as_of(3).unwrap();
+        assert_eq!(
+            mid.iter()
+                .find(|(id, _)| id == one)
+                .map(|(_, s)| s.as_str()),
+            Some("in_progress")
+        );
+
+        // Before anything happened, the board is empty — issues that were
+        // not yet born must not appear.
+        assert!(idx.status_as_of(0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn status_as_of_ignores_derived_events() {
+        // §14.3: mixing `file` and `derived` into one status timeline applies
+        // last-writer-wins, which is not how effective status is resolved.
+        let mut idx = Index::in_memory().unwrap();
+        let mut file = event("status", None, Some("todo"), "c1", "");
+        file.source = EventSource::File;
+        let mut derived = event("status", Some("todo"), Some("done"), "c2", "");
+        derived.source = EventSource::Derived;
+        idx.record_field_events(&[file, derived]).unwrap();
+
+        let board = idx.status_as_of(99).unwrap();
+        assert_eq!(board.len(), 1);
+        assert_eq!(board[0].1, "todo");
+    }
+
+    #[test]
+    fn changes_since_counts_what_a_person_would_call_progress() {
+        let mut idx = Index::in_memory().unwrap();
+        let old_issue = "01K3M9ZXQ2R7VN8P4TDBCEFGHJ";
+        let new_issue = "01K3M5QQQQ0000000000ZZZZZZ";
+        let mut push = |issue: &str, field: &str, old: Option<&str>, new: &str, commit: &str| {
+            let mut e = event(field, old, Some(new), commit, "");
+            e.issue_id = issue.into();
+            idx.record_field_events(&[e]).unwrap();
+        };
+        push(old_issue, "status", None, "todo", "c1"); // seq 1 — before the cutoff
+        push(old_issue, "status", Some("todo"), "done", "c2"); // seq 2
+        push(old_issue, "priority", Some("p2"), "p1", "c3"); // seq 3
+        push(new_issue, "status", None, "todo", "c4"); // seq 4 — born after
+
+        let since = idx.changes_since(1, &["done".to_string()]).unwrap();
+        assert_eq!(since.touched, 2);
+        assert_eq!(
+            since.created, 1,
+            "only the issue whose first event is later"
+        );
+        assert_eq!(since.finished, 1);
+        assert_eq!(since.reprioritized, 1);
+
+        // From the very beginning, everything counts as new.
+        let all = idx.changes_since(0, &["done".to_string()]).unwrap();
+        assert_eq!(all.created, 2);
+    }
+
+    #[test]
+    fn max_event_seq_reports_the_end_of_history() {
+        let mut idx = Index::in_memory().unwrap();
+        assert_eq!(idx.max_event_seq().unwrap(), 0);
+        idx.record_field_events(&[event("status", None, Some("todo"), "c1", "")])
+            .unwrap();
+        assert_eq!(idx.max_event_seq().unwrap(), 1);
     }
 
     #[test]

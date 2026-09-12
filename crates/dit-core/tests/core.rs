@@ -39,6 +39,7 @@ fn draft(title: &str) -> IssueDraft {
         estimate: Some(3),
         sprint: None,
         due: None,
+        start: None,
         blocked_by: vec![],
         number: None,
         body: "Users get logged out.".into(),
@@ -368,6 +369,7 @@ fn draft_with(title: &str, body: &str) -> IssueDraft {
         estimate: Some(3),
         sprint: None,
         due: None,
+        start: None,
         blocked_by: vec![],
         number: None,
         body: body.into(),
@@ -1109,4 +1111,121 @@ fn list_docs_skips_names_the_editor_cannot_address() {
     let docs = dit.list_docs();
     let paths: Vec<&str> = docs.iter().map(|d| d.path.as_str()).collect();
     assert_eq!(paths, vec!["docs/good.md"]);
+}
+
+#[test]
+fn the_activity_feed_and_time_travel_read_the_whole_workspace() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+
+    let mut tx = dit.transaction("farid").unwrap();
+    let first = tx.create_issue(draft("Login timeout")).unwrap();
+    tx.commit("create the first issue").unwrap();
+    // The board as it stood right after the first issue was created.
+    let after_first = dit.activity(None, 10).unwrap()[0].seq;
+
+    let mut tx = dit.transaction("budi").unwrap();
+    let second = tx
+        .create_issue(draft("Merge driver drops changes"))
+        .unwrap();
+    tx.commit("create the second issue").unwrap();
+
+    let mut tx = dit.transaction("budi").unwrap();
+    tx.set_fields(
+        &first,
+        FieldPatch {
+            status: Some("done".into()),
+            ..FieldPatch::default()
+        },
+    )
+    .unwrap();
+    tx.commit("finish the first issue").unwrap();
+
+    // The feed spans issues, newest first, and pages by cursor.
+    let page = dit.activity(None, 2).unwrap();
+    assert_eq!(page.len(), 2);
+    assert!(page[0].seq > page[1].seq, "newest first");
+    let next = dit.activity(Some(page[1].seq), 50).unwrap();
+    assert!(
+        next.iter().all(|e| e.seq < page[1].seq),
+        "the cursor never repeats a row"
+    );
+    let ids: std::collections::HashSet<_> = dit
+        .activity(None, 100)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.issue_id)
+        .collect();
+    assert!(ids.contains(first.as_str()) && ids.contains(second.as_str()));
+
+    // Now: two issues, one of them finished.
+    let now = dit.activity_summary(None, 365).unwrap();
+    assert_eq!(now.now.done, 1);
+    assert_eq!(now.now.todo, 1);
+    assert_eq!(now.seq, now.max_seq, "no cutoff means the end of history");
+
+    // Then: only the first issue existed, and it was not done yet.
+    let then = dit.activity_summary(Some(after_first), 365).unwrap();
+    assert_eq!(then.at_cutoff.todo, 1);
+    assert_eq!(then.at_cutoff.done, 0);
+    assert_eq!(then.now.done, 1, "now is always now, whatever the cutoff");
+    assert_eq!(then.since.created, 1, "the second issue was born after");
+    assert_eq!(then.since.finished, 1);
+    assert!(then.since.touched >= 2);
+
+    // The histogram covers the days work actually happened on.
+    assert!(!now.days.is_empty());
+    assert_eq!(
+        now.days.iter().map(|d| d.count).sum::<usize>(),
+        dit.activity(None, 500).unwrap().len()
+    );
+
+    // A cutoff past the end is clamped rather than inventing a future.
+    let clamped = dit.activity_summary(Some(9_999), 365).unwrap();
+    assert_eq!(clamped.seq, clamped.max_seq);
+}
+
+#[test]
+fn a_start_date_is_stored_queried_and_read_back() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+
+    let mut tx = dit.transaction("farid").unwrap();
+    let id = tx
+        .create_issue(draft("Index rebuild after force push"))
+        .unwrap();
+    tx.commit("create").unwrap();
+
+    let mut tx = dit.transaction("farid").unwrap();
+    tx.set_fields(
+        &id,
+        FieldPatch {
+            start: Some("2026-09-20".into()),
+            due: Some("2026-09-30".into()),
+            ..FieldPatch::default()
+        },
+    )
+    .unwrap();
+    tx.commit("schedule it").unwrap();
+
+    // Read path: the index carries it, not just the file.
+    let stored = dit.get(id.as_str()).unwrap().unwrap();
+    assert_eq!(stored.issue.start.as_deref(), Some("2026-09-20"));
+    assert_eq!(stored.issue.due.as_deref(), Some("2026-09-30"));
+
+    // Query path: the field is a real column the index can filter on. DQL
+    // date comparisons take relative dates (`start <= +7d`), which the query
+    // crate pins against an injected clock; here the point is only that the
+    // field reached the index at all.
+    assert_eq!(dit.query("start <= +3650d", None).unwrap().len(), 1);
+
+    // History path: scheduling is a change like any other, so the Gantt's
+    // drag is auditable rather than silent.
+    let events = dit.history(&id, Some("start")).unwrap();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].new_value.as_deref(), Some("2026-09-20"));
+    assert_eq!(events[0].author, "farid");
+
+    // The tree is clean: one commit wrote both fields.
+    assert!(!dit.status().dirty);
 }

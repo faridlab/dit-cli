@@ -4,6 +4,7 @@
 //! an index rebuild must never stall the async runtime other requests
 //! share.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State, WebSocketUpgrade};
@@ -11,15 +12,15 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use dit_core::{Dit, DitError};
+use dit_core::{Dit, DitError, Issue};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tokio::sync::broadcast;
 
 use crate::dto::{
-    self, BoardColumnDto, BoardDto, BoardIssueDto, CommentDto, DocBodyDto, DocEntryDto,
-    FieldEventDto, IssueDto, IssueListDto, RenderInputDto, RenderOutputDto, SchemaDto, SettingsDto,
-    StatusInfo,
+    self, ActivityPageDto, ActivitySummaryDto, BoardColumnDto, BoardDto, BoardIssueDto, CommentDto,
+    DocBodyDto, DocEntryDto, FieldEventDto, IssueDto, IssueListDto, RenderInputDto,
+    RenderOutputDto, SchemaDto, SettingsDto, StatusInfo,
 };
 use crate::state::AppState;
 
@@ -51,6 +52,8 @@ pub fn app(state: Arc<AppState>) -> Router {
             get(get_doc).put(put_doc).delete(delete_doc),
         )
         .route("/api/markdown/render", post(render_markdown))
+        .route("/api/activity", get(get_activity))
+        .route("/api/activity/summary", get(get_activity_summary))
         .route("/api/events", get(events))
         .fallback(serve_uri)
         .layer(axum::middleware::from_fn_with_state(
@@ -326,6 +329,7 @@ async fn create_issue(
             estimate: input.estimate,
             sprint: None,
             due: None,
+            start: None,
             blocked_by: Vec::new(),
             body: input.body,
         };
@@ -538,6 +542,75 @@ async fn get_history(
     })
     .await?;
     Ok(Json(events))
+}
+
+#[derive(Deserialize)]
+struct ActivityParams {
+    /// Cursor: return rows older than this `seq`.
+    before_seq: Option<i64>,
+    limit: Option<usize>,
+}
+
+/// The workspace's field history, newest first. Each row carries enough of
+/// its issue to render a feed line without a request per row.
+async fn get_activity(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ActivityParams>,
+) -> Result<Json<ActivityPageDto>, ApiError> {
+    let limit = params.limit.unwrap_or(100).clamp(1, 500);
+    let before = params.before_seq;
+    let page = read_dit(&state, move |dit| {
+        let events = dit.activity(before, limit).map_err(ServerError::Dit)?;
+        // A page mentions far fewer issues than it has rows, so resolve each
+        // issue once and reuse it.
+        let mut seen: HashMap<String, Option<Issue>> = HashMap::new();
+        for event in &events {
+            if !seen.contains_key(&event.issue_id) {
+                let found = dit
+                    .get(&event.issue_id)
+                    .map_err(ServerError::Dit)?
+                    .map(|hit| hit.issue);
+                seen.insert(event.issue_id.clone(), found);
+            }
+        }
+        // Only a full page can have more behind it; a short one is the end.
+        let next_before_seq = (events.len() == limit)
+            .then(|| events.last().map(|e| e.seq))
+            .flatten();
+        Ok(ActivityPageDto {
+            events: events
+                .iter()
+                .map(|e| dto::activity_event_dto(e, seen.get(&e.issue_id).and_then(Option::as_ref)))
+                .collect(),
+            next_before_seq,
+        })
+    })
+    .await?;
+    Ok(Json(page))
+}
+
+#[derive(Deserialize)]
+struct SummaryParams {
+    /// Where to stand in history. Absent means now.
+    seq: Option<i64>,
+    /// How many days of the histogram to return, counting back from today.
+    days: Option<u32>,
+}
+
+/// The board then, the board now, and the difference — DESIGN.md §14.3.
+async fn get_activity_summary(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<SummaryParams>,
+) -> Result<Json<ActivitySummaryDto>, ApiError> {
+    let days = params.days.unwrap_or(56).clamp(1, 366);
+    let seq = params.seq;
+    let summary = read_dit(&state, move |dit| {
+        dit.activity_summary(seq, days)
+            .map(|s| dto::activity_summary_dto(&s))
+            .map_err(ServerError::Dit)
+    })
+    .await?;
+    Ok(Json(summary))
 }
 
 async fn get_board(State(state): State<Arc<AppState>>) -> Result<Json<BoardDto>, ApiError> {

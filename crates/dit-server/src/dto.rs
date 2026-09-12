@@ -5,8 +5,8 @@
 //! a wire change and a docs change never happen in separate universes.
 
 use dit_core::{
-    render_markdown, Comment, DataLayout, DocEntry, FieldPatch, IndexedIssue, Issue, IssueKind,
-    Numbering, Priority, StoredFieldEvent, Workflow, WorkflowStatus,
+    render_markdown, ActivitySummary, Comment, DataLayout, DocEntry, FieldPatch, IndexedIssue,
+    Issue, IssueKind, Numbering, Priority, StoredFieldEvent, Workflow, WorkflowStatus,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -96,6 +96,10 @@ pub struct IssueDto {
     pub estimate: Option<u32>,
     pub sprint: Option<String>,
     pub due: Option<String>,
+    /// When the work is planned to begin, `YYYY-MM-DD`. Absent for most
+    /// issues — the plan views infer a bar from `due` and the estimate
+    /// rather than writing one back.
+    pub start: Option<String>,
     pub created: String,
     pub updated: String,
     pub body: String,
@@ -123,6 +127,78 @@ pub struct FieldEventDto {
     pub author: String,
     pub ts: String,
     pub commit_sha: String,
+}
+
+/// One row of the workspace activity feed: a field change, plus enough of
+/// the issue to render it without a second request per row.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct ActivityEventDto {
+    pub seq: i64,
+    pub issue_id: String,
+    /// The issue's permanent handle, for opening it from the feed.
+    pub short_ref: String,
+    /// `Some(12)` displays as `#12`; absent until the issue is numbered.
+    pub number: Option<u32>,
+    /// Empty when the issue no longer exists — history outlives its subject.
+    pub title: String,
+    pub field: String,
+    pub old_value: Option<String>,
+    pub new_value: Option<String>,
+    pub author: String,
+    pub ts: String,
+    pub commit_sha: String,
+}
+
+/// A page of the feed. `next_before_seq` is the cursor for the next page,
+/// or absent at the end of history.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct ActivityPageDto {
+    pub events: Vec<ActivityEventDto>,
+    pub next_before_seq: Option<i64>,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct CategoryCountsDto {
+    pub todo: usize,
+    pub doing: usize,
+    pub done: usize,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct DayCountDto {
+    /// `YYYY-MM-DD`, UTC.
+    pub day: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct ChangeSummaryDto {
+    pub touched: usize,
+    pub created: usize,
+    pub finished: usize,
+    pub reprioritized: usize,
+}
+
+/// The workspace then, the workspace now, and what happened in between —
+/// all recomputed from `field_events` on read (invariant 5).
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct ActivitySummaryDto {
+    /// The cutoff this summary was taken at, as a position in the commit
+    /// graph. Dates map to one only through an author's clock; a `seq` is
+    /// exact.
+    pub seq: i64,
+    /// The end of recorded history: the `seq` that means "now".
+    pub max_seq: i64,
+    pub days: Vec<DayCountDto>,
+    pub at_cutoff: CategoryCountsDto,
+    pub now: CategoryCountsDto,
+    pub since: ChangeSummaryDto,
 }
 
 #[derive(Debug, Serialize, TS)]
@@ -230,6 +306,9 @@ pub struct FieldPatchDto {
     #[serde(default)]
     #[ts(optional)]
     pub due: Option<String>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub start: Option<String>,
 }
 
 #[derive(Debug, Deserialize, TS)]
@@ -377,6 +456,7 @@ pub fn issue_dto(issue: &Issue) -> IssueDto {
         estimate: issue.estimate,
         sprint: issue.sprint.clone(),
         due: issue.due.clone(),
+        start: issue.start.clone(),
         created: issue.created.clone(),
         updated: issue.updated.clone(),
         body: issue.body.clone(),
@@ -416,6 +496,52 @@ pub fn field_event_dto(e: &StoredFieldEvent) -> FieldEventDto {
         author: e.author.clone(),
         ts: e.ts.clone(),
         commit_sha: e.commit_sha.clone(),
+    }
+}
+
+pub fn activity_event_dto(e: &StoredFieldEvent, issue: Option<&Issue>) -> ActivityEventDto {
+    ActivityEventDto {
+        seq: e.seq,
+        issue_id: e.issue_id.clone(),
+        short_ref: issue
+            .map(|i| i.id.short_ref().as_str().to_owned())
+            .unwrap_or_else(|| e.issue_id.clone()),
+        number: issue.and_then(|i| i.number),
+        title: issue.map(|i| i.title.clone()).unwrap_or_default(),
+        field: e.field.clone(),
+        old_value: e.old_value.clone(),
+        new_value: e.new_value.clone(),
+        author: e.author.clone(),
+        ts: e.ts.clone(),
+        commit_sha: e.commit_sha.clone(),
+    }
+}
+
+pub fn activity_summary_dto(summary: &ActivitySummary) -> ActivitySummaryDto {
+    let counts = |c: &dit_core::CategoryCounts| CategoryCountsDto {
+        todo: c.todo,
+        doing: c.doing,
+        done: c.done,
+    };
+    ActivitySummaryDto {
+        seq: summary.seq,
+        max_seq: summary.max_seq,
+        days: summary
+            .days
+            .iter()
+            .map(|d| DayCountDto {
+                day: d.day.clone(),
+                count: d.count,
+            })
+            .collect(),
+        at_cutoff: counts(&summary.at_cutoff),
+        now: counts(&summary.now),
+        since: ChangeSummaryDto {
+            touched: summary.since.touched,
+            created: summary.since.created,
+            finished: summary.since.finished,
+            reprioritized: summary.since.reprioritized,
+        },
     }
 }
 
@@ -485,6 +611,7 @@ pub fn to_field_patch(dto: FieldPatchDto) -> Result<FieldPatch, String> {
         estimate: dto.estimate,
         sprint: dto.sprint,
         due: dto.due,
+        start: dto.start,
         blocked_by: None,
     })
 }

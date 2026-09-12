@@ -155,6 +155,7 @@ fn workspace_with_issue(title: &str) -> (dit_core::Dit, tempfile::TempDir) {
         estimate: Some(3),
         sprint: None,
         due: None,
+        start: None,
         blocked_by: Vec::new(),
         body: "body".to_owned(),
     };

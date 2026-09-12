@@ -33,9 +33,10 @@ pub use error::DitError;
 // second dependency — the facade is the only crate delivery names.
 pub use dit_index::IndexedIssue;
 pub use dit_model::{
-    Comment, Config, DataLayout, DerivedSignal, DocEntry, DocPath, DocPathError, FieldPatch, Issue,
-    IssueDraft, IssueId, IssueKind, Numbering, Priority, StoredFieldEvent, Workflow,
-    WorkflowStatus, CONTENT_ROOTS, DOC_ROOTS, GENERATED_INDEX_MARKER,
+    ChangeSummary, Comment, Config, DataLayout, DayCount, DerivedSignal, DocEntry, DocPath,
+    DocPathError, FieldPatch, Issue, IssueDraft, IssueId, IssueKind, Numbering, Priority,
+    StatusCategory, StoredFieldEvent, Workflow, WorkflowStatus, CONTENT_ROOTS, DOC_ROOTS,
+    GENERATED_INDEX_MARKER,
 };
 pub use dit_vcs::{SyncOptions, SyncReport};
 
@@ -483,6 +484,77 @@ impl Dit {
             });
         }
         Ok(Board { columns })
+    }
+
+    /// One page of the whole workspace's field history, newest first.
+    /// `before_seq` is the cursor from the previous page's last row.
+    pub fn activity(
+        &self,
+        before_seq: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<StoredFieldEvent>, DitError> {
+        Ok(self.index.activity(before_seq, limit.clamp(1, 500))?)
+    }
+
+    /// The workspace as it stood at a point in its history, next to how it
+    /// stands now (DESIGN.md §14.3). `cutoff_seq` is a position in the commit
+    /// graph, not a date: a tag or a row in the feed resolves to one exactly,
+    /// while a date only maps to one through an author's clock.
+    ///
+    /// Nothing here is stored. Every number is recomputed from `field_events`
+    /// on each call, which is what makes "the board as of v0.1.0" answerable
+    /// at all (invariant 5).
+    pub fn activity_summary(
+        &self,
+        cutoff_seq: Option<i64>,
+        histogram_days: u32,
+    ) -> Result<ActivitySummary, DitError> {
+        let max_seq = self.index.max_event_seq()?;
+        let cutoff = cutoff_seq.unwrap_or(max_seq).clamp(0, max_seq);
+
+        let terminal: Vec<String> = self
+            .workflow
+            .statuses
+            .iter()
+            .filter(|s| s.category == StatusCategory::Done)
+            .map(|s| s.id.clone())
+            .collect();
+
+        // The histogram is the one place a wall clock decides anything, and
+        // only because "which day did this land on" is a question about
+        // clocks by definition.
+        let floor = OffsetDateTime::now_utc()
+            - time::Duration::days(i64::from(histogram_days.clamp(1, 366)));
+        let since_day = format!(
+            "{:04}-{:02}-{:02}",
+            floor.year(),
+            u8::from(floor.month()),
+            floor.day()
+        );
+
+        Ok(ActivitySummary {
+            seq: cutoff,
+            max_seq,
+            days: self.index.activity_days(&since_day)?,
+            at_cutoff: self.counts_at(cutoff)?,
+            now: self.counts_at(max_seq)?,
+            since: self.index.changes_since(cutoff, &terminal)?,
+        })
+    }
+
+    /// Board counts by workflow category at one point in history. A status
+    /// the workflow no longer defines counts as `todo`: it is work that is
+    /// not finished, and dropping it would silently shrink the board.
+    fn counts_at(&self, seq: i64) -> Result<CategoryCounts, DitError> {
+        let mut counts = CategoryCounts::default();
+        for (_, status) in self.index.status_as_of(seq)? {
+            match self.workflow.status(&status).map(|s| s.category) {
+                Some(StatusCategory::Done) => counts.done += 1,
+                Some(StatusCategory::Doing) => counts.doing += 1,
+                _ => counts.todo += 1,
+            }
+        }
+        Ok(counts)
     }
 
     /// Field history of one issue, oldest first.
@@ -1518,6 +1590,29 @@ const TEMPLATE_STORY: &str = include_str!("../templates/story.md");
 /// A spike is a question with a deadline, not a deliverable - and it ends in
 /// one named outcome, not in time running out.
 const TEMPLATE_SPIKE: &str = include_str!("../templates/spike.md");
+
+/// How many issues sat in each workflow category at a point in history.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CategoryCounts {
+    pub todo: usize,
+    pub doing: usize,
+    pub done: usize,
+}
+
+/// The answer to "what did this workspace look like then, and what has
+/// happened since?" — computed from `field_events`, never stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivitySummary {
+    /// The cutoff this summary was taken at.
+    pub seq: i64,
+    /// The end of recorded history — the `seq` that means "now".
+    pub max_seq: i64,
+    /// Events per day, for the scrubber's density strip.
+    pub days: Vec<DayCount>,
+    pub at_cutoff: CategoryCounts,
+    pub now: CategoryCounts,
+    pub since: ChangeSummary,
+}
 
 /// Render markdown to safe HTML — the only rendering path the UI uses, so
 /// the sanitizer and the wire format can never drift apart.

@@ -95,6 +95,13 @@ pub fn issue_from_document(doc: &Document) -> Result<Issue, IssueParseError> {
         }
         None => None,
     };
+    let start = match scalar(doc, "start")?.filter(|s| !s.is_empty()) {
+        Some(d) => {
+            validate_date(&d).map_err(|e| bad("start", e.to_string()))?;
+            Some(d)
+        }
+        None => None,
+    };
     let blocked_by: Vec<IssueId> = doc
         .get_list("blocked_by")
         .unwrap_or_default()
@@ -119,6 +126,7 @@ pub fn issue_from_document(doc: &Document) -> Result<Issue, IssueParseError> {
         created,
         updated,
         due,
+        start,
         blocked_by,
         body,
     })
@@ -191,6 +199,10 @@ pub fn serialize_new_issue(
     if let Some(d) = &draft.due {
         validate_date(d).map_err(|e| bad("due", e.to_string()))?;
         doc.set_raw("due", &serialize_scalar(d));
+    }
+    if let Some(d) = &draft.start {
+        validate_date(d).map_err(|e| bad("start", e.to_string()))?;
+        doc.set_raw("start", &serialize_scalar(d));
     }
     if !draft.blocked_by.is_empty() {
         let blocked: Vec<String> = draft
@@ -282,6 +294,11 @@ pub fn apply_patch(
         doc.set_raw("due", &serialize_scalar(d));
         touched.push("due");
     }
+    if let Some(d) = &patch.start {
+        validate_date(d).map_err(|err| bad("start", err.to_string()))?;
+        doc.set_raw("start", &serialize_scalar(d));
+        touched.push("start");
+    }
     if let Some(b) = &patch.blocked_by {
         let blocked: Vec<String> = b.iter().map(|x| x.as_str().to_owned()).collect();
         doc.set_raw("blocked_by", &serialize_seq(&blocked));
@@ -360,6 +377,54 @@ mod tests {
     }
 
     #[test]
+    fn a_start_date_round_trips_and_a_bad_one_names_its_field() {
+        // `start` is optional and additive: a file without it parses, and a
+        // file with it keeps the value through a write.
+        let (without, _) = parse_issue(FILE).unwrap();
+        assert_eq!(without.start, None);
+
+        let with = FILE.replace("sprint: 2026-W33", "sprint: 2026-W33\nstart: 2026-08-20");
+        let (issue, _) = parse_issue(&with).unwrap();
+        assert_eq!(issue.start.as_deref(), Some("2026-08-20"));
+
+        // A date that is not a date is rejected by name, like every other
+        // field — never silently dropped.
+        let bad = FILE.replace("sprint: 2026-W33", "sprint: 2026-W33\nstart: next tuesday");
+        assert!(matches!(
+            parse_issue(&bad).unwrap_err(),
+            IssueParseError::BadField { field: "start", .. }
+        ));
+    }
+
+    #[test]
+    fn patching_start_touches_only_start_and_updated() {
+        let (before, mut doc) = parse_issue(FILE).unwrap();
+        let patch = FieldPatch {
+            start: Some("2026-09-05".into()),
+            ..FieldPatch::default()
+        };
+        let touched = apply_patch(&mut doc, &patch, "2026-08-17T10:00:00Z").unwrap();
+        // A patch writes nothing it was not asked to.
+        assert_eq!(touched, vec!["start", "updated"]);
+
+        let (after, _) = parse_issue(&doc.to_string()).unwrap();
+        assert_eq!(after.start.as_deref(), Some("2026-09-05"));
+        assert_eq!(after.due, before.due);
+        assert_eq!(after.title, before.title);
+        assert_eq!(after.body, before.body);
+        // Invariant 8: a field DIT does not know still survives the write.
+        assert!(doc.to_string().contains("future_field: keep me"));
+
+        // A date that is not a date is refused rather than written.
+        let (_, mut doc) = parse_issue(FILE).unwrap();
+        let bad = FieldPatch {
+            start: Some("soon".into()),
+            ..FieldPatch::default()
+        };
+        assert!(apply_patch(&mut doc, &bad, "2026-08-17T10:00:00Z").is_err());
+    }
+
+    #[test]
     fn new_issue_is_canonical_and_reparseable() {
         let id = IssueId::parse("01K3M9ZXQ2R7VN8P4TDBCEFGHJ").unwrap();
         let draft = IssueDraft {
@@ -375,6 +440,7 @@ mod tests {
             estimate: Some(3),
             sprint: None,
             due: Some("2026-09-01".into()),
+            start: None,
             blocked_by: vec![],
             body: "Body here".into(),
         };
@@ -495,6 +561,7 @@ mod tests {
             estimate: None,
             sprint: None,
             due: None,
+            start: None,
             blocked_by: vec![],
             body: String::new(),
         };

@@ -433,3 +433,95 @@ async fn moving_a_page_serves_it_from_the_new_path() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn the_activity_feed_spans_issues_and_pages_by_cursor() {
+    let (app, _tmp) = test_app();
+
+    for title in ["Login timeout", "Merge driver drops changes"] {
+        let (status, _, text) = req(
+            &app,
+            "POST",
+            "/api/issues",
+            Some(json!({ "title": title, "type": "bug" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{text}");
+    }
+
+    let (status, page, text) = req(&app, "GET", "/api/activity?limit=100", None).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let events = page["events"].as_array().unwrap();
+    assert!(events.len() >= 2, "{text}");
+
+    // Newest first, and every row carries enough issue to render it.
+    let first = &events[0];
+    assert!(first["seq"].as_i64().unwrap() > events[1]["seq"].as_i64().unwrap());
+    assert!(!first["short_ref"].as_str().unwrap().is_empty());
+    assert!(!first["title"].as_str().unwrap().is_empty());
+    assert!(!first["field"].as_str().unwrap().is_empty());
+    // A full page is needed before a cursor is offered.
+    assert!(page["next_before_seq"].is_null(), "{text}");
+
+    // One row per page: the cursor walks history without repeating a row.
+    let (_, first_page, _) = req(&app, "GET", "/api/activity?limit=1", None).await;
+    let cursor = first_page["next_before_seq"].as_i64().expect("a cursor");
+    let (_, second_page, _) = req(
+        &app,
+        "GET",
+        &format!("/api/activity?limit=1&before_seq={cursor}"),
+        None,
+    )
+    .await;
+    let next_seq = second_page["events"][0]["seq"].as_i64().unwrap();
+    assert!(next_seq < cursor);
+}
+
+#[tokio::test]
+async fn the_activity_summary_answers_what_the_board_looked_like_then() {
+    let (app, _tmp) = test_app();
+
+    let (_, created, _) = req(
+        &app,
+        "POST",
+        "/api/issues",
+        Some(json!({ "title": "Login timeout", "type": "bug" })),
+    )
+    .await;
+    let id = created["short_ref"].as_str().unwrap().to_owned();
+
+    let (_, before, _) = req(&app, "GET", "/api/activity/summary", None).await;
+    let cutoff = before["max_seq"].as_i64().unwrap();
+    assert_eq!(before["now"]["todo"], 1);
+    assert_eq!(before["now"]["done"], 0);
+    assert_eq!(before["seq"], cutoff, "no seq means now");
+
+    // Finish it, then look back at the moment before.
+    let (status, _, text) = req(
+        &app,
+        "PATCH",
+        &format!("/api/issues/{id}"),
+        Some(json!({ "set": { "status": "done" } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+
+    let (status, after, text) = req(
+        &app,
+        "GET",
+        &format!("/api/activity/summary?seq={cutoff}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(after["at_cutoff"]["todo"], 1, "then: still to do — {text}");
+    assert_eq!(after["at_cutoff"]["done"], 0);
+    assert_eq!(after["now"]["done"], 1, "now: finished — {text}");
+    assert_eq!(after["since"]["finished"], 1);
+    assert_eq!(after["since"]["created"], 0, "nothing was born since");
+    assert!(after["days"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["count"].as_i64().unwrap() > 0));
+}

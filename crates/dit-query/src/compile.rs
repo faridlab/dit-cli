@@ -127,7 +127,9 @@ impl<'a> Compiler<'a> {
         match field {
             Field::Assignee => return self.set_membership("issue_assignees", "alias", op, value),
             Field::Label => return self.set_membership("issue_labels", "label", op, value),
-            Field::Created | Field::Updated | Field::Due => return self.date_cmp(field, op, value),
+            Field::Created | Field::Updated | Field::Due | Field::Start => {
+                return self.date_cmp(field, op, value)
+            }
             _ => {}
         }
         // Plain column comparison.
@@ -290,6 +292,7 @@ fn column(field: &Field) -> &'static str {
         Field::Created => "issues.created",
         Field::Updated => "issues.updated",
         Field::Due => "issues.due",
+        Field::Start => "issues.start",
         Field::Body => "issues.body",
     }
 }

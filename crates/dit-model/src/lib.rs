@@ -27,7 +27,7 @@ mod workflow;
 pub use comment::{Author, Comment};
 pub use config::{Config, Numbering, RepoLink, SCHEMA_MAX};
 pub use doc::{DocEntry, DocPath, DocPathError, DOC_ROOTS};
-pub use events::{EventSource, FieldEvent, StoredFieldEvent};
+pub use events::{ChangeSummary, DayCount, EventSource, FieldEvent, StoredFieldEvent};
 pub use ids::{IdError, IssueId, Seq, ShortRef, Slug};
 pub use issue::{FieldPatch, Issue, IssueDraft, IssueKind, Priority};
 pub use layout::{
