@@ -1,14 +1,15 @@
 // All issues in one dense table. Sorting and virtualization live in the
 // shared IssueTable; the filters compose real DQL (the same language the
-// search box speaks) and are set from the Issues side pane, landing in the
+// search box speaks) and are set from the Issues section of the sidebar, landing in the
 // URL so a filtered list is shareable. This view owns fetching, selection,
 // and bulk status edits.
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { IssueTable } from "../components/IssueTable";
 import { Empty, ErrorBox, Loading } from "../components/states";
 import { useBulkPatchIssue, useIssues, useSchema } from "../lib/queries";
+import { useStarred } from "../lib/starred";
 import type { FieldPatch } from "../lib/types";
 
 // The table is virtualized, so a large page size costs DOM rows only for
@@ -17,9 +18,14 @@ const PAGE_SIZE = 500;
 
 export function IssuesView({
   q,
+  starred,
   onOpen,
 }: {
   q: string | null;
+  /** Show only this browser's shortlist. Not a server query: stars are
+   *  private to the browser, so the filter happens here, over what the
+   *  index returned. */
+  starred: boolean;
   onOpen: (id: string) => void;
 }) {
   const schema = useSchema();
@@ -27,6 +33,11 @@ export function IssuesView({
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
   const issues = useIssues({ q: q ?? undefined, limit: PAGE_SIZE });
+  const stars = useStarred();
+  const items = useMemo(() => {
+    const all = issues.data?.items ?? [];
+    return starred ? all.filter((issue) => stars.has(issue.short_ref)) : all;
+  }, [issues.data, starred, stars]);
 
   const toggleSelect = (id: string) => {
     setSelected((previous) => {
@@ -51,23 +62,31 @@ export function IssuesView({
   };
 
   const actionClass =
-    "rounded-md border border-ctl px-2.5 py-1 text-xs text-zinc-300 hover:border-zinc-400 hover:text-zinc-100 disabled:opacity-50";
+    "rounded-md border border-ctl px-2.5 py-1 text-xs text-ink-2 hover:border-dim hover:text-ink disabled:opacity-50";
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex flex-wrap items-center gap-2.5 border-b border-edge px-5 py-3">
-        <h1 className="shrink-0 text-lg font-semibold text-zinc-100">Issues</h1>
+        <h1 className="shrink-0 text-lg font-semibold text-ink">{starred ? "Starred" : "Issues"}</h1>
+        {starred ? (
+          <span
+            className="shrink-0 rounded-[3px] border border-edge bg-card px-2 py-0.5 text-[11px] text-ink-2"
+            title="Stars live in this browser — they are never written to the repo"
+          >
+            this browser only
+          </span>
+        ) : null}
         {q !== null ? (
           <span
-            className="max-w-[440px] truncate rounded-[3px] border border-edge bg-card px-2 py-0.5 font-mono text-[11px] text-zinc-400"
+            className="max-w-[440px] truncate rounded-[3px] border border-edge bg-card px-2 py-0.5 font-mono text-[11px] text-ink-2"
             title={q}
           >
             {q}
           </span>
         ) : null}
         <span className="shrink-0 whitespace-nowrap font-mono text-[11px] text-dim">
-          {issues.data ? issues.data.items.length : 0} shown
-          {issues.data && issues.data.total > issues.data.items.length
+          {items.length} shown
+          {issues.data && !starred && issues.data.total > items.length
             ? ` of ${issues.data.total}`
             : ""}
         </span>
@@ -76,7 +95,7 @@ export function IssuesView({
             type="button"
             onClick={() => void issues.refetch()}
             title="Refresh"
-            className="rounded p-1 text-zinc-500 hover:bg-card hover:text-zinc-300"
+            className="rounded p-1 text-muted hover:bg-card hover:text-ink"
           >
             <RefreshCw
               className={issues.isFetching ? "size-4 animate-spin" : "size-4"}
@@ -88,7 +107,7 @@ export function IssuesView({
 
       {selected.size > 0 ? (
         <div className="flex items-center gap-3 border-b border-edge bg-card px-5 py-2.5">
-          <span className="text-[13px] text-zinc-200">{selected.size} selected</span>
+          <span className="text-[13px] text-ink">{selected.size} selected</span>
           <span className="flex gap-2">
             {doingStatus ? (
               <button
@@ -133,16 +152,28 @@ export function IssuesView({
           onRetry={() => void issues.refetch()}
         />
       ) : null}
-      {issues.data && issues.data.items.length === 0 ? (
+      {issues.data && items.length === 0 ? (
         <Empty
-          title={q ? "No issues match these filters" : "No issues yet"}
-          hint={q ? "Clear a filter in the side pane." : "Create the first one with ⌘K → New issue."}
+          title={
+            starred
+              ? "Nothing starred yet"
+              : q
+                ? "No issues match these filters"
+                : "No issues yet"
+          }
+          hint={
+            starred
+              ? "Star an issue from its panel to keep it here. Stars stay in this browser."
+              : q
+                ? "Clear a filter in the sidebar."
+                : "Create the first one with ⌘K → New issue."
+          }
           className="flex-1 justify-center"
         />
       ) : null}
-      {issues.data && issues.data.items.length > 0 ? (
+      {items.length > 0 ? (
         <IssueTable
-          issues={issues.data.items}
+          issues={items}
           statuses={schema.data?.workflow.statuses ?? []}
           onOpen={onOpen}
           selectable
