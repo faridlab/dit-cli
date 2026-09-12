@@ -5,4 +5,10 @@ export type IssueDto = { id: string, short_ref: string,
  * The human-friendly handle (ADR 0007): `Some(12)` displays as `#12`.
  * Absent until assigned — never invented client-side.
  */
-number: number | null, title: string, type: string, status: string, priority: string | null, reporter: string | null, assignees: Array<string>, labels: Array<string>, epic: string | null, estimate: number | null, sprint: string | null, due: string | null, created: string, updated: string, body: string, body_html: string, };
+number: number | null, title: string, type: string, status: string, priority: string | null, reporter: string | null, assignees: Array<string>, labels: Array<string>, epic: string | null, estimate: number | null, sprint: string | null, due: string | null, 
+/**
+ * When the work is planned to begin, `YYYY-MM-DD`. Absent for most
+ * issues — the plan views infer a bar from `due` and the estimate
+ * rather than writing one back.
+ */
+start: string | null, created: string, updated: string, body: string, body_html: string, };
