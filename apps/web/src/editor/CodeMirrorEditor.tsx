@@ -6,26 +6,26 @@ import { useEffect, useRef } from "react";
 import { EditorView, basicSetup } from "codemirror";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 
-// Dark, quiet, monospaced — matches the surrounding UI without pulling in
+// Quiet, monospaced, theme-aware — matches the surrounding UI without pulling in
 // a published theme package.
 const theme = EditorView.theme({
   "&": {
     backgroundColor: "transparent",
-    color: "#e4e4e7",
+    color: "var(--color-ink)",
     fontSize: "13px",
     height: "100%",
   },
   "&.cm-focused": { outline: "none" },
   ".cm-scroller": {
-    fontFamily: "ui-monospace, SF Mono, Menlo, monospace",
+    fontFamily: "var(--font-mono)",
     lineHeight: "1.55",
   },
-  ".cm-content": { caretColor: "#38bdf8", padding: "8px 0" },
-  ".cm-gutters": { backgroundColor: "transparent", color: "#52525b", border: "none" },
-  ".cm-activeLine": { backgroundColor: "rgba(63, 63, 70, 0.25)" },
-  ".cm-activeLineGutter": { backgroundColor: "transparent", color: "#a1a1aa" },
-  ".cm-selectionBackground, ::selection": { backgroundColor: "rgba(56, 189, 248, 0.25)" },
-  ".cm-cursor": { borderLeftColor: "#38bdf8" },
+  ".cm-content": { caretColor: "var(--color-accent-hi)", padding: "8px 0" },
+  ".cm-gutters": { backgroundColor: "transparent", color: "var(--color-faint)", border: "none" },
+  ".cm-activeLine": { backgroundColor: "var(--color-hover)" },
+  ".cm-activeLineGutter": { backgroundColor: "transparent", color: "var(--color-muted)" },
+  ".cm-selectionBackground, ::selection": { backgroundColor: "var(--color-accent-soft)" },
+  ".cm-cursor": { borderLeftColor: "var(--color-accent-hi)" },
 });
 
 export default function CodeMirrorEditor({
@@ -90,7 +90,7 @@ export default function CodeMirrorEditor({
           onSaveRef.current();
         }
       }}
-      className="h-72 overflow-hidden rounded-md border border-zinc-700 bg-zinc-950 focus-within:border-sky-700"
+      className="h-72 overflow-hidden rounded-md border border-ctl bg-app focus-within:border-accent"
     />
   );
 }

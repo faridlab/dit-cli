@@ -1,6 +1,6 @@
-// The Settings side pane: section shortcuts for the settings page, which
-// is one scroll. Settings has three closed choices, so the pane stays small
-// and static — no tree to manage.
+// The Settings sidebar section: section shortcuts for the settings page, which
+// is one scroll. Settings is a handful of closed choices, so the pane stays
+// small and static — no tree to manage.
 
 import { SectionHeading } from "../chrome";
 
@@ -14,6 +14,11 @@ const SECTIONS = [
     id: "settings-numbering",
     label: "Issue numbers",
     hint: "On creation or on merge",
+  },
+  {
+    id: "settings-appearance",
+    label: "Appearance",
+    hint: "System, light or dark — this browser only",
   },
   {
     id: "settings-templates",
@@ -39,8 +44,8 @@ export function SettingsPane() {
           onClick={() => jump(section.id)}
           className="flex flex-col gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-card"
         >
-          <span className="text-[12.5px] text-zinc-300">{section.label}</span>
-          <span className="text-[10.5px] leading-relaxed text-zinc-600">{section.hint}</span>
+          <span className="text-[12.5px] text-ink-2">{section.label}</span>
+          <span className="text-[10.5px] leading-relaxed text-faint">{section.hint}</span>
         </button>
       ))}
     </div>

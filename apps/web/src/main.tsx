@@ -1,9 +1,14 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { applyTheme, loadTheme } from "./lib/theme";
 import "./styles.css";
 
 async function boot(): Promise<void> {
+  // Stamp the remembered theme before the first paint. The CSP forbids an
+  // inline <script> in index.html, so this is the earliest point available.
+  applyTheme(loadTheme());
+
   // Development-only fixture server (?mock=1 in the dev URL) so the UI can
   // be hand-checked without the Rust backend. The guard is replaced with
   // `false` in a production build and the whole branch — including the mock

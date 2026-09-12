@@ -9,6 +9,7 @@ import type { Layout, NumberingPolicy } from "../lib/types";
 import { cn } from "../lib/cn";
 import { ErrorBox, Loading } from "../components/states";
 import { SectionHeading } from "../components/chrome";
+import { useTheme, type ThemePreference } from "../lib/theme";
 
 interface Option<T extends string> {
   value: T;
@@ -42,6 +43,26 @@ const NUMBERINGS: Option<NumberingPolicy>[] = [
   },
 ];
 
+// Appearance is the one setting that is not workspace data: it lives in this
+// browser (lib/theme.ts), so it never reaches .dit/config.yaml or git.
+const THEMES: Option<ThemePreference>[] = [
+  {
+    value: "system",
+    label: "Follow the system",
+    hint: "Light or dark as your OS decides, and switches with it.",
+  },
+  {
+    value: "light",
+    label: "Light",
+    hint: "White working surface, off-white chrome.",
+  },
+  {
+    value: "dark",
+    label: "Dark",
+    hint: "Its own palette, not an inversion — the same teal accent.",
+  },
+];
+
 function OptionCards<T extends string>({
   options,
   value,
@@ -67,12 +88,12 @@ function OptionCards<T extends string>({
             className={cn(
               "rounded-[10px] border p-3.5 text-left",
               active
-                ? "border-accent bg-white/[0.03]"
+                ? "border-accent bg-hover"
                 : "border-edge bg-card hover:border-dim",
               disabled && "opacity-50",
             )}
           >
-            <span className="flex items-center gap-2 text-[13px] font-medium text-zinc-200">
+            <span className="flex items-center gap-2 text-[13px] font-medium text-ink">
               <span
                 aria-hidden
                 className={cn(
@@ -82,7 +103,7 @@ function OptionCards<T extends string>({
               />
               {option.label}
             </span>
-            <span className="mt-1 block pl-4 text-xs leading-relaxed text-zinc-500">
+            <span className="mt-1 block pl-4 text-xs leading-relaxed text-muted">
               {option.hint}
             </span>
           </button>
@@ -95,6 +116,7 @@ function OptionCards<T extends string>({
 export function SettingsView() {
   const settings = useSettings();
   const put = usePutSettings();
+  const theme = useTheme();
 
   if (settings.isPending) return <Loading label="Loading settings…" />;
   if (settings.isError) {
@@ -132,15 +154,15 @@ export function SettingsView() {
 
   return (
     <div className="mx-auto w-full max-w-[700px] overflow-y-auto px-6 py-8">
-      <h1 className="text-lg font-semibold text-zinc-100">Settings</h1>
-      <p className="mt-1 text-[13px] text-zinc-500">
+      <h1 className="text-lg font-semibold text-ink">Settings</h1>
+      <p className="mt-1 text-[13px] text-muted">
         Workspace-wide choices, recorded in <code className="font-mono text-xs">.dit/config.yaml</code>{" "}
         and committed like any other change.
       </p>
 
       <section id="settings-layout" className="mt-8">
         <SectionHeading>Where files live</SectionHeading>
-        <p className="mt-1 text-xs text-zinc-600">
+        <p className="mt-1 text-xs text-faint">
           Changing this moves every issue in one commit — history follows the files.
         </p>
         <div className="mt-3">
@@ -155,7 +177,7 @@ export function SettingsView() {
 
       <section id="settings-numbering" className="mt-8">
         <SectionHeading>Issue numbers</SectionHeading>
-        <p className="mt-1 text-xs text-zinc-600">
+        <p className="mt-1 text-xs text-faint">
           When an issue gets the <code className="font-mono text-xs">number:</code> that becomes its
           #handle. Existing numbers never change.
         </p>
@@ -169,25 +191,36 @@ export function SettingsView() {
         </div>
       </section>
 
+      <section id="settings-appearance" className="mt-8">
+        <SectionHeading>Appearance</SectionHeading>
+        <p className="mt-1 text-xs text-faint">
+          Kept in this browser only — never written to the workspace. Also in the palette: type
+          “theme”.
+        </p>
+        <div className="mt-3">
+          <OptionCards options={THEMES} value={theme.preference} onPick={theme.setPreference} />
+        </div>
+      </section>
+
       <section id="settings-templates" className="mt-8">
         <SectionHeading>Templates</SectionHeading>
-        <p className="mt-1 text-xs text-zinc-600">
+        <p className="mt-1 text-xs text-faint">
           Bodies seeded on creation, from <code className="font-mono text-xs">.dit/templates/</code>.
         </p>
         <ul className="mt-3 flex flex-wrap gap-1.5">
           {current.templates.map((name) => (
             <li
               key={name}
-              className="rounded-[3px] border border-white/[0.06] bg-white/[0.04] px-2 py-1 font-mono text-xs text-zinc-400"
+              className="rounded-[3px] border border-edge bg-hover px-2 py-1 font-mono text-xs text-ink-2"
             >
               {name}
             </li>
           ))}
           {current.templates.length === 0 ? (
-            <li className="text-xs text-zinc-600">none — bodies start empty</li>
+            <li className="text-xs text-faint">none — bodies start empty</li>
           ) : null}
         </ul>
-        <p className="mt-2 text-xs text-zinc-600">
+        <p className="mt-2 text-xs text-faint">
           Edit them with <code className="font-mono text-xs">dit templates edit &lt;name&gt;</code>.
         </p>
       </section>

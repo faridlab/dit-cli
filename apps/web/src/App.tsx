@@ -20,12 +20,20 @@ import { AppShell } from "./components/AppShell";
 import { TokenGate } from "./components/TokenGate";
 import { ApiError } from "./lib/api";
 import { captureTokenFromLocation, clearToken, getToken, setToken } from "./lib/auth";
+import { useTheme } from "./lib/theme";
+import { useStarredSync } from "./lib/starred";
 
 function isAuthExhausted(error: unknown): boolean {
   return error instanceof ApiError && error.status === 401;
 }
 
 export function App() {
+  // Toasts follow the resolved theme; the rest of the UI themes itself via
+  // the stylesheet and the data-theme stamp on <html>.
+  const theme = useTheme();
+  // Two tabs on the same workspace share one shortlist.
+  useStarredSync();
+
   // The token may arrive as `#token=...` on the very first load. Capture and
   // scrub it before anything renders with a half-parsed fragment URL.
   const [unlocked, setUnlocked] = useState(() => {
@@ -72,7 +80,7 @@ export function App() {
           }}
         />
       )}
-      <Toaster theme="dark" position="bottom-right" gap={6} />
+      <Toaster theme={theme.resolved} position="bottom-right" gap={6} />
     </QueryClientProvider>
   );
 }
