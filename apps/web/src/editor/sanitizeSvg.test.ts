@@ -96,7 +96,10 @@ describe("sanitizeSvg", () => {
     expect(result).toEqual({ ok: false, error: "root element is not <svg>" });
   });
 
-  it("refuses a pathologically large tree", () => {
+  // A minute, not the 5s default: parsing 21,000 sibling elements in jsdom
+  // is itself slow (~30s here), and that cost is the test's setup, not the
+  // sanitizer — which rejects the tree as soon as it counts past the cap.
+  it("refuses a pathologically large tree", { timeout: 60_000 }, () => {
     // Wide, not deep: the cap guards the sanitizer's walk, and a deep nest
     // would be measuring the XML parser, not the gate.
     const wide = "<g/>".repeat(21_000);

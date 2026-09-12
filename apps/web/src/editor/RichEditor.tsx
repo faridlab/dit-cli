@@ -177,6 +177,10 @@ export default function RichEditor({
     if (!editor || value === lastEmitted.current) return;
     void (async () => {
       const doc = await markdownToDoc(value);
+      // The parse is a round trip through WASM, and the editor can be gone
+      // by the time it lands — closing the issue panel, or stepping to the
+      // next issue with J. Touching a destroyed editor throws inside TipTap.
+      if (editor.isDestroyed) return;
       if (!doc.ok) {
         setBridgeError(doc.error);
         return;

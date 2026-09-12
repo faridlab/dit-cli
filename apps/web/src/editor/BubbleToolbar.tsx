@@ -2,13 +2,53 @@
 // selected. Same commands as the keyboard shortcuts — it exists so nobody
 // has to memorize them.
 
+import { isTextSelection } from "@tiptap/core";
+import type { EditorState } from "@tiptap/pm/state";
 import type { Editor } from "@tiptap/react";
 import { BubbleMenu } from "@tiptap/react/menus";
 import { Bold, Code, Italic, Link2, Strikethrough } from "lucide-react";
 
+/** What the toolbar needs to know to decide whether to appear. A structural
+ *  subset of what TipTap hands `shouldShow`, so the rule can be exercised
+ *  without a live editor view. */
+export interface BubbleVisibility {
+  editor: Pick<Editor, "isEditable" | "isActive">;
+  /** The toolbar's own element — clicking a button moves focus into it. */
+  element: HTMLElement;
+  view: { hasFocus: () => boolean };
+  state: EditorState;
+  from: number;
+  to: number;
+}
+
+/** Whether the selection toolbar belongs on screen right now.
+ *
+ *  "There is a range" is not the same as "someone selected text": replacing
+ *  the document (a server refresh, or opening another issue in the panel)
+ *  leaves the whole doc selected in an editor nobody has touched. Focus is
+ *  what makes a selection a person's. */
+export function shouldShowBubble({
+  editor,
+  element,
+  view,
+  state,
+  from,
+  to,
+}: BubbleVisibility): boolean {
+  const insideMenu = element.contains(document.activeElement);
+  if (!view.hasFocus() && !insideMenu) return false;
+  if (!editor.isEditable || state.selection.empty) return false;
+  // An empty text block has a range but nothing to format.
+  if (isTextSelection(state.selection) && state.doc.textBetween(from, to).length === 0) {
+    return false;
+  }
+  // Code is edited as bytes: inline formatting there would be a lie.
+  return !editor.isActive("codeBlock") && !editor.isActive("htmlBlock");
+}
+
 const BUTTON =
-  "flex size-7 items-center justify-center rounded text-zinc-400 transition-colors " +
-  "hover:bg-edge hover:text-zinc-100 data-active:bg-edge data-active:text-teal-300";
+  "flex size-7 items-center justify-center rounded text-ink-2 transition-colors " +
+  "hover:bg-edge hover:text-ink data-active:bg-edge data-active:text-accent";
 
 function Toggle({
   label,
@@ -53,9 +93,7 @@ export function BubbleToolbar({ editor }: { editor: Editor }) {
   return (
     <BubbleMenu
       editor={editor}
-      shouldShow={({ editor: e, from, to }) =>
-        from !== to && !e.isActive("codeBlock") && !e.isActive("htmlBlock")
-      }
+      shouldShow={shouldShowBubble}
       options={{ placement: "top", offset: 6 }}
     >
       <div className="dit-bubble">
