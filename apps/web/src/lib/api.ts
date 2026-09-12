@@ -8,6 +8,8 @@ import type {
   CommentDto,
   DocBodyDto,
   DocEntryDto,
+  ActivityPageDto,
+  ActivitySummaryDto,
   FieldEventDto,
   FieldPatch,
   IssueDto,
@@ -185,6 +187,30 @@ export function putSettings(input: SetSettingsInput): Promise<SettingsDto> {
 
 /** Field history in `seq` order. `field` omitted = every field, which powers
  *  the detail history timeline and the Home activity feed in one request. */
+/** One page of the workspace's field history, newest first. `beforeSeq` is
+ *  the cursor from the previous page. */
+export function getActivity(params: { beforeSeq?: number | null; limit?: number } = {}): Promise<ActivityPageDto> {
+  const qs = new URLSearchParams();
+  if (params.beforeSeq !== undefined && params.beforeSeq !== null) {
+    qs.set("before_seq", String(params.beforeSeq));
+  }
+  if (params.limit !== undefined) qs.set("limit", String(params.limit));
+  const suffix = qs.size > 0 ? `?${qs.toString()}` : "";
+  return request<ActivityPageDto>(`/api/activity${suffix}`);
+}
+
+/** The board then, the board now, and the difference. `seq` is a position in
+ *  the commit graph; absent means now. */
+export function getActivitySummary(
+  params: { seq?: number | null; days?: number } = {},
+): Promise<ActivitySummaryDto> {
+  const qs = new URLSearchParams();
+  if (params.seq !== undefined && params.seq !== null) qs.set("seq", String(params.seq));
+  if (params.days !== undefined) qs.set("days", String(params.days));
+  const suffix = qs.size > 0 ? `?${qs.toString()}` : "";
+  return request<ActivitySummaryDto>(`/api/activity/summary${suffix}`);
+}
+
 export function getFieldEvents(id: string, field?: string): Promise<FieldEventDto[]> {
   const qs = new URLSearchParams();
   if (field) qs.set("field", field);

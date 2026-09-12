@@ -11,7 +11,13 @@ export type StatusCategory = "todo" | "doing" | "done";
 export type Layout = "root" | "dotdir";
 export type NumberingPolicy = "local" | "on-merge";
 
+import type { ActivityEventDto as WireActivityEventDto } from "./schema/ActivityEventDto";
+import type { ActivityPageDto as WireActivityPageDto } from "./schema/ActivityPageDto";
+import type { ActivitySummaryDto as WireActivitySummaryDto } from "./schema/ActivitySummaryDto";
 import type { BoardColumnDto as WireBoardColumnDto } from "./schema/BoardColumnDto";
+import type { CategoryCountsDto as WireCategoryCountsDto } from "./schema/CategoryCountsDto";
+import type { ChangeSummaryDto as WireChangeSummaryDto } from "./schema/ChangeSummaryDto";
+import type { DayCountDto as WireDayCountDto } from "./schema/DayCountDto";
 import type { BoardDto as WireBoardDto } from "./schema/BoardDto";
 import type { BoardIssueDto as WireBoardIssueDto } from "./schema/BoardIssueDto";
 import type { CommentDto as WireCommentDto } from "./schema/CommentDto";
@@ -93,3 +99,13 @@ export interface IssueListDto extends WireIssueListDto {
 export type FieldPatch = FieldPatchDto;
 
 export type NewIssueInput = NewIssueDto;
+
+// The workspace activity feed and the time-travel summary. Both are read
+// models: every number in them is recomputed from `field_events` on the
+// server, never stored (invariant 5).
+export type ActivityEventDto = WireActivityEventDto;
+export type ActivityPageDto = WireActivityPageDto;
+export type ActivitySummaryDto = WireActivitySummaryDto;
+export type CategoryCountsDto = WireCategoryCountsDto;
+export type ChangeSummaryDto = WireChangeSummaryDto;
+export type DayCountDto = WireDayCountDto;

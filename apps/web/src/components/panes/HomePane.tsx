@@ -1,4 +1,4 @@
-// The Home side pane: the glanceable layer of the dashboard — what is
+// The Home sidebar section: the glanceable layer of the dashboard — what is
 // blocked on other people, and the workspace activity feed. Both read the
 // same pool query the Home view runs (identical cache key), so the pane and
 // the dashboard can never disagree, and both are derived (invariant 5):
@@ -64,13 +64,13 @@ function WaitingOn({
               <span
                 className={cn(
                   "inline-flex size-[22px] shrink-0 items-center justify-center rounded-full font-mono text-[9px] leading-none text-white",
-                  first ? circleColor(first) : "bg-zinc-600",
+                  first ? circleColor(first) : "bg-dim",
                 )}
               >
                 {first ? initials(first) : "?"}
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-[13.5px] leading-snug text-zinc-300">
+                <span className="block truncate text-[13.5px] leading-snug text-ink-2">
                   {issue.title}
                 </span>
                 <span className="mt-0.5 block font-mono text-[11px] text-dim">
@@ -89,53 +89,47 @@ function WaitingOn({
   );
 }
 
-function ActivitySection({ pool }: { pool: IssueDto[] }) {
-  // The feed reads the most recently updated issues' full history and merges
-  // by `seq` — the only order that is not self-contradictory (invariant 9).
-  const ids = useMemo(
-    () =>
-      [...pool]
-        .sort((a, b) => Date.parse(b.updated) - Date.parse(a.updated))
-        .slice(0, 8)
-        .map((issue) => issue.id),
-    [pool],
-  );
-  const activity = useActivity(ids);
-  const handleOf = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const issue of pool) {
-      map.set(issue.id, issue.number !== null ? `#${issue.number}` : issue.short_ref);
-    }
-    return map;
-  }, [pool]);
+function ActivitySection() {
+  // One windowed request over the whole workspace, ordered by `seq` on the
+  // server — the only order that is not self-contradictory (invariant 9).
+  // The full stream, with filters and time travel, is the Timeline screen.
+  const activity = useActivity({ limit: 15 });
 
   return (
     <section>
-      <SectionHeading size="sm" className="mb-2.5">
-        Activity
-      </SectionHeading>
+      <div className="mb-2.5 flex items-center gap-2">
+        <SectionHeading size="sm">Activity</SectionHeading>
+        <a
+          href="#/timeline"
+          className="ml-auto text-[11px] text-muted transition-colors hover:text-ink"
+        >
+          Timeline →
+        </a>
+      </div>
       {activity.isPending ? (
-        <p className="text-xs text-zinc-600">Loading…</p>
-      ) : activity.error ? (
-        <p className="text-xs text-red-400">
+        <p className="text-xs text-faint">Loading…</p>
+      ) : activity.isError ? (
+        <p className="text-xs text-crit-text">
           {activity.error instanceof Error ? activity.error.message : "Could not load activity"}
         </p>
-      ) : activity.data.length === 0 ? (
-        <p className="text-xs text-zinc-600">No field events yet.</p>
+      ) : (activity.data?.events.length ?? 0) === 0 ? (
+        <p className="text-xs text-faint">No field events yet.</p>
       ) : (
         <ol className="flex flex-col">
-          {activity.data.map((event) => (
+          {(activity.data?.events ?? []).map((event) => (
             <li
-              key={`${event.issueId}-${event.seq}-${event.field}`}
+              key={`${event.issue_id}-${event.seq}-${event.field}`}
               className="flex flex-col gap-0.5 border-l border-edge py-2 pl-3"
             >
-              <div className="flex items-baseline gap-2 text-[11px] text-zinc-500">
-                <span className="font-mono text-dim">{handleOf.get(event.issueId) ?? "?"}</span>
-                <span className="font-mono text-zinc-400">{event.author}</span>
+              <div className="flex items-baseline gap-2 text-[11px] text-muted">
+                <span className="font-mono text-dim">
+                  {event.number !== null ? `#${event.number}` : event.short_ref}
+                </span>
+                <span className="font-mono text-ink-2">{event.author}</span>
                 <span className="ml-auto">{relativeTime(event.ts)}</span>
               </div>
-              <p className="text-[13px] text-zinc-300">{event.field}</p>
-              <p className="font-mono text-[11px] text-zinc-500">
+              <p className="text-[13px] text-ink-2">{event.field}</p>
+              <p className="font-mono text-[11px] text-muted">
                 {event.old_value ?? "∅"} → {event.new_value ?? "∅"}
               </p>
             </li>
@@ -182,7 +176,7 @@ export function HomePane({ onOpen }: { onOpen: (id: string) => void }) {
   return (
     <div className="flex flex-col gap-[22px] px-[18px] pb-7 pt-4">
       <WaitingOn pool={items} blockedStatusIds={blockedStatusIds} me={me} onOpen={onOpen} />
-      <ActivitySection pool={items} />
+      <ActivitySection />
     </div>
   );
 }

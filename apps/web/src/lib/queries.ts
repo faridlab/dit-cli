@@ -5,14 +5,13 @@
 
 import {
   useMutation,
-  useQueries,
   useQuery,
   useQueryClient,
   type QueryClient,
 } from "@tanstack/react-query";
 import { toast } from "sonner";
 import * as api from "./api";
-import type { BoardDto, FieldEventDto, FieldPatch, NewIssueInput, SetSettingsInput } from "./types";
+import type { BoardDto, FieldPatch, NewIssueInput, SetSettingsInput } from "./types";
 
 export const queryKeys = {
   status: ["status"] as const,
@@ -26,6 +25,10 @@ export const queryKeys = {
   issue: (id: string) => ["issue", id] as const,
   comments: (id: string) => ["comments", id] as const,
   history: (id: string, field?: string) => ["history", id, field ?? ""] as const,
+  activity: (params: { beforeSeq?: number | null; limit?: number }) =>
+    ["activity", params.beforeSeq ?? null, params.limit ?? null] as const,
+  activitySummary: (params: { seq?: number | null; days?: number }) =>
+    ["activity-summary", params.seq ?? null, params.days ?? null] as const,
   markdownPreview: (text: string) => ["markdown-preview", text] as const,
 };
 
@@ -40,6 +43,8 @@ export function invalidateWorkspaceData(client: QueryClient) {
     ["issue"],
     ["comments"],
     ["history"],
+    ["activity"],
+    ["activity-summary"],
     ["docs"],
     ["doc"],
   ]) {
@@ -178,6 +183,28 @@ export function useComments(id: string) {
   });
 }
 
+/** One page of the workspace's field history. The cursor is part of the key,
+ *  so paging never overwrites the page behind it. */
+export function useActivity(params: { beforeSeq?: number | null; limit?: number } = {}) {
+  return useQuery({
+    queryKey: queryKeys.activity(params),
+    queryFn: () => api.getActivity(params),
+    staleTime: STALE_TIME_MS,
+    placeholderData: (previous) => previous,
+  });
+}
+
+/** The board at a point in history, next to now. Recomputed server-side on
+ *  every call — there is nothing cached in the workspace to go stale. */
+export function useActivitySummary(params: { seq?: number | null; days?: number } = {}) {
+  return useQuery({
+    queryKey: queryKeys.activitySummary(params),
+    queryFn: () => api.getActivitySummary(params),
+    staleTime: STALE_TIME_MS,
+    placeholderData: (previous) => previous,
+  });
+}
+
 export function useFieldEvents(id: string, field?: string) {
   return useQuery({
     queryKey: queryKeys.history(id, field),
@@ -189,34 +216,6 @@ export function useFieldEvents(id: string, field?: string) {
 /** A field event plus the issue it belongs to. The wire event carries no
  *  issue id (it was fetched from that issue's endpoint), so the merge tags
  *  each one with the id of the query that produced it. */
-export type ActivityEvent = FieldEventDto & { issueId: string };
-
-/** The workspace activity feed, derived (never stored): the newest field
- *  events across the given issues, merged and ordered by `seq` descending.
- *  Callers pass the handful of most-recently-updated issue ids so the feed
- *  costs a bounded number of requests. */
-export function useActivity(ids: ReadonlyArray<string>, limit = 15) {
-  const trimmed = ids.slice(0, 8);
-  const results = useQueries({
-    queries: trimmed.map((id) => ({
-      queryKey: queryKeys.history(id),
-      queryFn: () => api.getFieldEvents(id),
-      staleTime: STALE_TIME_MS,
-    })),
-  });
-  const events = results
-    .flatMap((result, index) => {
-      const issueId = trimmed[index];
-      if (!issueId) return [];
-      return (result.data ?? []).map((event): ActivityEvent => ({ ...event, issueId }));
-    })
-    .sort((a, b) => b.seq - a.seq)
-    .slice(0, limit);
-  const pending = results.some((result) => result.isPending);
-  const error = results.find((result) => result.error)?.error ?? null;
-  return { data: events, isPending: pending, error };
-}
-
 export function useMarkdownPreview(text: string, enabled: boolean) {
   return useQuery({
     queryKey: queryKeys.markdownPreview(text),
