@@ -143,11 +143,49 @@ pub struct IssueDraft {
     pub body: String,
 }
 
+/// The optional fields a patch may clear (remove from the file). Required
+/// fields are absent on purpose: an issue without a title or status is not
+/// an issue, and the list fields clear by being set to `[]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClearableField {
+    Priority,
+    Epic,
+    Estimate,
+    Sprint,
+    Due,
+    Start,
+}
+
+impl ClearableField {
+    pub const ALL: [ClearableField; 6] = [
+        ClearableField::Priority,
+        ClearableField::Epic,
+        ClearableField::Estimate,
+        ClearableField::Sprint,
+        ClearableField::Due,
+        ClearableField::Start,
+    ];
+
+    /// The frontmatter key this field lives under.
+    pub fn key(self) -> &'static str {
+        match self {
+            ClearableField::Priority => "priority",
+            ClearableField::Epic => "epic",
+            ClearableField::Estimate => "estimate",
+            ClearableField::Sprint => "sprint",
+            ClearableField::Due => "due",
+            ClearableField::Start => "start",
+        }
+    }
+}
+
 /// An additive patch: `None` means "don't touch". A whole `Issue` must never
 /// be written back — writing fields nobody changed is what produces spurious
 /// merge conflicts when two people edit different parts of the same issue.
 /// Unknown frontmatter fields are not representable here, on purpose: the
-/// patch only speaks the fields DIT knows.
+/// patch only speaks the fields DIT knows. Removing an optional field is a
+/// third state, `clear` — separate from the setters so a `Some` always means
+/// a value and never a sentinel.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FieldPatch {
     /// Repair hatch for duplicate numbers flagged by `dit doctor` — not a
@@ -168,6 +206,9 @@ pub struct FieldPatch {
     pub due: Option<String>,
     pub start: Option<String>,
     pub blocked_by: Option<Vec<IssueId>>,
+    /// Optional fields to remove from the file. A field both set and cleared
+    /// in one patch is a contradiction the parser refuses.
+    pub clear: Vec<ClearableField>,
 }
 
 impl FieldPatch {
@@ -197,6 +238,11 @@ impl FieldPatch {
         ] {
             if present {
                 keys.push(key);
+            }
+        }
+        for field in &self.clear {
+            if !keys.contains(&field.key()) {
+                keys.push(field.key());
             }
         }
         keys
@@ -250,6 +296,16 @@ impl Issue {
         if let Some(b) = &patch.blocked_by {
             self.blocked_by = b.clone();
         }
+        for field in &patch.clear {
+            match field {
+                ClearableField::Priority => self.priority = None,
+                ClearableField::Epic => self.epic = None,
+                ClearableField::Estimate => self.estimate = None,
+                ClearableField::Sprint => self.sprint = None,
+                ClearableField::Due => self.due = None,
+                ClearableField::Start => self.start = None,
+            }
+        }
         Ok(())
     }
 }
@@ -297,6 +353,43 @@ mod tests {
         // Untouched fields survive verbatim.
         assert_eq!(issue.title, "Login timeout on slow networks");
         assert_eq!(issue.priority, Some(Priority::P1));
+    }
+
+    #[test]
+    fn a_patch_can_clear_optional_fields() {
+        let mut issue = sample_issue();
+        issue.due = Some("2026-09-01".into());
+        issue.epic = Some(IssueId::parse("01K3M9ZXQ2ZZZZZZZZZZZZZZZZ").unwrap());
+        let patch = FieldPatch {
+            clear: vec![
+                ClearableField::Priority,
+                ClearableField::Estimate,
+                ClearableField::Sprint,
+                ClearableField::Due,
+                ClearableField::Epic,
+            ],
+            ..FieldPatch::default()
+        };
+        assert!(!patch.is_empty());
+        // Every cleared key counts as touched — the merge driver must see
+        // "both sides changed priority" whether one side set it or unset it.
+        assert_eq!(
+            patch.touched_keys(),
+            vec!["priority", "estimate", "sprint", "due", "epic"]
+        );
+        issue.apply(&patch).unwrap();
+        assert_eq!(issue.priority, None);
+        assert_eq!(issue.estimate, None);
+        assert_eq!(issue.sprint, None);
+        assert_eq!(issue.due, None);
+        assert_eq!(issue.epic, None);
+        // Untouched fields survive verbatim.
+        assert_eq!(issue.title, "Login timeout on slow networks");
+        assert_eq!(issue.labels, vec!["auth"]);
+        // Every clearable field names its frontmatter key.
+        for field in ClearableField::ALL {
+            assert!(!field.key().is_empty());
+        }
     }
 
     #[test]

@@ -8,8 +8,8 @@
 //! people edit different fields of the same issue.
 
 use dit_model::{
-    parse_rfc3339, validate_date, FieldPatch, IdError, Issue, IssueDraft, IssueId, IssueKind,
-    Priority,
+    parse_rfc3339, validate_date, ClearableField, FieldPatch, IdError, Issue, IssueDraft, IssueId,
+    IssueKind, Priority,
 };
 
 use crate::fmt;
@@ -235,6 +235,24 @@ pub fn apply_patch(
     updated_rfc3339: &str,
 ) -> Result<Vec<&'static str>, IssueParseError> {
     parse_rfc3339(updated_rfc3339).map_err(|e| bad("updated", e.to_string()))?;
+    // A field both set and cleared is a contradiction — refused by name
+    // rather than resolved by whichever branch happens to run last.
+    for field in &patch.clear {
+        let also_set = match field {
+            ClearableField::Priority => patch.priority.is_some(),
+            ClearableField::Epic => patch.epic.is_some(),
+            ClearableField::Estimate => patch.estimate.is_some(),
+            ClearableField::Sprint => patch.sprint.is_some(),
+            ClearableField::Due => patch.due.is_some(),
+            ClearableField::Start => patch.start.is_some(),
+        };
+        if also_set {
+            return Err(bad(
+                field.key(),
+                "cannot be set and cleared in the same patch",
+            ));
+        }
+    }
     let mut touched = Vec::new();
     if let Some(n) = patch.number {
         if n == 0 {
@@ -304,6 +322,15 @@ pub fn apply_patch(
         doc.set_raw("blocked_by", &serialize_seq(&blocked));
         touched.push("blocked_by");
     }
+    for field in &patch.clear {
+        // Removing the line, not writing an empty value: an absent key and
+        // an empty key both read as "none", but only one of them is what a
+        // hand-written file looks like.
+        doc.remove(field.key());
+        if !touched.contains(&field.key()) {
+            touched.push(field.key());
+        }
+    }
     if !touched.is_empty() {
         doc.set_raw("updated", &serialize_scalar(updated_rfc3339));
         touched.push("updated");
@@ -315,6 +342,7 @@ pub fn apply_patch(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use dit_model::ClearableField;
 
     const FILE: &str = "---\
 \nid: 01K3M9ZXQ2R7VN8P4TDBCEFGHJ\
@@ -422,6 +450,51 @@ mod tests {
             ..FieldPatch::default()
         };
         assert!(apply_patch(&mut doc, &bad, "2026-08-17T10:00:00Z").is_err());
+    }
+
+    #[test]
+    fn clearing_removes_the_key_and_bumps_updated() {
+        let (_, mut doc) = parse_issue(FILE).unwrap();
+        let patch = FieldPatch {
+            clear: vec![ClearableField::Priority, ClearableField::Sprint],
+            ..FieldPatch::default()
+        };
+        let touched = apply_patch(&mut doc, &patch, "2026-08-17T10:00:00Z").unwrap();
+        assert_eq!(touched, vec!["priority", "sprint", "updated"]);
+        let out = doc.to_string();
+        assert!(!out.contains("priority:"), "{out}");
+        assert!(!out.contains("sprint:"), "{out}");
+        assert!(out.contains("updated: 2026-08-17T10:00:00Z"), "{out}");
+        assert!(out.contains("future_field: keep me"), "invariant 8");
+        let issue = issue_from_document(&doc).unwrap();
+        assert_eq!(issue.priority, None);
+        assert_eq!(issue.sprint, None);
+        assert_eq!(issue.estimate, Some(3), "untouched");
+
+        // Clearing a key that is not there is a no-op that still counts as
+        // touched — the caller asked for "no due date" and got it.
+        let (_, mut doc) = parse_issue(FILE).unwrap();
+        let before = doc.to_string();
+        let patch = FieldPatch {
+            clear: vec![ClearableField::Due],
+            ..FieldPatch::default()
+        };
+        let touched = apply_patch(&mut doc, &patch, "2026-08-17T10:00:00Z").unwrap();
+        assert_eq!(touched, vec!["due", "updated"]);
+        assert_ne!(doc.to_string(), before, "updated moved");
+
+        // Setting and clearing the same field in one patch is a contradiction,
+        // refused by name rather than resolved by ordering.
+        let (_, mut doc) = parse_issue(FILE).unwrap();
+        let contradictory = FieldPatch {
+            due: Some("2026-09-01".into()),
+            clear: vec![ClearableField::Due],
+            ..FieldPatch::default()
+        };
+        assert!(matches!(
+            apply_patch(&mut doc, &contradictory, "2026-08-17T10:00:00Z").unwrap_err(),
+            IssueParseError::BadField { field: "due", .. }
+        ));
     }
 
     #[test]

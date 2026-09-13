@@ -29,7 +29,7 @@ pub use config::{Config, Numbering, RepoLink, SCHEMA_MAX};
 pub use doc::{DocEntry, DocPath, DocPathError, DOC_ROOTS};
 pub use events::{ChangeSummary, DayCount, EventSource, FieldEvent, StoredFieldEvent};
 pub use ids::{IdError, IssueId, Seq, ShortRef, Slug};
-pub use issue::{FieldPatch, Issue, IssueDraft, IssueKind, Priority};
+pub use issue::{ClearableField, FieldPatch, Issue, IssueDraft, IssueKind, Priority};
 pub use layout::{
     generated_index_paths, is_comment, is_generated_index, is_issue_body, looks_like_issue_body,
     DataLayout, CONTENT_ROOTS, GENERATED_INDEX_MARKER, ISSUE_BODY_FILE, LEGACY_ISSUE_BODY_FILE,
