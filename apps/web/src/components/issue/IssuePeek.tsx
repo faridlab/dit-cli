@@ -4,43 +4,30 @@
 // in the URL, so a reload or a shared link reopens the panel over the list.
 //
 // Everything inside is the same components the page renders (./parts), so
-// there is one implementation of "editing an issue", not two.
+// there is one implementation of "editing an issue", not two. The markup is
+// the design's `.peek` recipe: header strip, scrolling body, key-hint footer.
 
-import { ChevronDown, ChevronUp, Link2, Maximize2, X } from "lucide-react";
-import { toast } from "sonner";
+import { useState } from "react";
+import { Link2, Maximize2, MoreHorizontal, Star, X } from "lucide-react";
 import { ApiError } from "../../lib/api";
 import { useFieldEvents, useIssue } from "../../lib/queries";
 import { relativeTime } from "../../lib/format";
-import { routeToHash, withPeek, type Route } from "../../lib/router";
-import { AssigneeCircles, IssueHandle, PriorityDot, TypeBadge } from "../badges";
+import { peekHost, routeToHash, withPeek, type Route } from "../../lib/router";
+import { useIsStarred } from "../../lib/starred";
+import { IssueHandle, TypeBadge } from "../badges";
 import { ErrorBox, Loading } from "../states";
-import { Kbd } from "../chrome";
-import { DescriptionSection, IssueActivity, IssueFields, IssueTitle, StarButton } from "./parts";
-
-function PanelButton({
-  label,
-  onClick,
-  disabled,
-  children,
-}: {
-  label: string;
-  onClick: () => void;
-  disabled?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      title={label}
-      aria-label={label}
-      onClick={onClick}
-      disabled={disabled}
-      className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-hover hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted"
-    >
-      {children}
-    </button>
-  );
-}
+import { IBtn, Kbd, MenuButton, Sp } from "../chrome";
+import {
+  copyText,
+  DescriptionSection,
+  IssueActivity,
+  IssueProps,
+  IssueTitle,
+  starWithToast,
+  useMoreMenu,
+  type ActivityFilter,
+} from "./parts";
+import type { IssueDto } from "../../lib/types";
 
 export function IssuePeek({
   id,
@@ -62,67 +49,38 @@ export function IssuePeek({
   canStepForward: boolean;
 }) {
   const issue = useIssue(id);
-  // One unfiltered history query feeds the per-field blame lines; the field
-  // param exists on the wire but would cost a request per field.
+  // One unfiltered history query feeds the per-field blame lines and the
+  // stream; the field param exists on the wire but would cost a request
+  // per field.
   const history = useFieldEvents(id);
+  const [filter, setFilter] = useState<ActivityFilter>("all");
+  const [highlight, setHighlight] = useState<{ seq: number; nonce: number } | null>(null);
 
-  const copyLink = () => {
-    const url = `${window.location.origin}${window.location.pathname}${routeToHash(withPeek(route, id))}`;
-    void navigator.clipboard
-      ?.writeText(url)
-      .then(
-        () => toast.success("Link copied"),
-        () => toast.message(url),
-      );
+  const showChanges = (seq?: number) => {
+    setFilter("changes");
+    if (seq !== undefined) setHighlight({ seq, nonce: Date.now() });
   };
 
   return (
-    <aside
-      aria-label={`Issue ${id}`}
-      className="dit-panel-in absolute inset-y-0 right-0 z-20 flex w-[min(620px,100%)] flex-col border-l border-edge bg-app shadow-[var(--dit-shadow-lg)]"
-    >
-      <header className="flex h-12 shrink-0 items-center gap-1.5 border-b border-edge pl-4 pr-2">
-        {issue.data ? (
-          <>
-            <IssueHandle shortRef={issue.data.short_ref} number={issue.data.number} />
-            <span
-              className="font-mono text-[10px] text-dim"
-              title="the permanent short ref behind the number"
-            >
-              {issue.data.short_ref}
-            </span>
-            <TypeBadge type={issue.data.type} />
-            <PriorityDot priority={issue.data.priority} />
-            <span className="ml-1">
-              <AssigneeCircles assignees={issue.data.assignees} />
-            </span>
-          </>
-        ) : (
-          <span className="font-mono text-xs text-muted">{id}</span>
-        )}
+    <section className="peek open" aria-label={`Issue ${id}`}>
+      {issue.data ? (
+        <PeekHeader
+          issue={issue.data}
+          route={route}
+          onClose={onClose}
+          onExpand={onExpand}
+        />
+      ) : (
+        <div className="peek-h">
+          <span className="mono text-xs text-muted">{id}</span>
+          <Sp />
+          <IBtn title="Close (Esc)" aria-label="Close" onClick={onClose}>
+            <X className="i" aria-hidden />
+          </IBtn>
+        </div>
+      )}
 
-        <span className="ml-auto flex items-center gap-0.5">
-          <PanelButton label="Previous issue (K)" onClick={() => onStep(-1)} disabled={!canStepBack}>
-            <ChevronUp className="size-4" aria-hidden />
-          </PanelButton>
-          <PanelButton label="Next issue (J)" onClick={() => onStep(1)} disabled={!canStepForward}>
-            <ChevronDown className="size-4" aria-hidden />
-          </PanelButton>
-          <span className="mx-1 h-4 w-px bg-edge" aria-hidden />
-          <StarButton shortRef={issue.data?.short_ref ?? id} />
-          <PanelButton label="Copy link" onClick={copyLink}>
-            <Link2 className="size-4" aria-hidden />
-          </PanelButton>
-          <PanelButton label="Open as page (⌘↵)" onClick={onExpand}>
-            <Maximize2 className="size-4" aria-hidden />
-          </PanelButton>
-          <PanelButton label="Close (Esc)" onClick={onClose}>
-            <X className="size-4" aria-hidden />
-          </PanelButton>
-        </span>
-      </header>
-
-      <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 pb-8 pt-4">
+      <div className="peek-body">
         {issue.isPending ? <Loading label={`Loading ${id}…`} /> : null}
         {issue.isError ? (
           <ErrorBox
@@ -137,35 +95,126 @@ export function IssuePeek({
         ) : null}
         {issue.data ? (
           <>
-            <div className="-mx-1.5">
-              <IssueTitle issue={issue.data} size="panel" />
-            </div>
-            <IssueFields issue={issue.data} history={history.data ?? []} layout="panel" />
+            <IssueTitle issue={issue.data} as="h2" />
+            <IssueProps issue={issue.data} history={history.data ?? []} compact onShowChanges={showChanges} />
             <DescriptionSection issue={issue.data} />
-            <IssueActivity issueId={issue.data.id} history={history.data ?? []} />
+            <IssueActivity
+              issue={issue.data}
+              history={history.data ?? []}
+              filter={filter}
+              onFilterChange={setFilter}
+              highlight={highlight}
+            />
           </>
         ) : null}
       </div>
 
       {issue.data ? (
-        <footer className="flex h-8 shrink-0 items-center gap-3 border-t border-edge px-4 font-mono text-[10.5px] text-faint">
+        <div className="peek-f">
           <span>
             created {relativeTime(issue.data.created)} · updated {relativeTime(issue.data.updated)}
           </span>
-          <span className="ml-auto hidden items-center gap-3 min-[520px]:flex">
-            <span className="flex items-center gap-1">
+          <Sp />
+          {/* The shell owns J/K; the hints are also buttons so a mouse can
+              walk the list from here. */}
+          <span className="k">
+            <button
+              type="button"
+              className="inline-flex border-0 bg-transparent p-0"
+              disabled={!canStepForward}
+              aria-label="Next issue"
+              onClick={() => onStep(1)}
+            >
               <Kbd>J</Kbd>
-              <Kbd>K</Kbd> next / prev
-            </span>
-            <span className="flex items-center gap-1">
-              <Kbd>⌘↵</Kbd> page
-            </span>
-            <span className="flex items-center gap-1">
-              <Kbd>esc</Kbd> close
-            </span>
+            </button>
+            <button
+              type="button"
+              className="inline-flex border-0 bg-transparent p-0"
+              disabled={!canStepBack}
+              aria-label="Previous issue"
+              onClick={() => onStep(-1)}
+            >
+              <Kbd>K</Kbd>
+            </button>{" "}
+            next / prev
           </span>
-        </footer>
+          <span className="k">
+            <button type="button" className="inline-flex border-0 bg-transparent p-0" aria-label="Open as page" onClick={onExpand}>
+              <Kbd>⌘↵</Kbd>
+            </button>{" "}
+            page
+          </span>
+          <span className="k">
+            <button type="button" className="inline-flex border-0 bg-transparent p-0" aria-label="Close" onClick={onClose}>
+              <Kbd>esc</Kbd>
+            </button>{" "}
+            close
+          </span>
+        </div>
       ) : null}
-    </aside>
+    </section>
+  );
+}
+
+function PeekHeader({
+  issue,
+  route,
+  onClose,
+  onExpand,
+}: {
+  issue: IssueDto;
+  route: Route;
+  onClose: () => void;
+  onExpand: () => void;
+}) {
+  const starred = useIsStarred(issue.short_ref);
+  const link = `${window.location.origin}${window.location.pathname}${routeToHash(withPeek(route, issue.short_ref))}`;
+  const more = useMoreMenu({
+    issue,
+    inPeek: true,
+    route,
+    from: peekHost(route),
+    onToggleSurface: onExpand,
+    onDeleted: onClose,
+  });
+  return (
+    <div className="peek-h">
+      <IssueHandle shortRef={issue.short_ref} number={issue.number} />
+      <button
+        type="button"
+        className="mono refBtn"
+        style={{ fontSize: 10.5, color: "var(--faint)" }}
+        title="Permanent short ref — click to copy"
+        onClick={() => void copyText(issue.short_ref, "Short ref copied")}
+      >
+        {issue.short_ref}
+      </button>
+      <TypeBadge type={issue.type} />
+      <Sp />
+      <IBtn title="Open as page (⌘↵)" aria-label="Open as page" onClick={onExpand}>
+        <Maximize2 className="i" aria-hidden />
+      </IBtn>
+      <IBtn title="Copy link" aria-label="Copy link" onClick={() => void copyText(link, "Link copied")}>
+        <Link2 className="i" aria-hidden />
+      </IBtn>
+      <IBtn
+        on={starred}
+        title={starred ? "Unstar" : "Star"}
+        aria-label={starred ? "Unstar" : "Star"}
+        aria-pressed={starred}
+        onClick={() => starWithToast(issue.short_ref)}
+      >
+        <Star className="i" aria-hidden />
+      </IBtn>
+      <MenuButton items={more} className="relative" align="end">
+        <IBtn title="More" aria-label="More">
+          <MoreHorizontal className="i" aria-hidden />
+        </IBtn>
+      </MenuButton>
+      <span className="sep" />
+      <IBtn title="Close (Esc)" aria-label="Close" onClick={onClose}>
+        <X className="i" aria-hidden />
+      </IBtn>
+    </div>
   );
 }

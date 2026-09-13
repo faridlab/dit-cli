@@ -4,10 +4,11 @@
 // byte-identical to `dit fmt`; source mode is CodeMirror for the bytes the
 // rich editor cannot own. One commit per typing pause, like the doc editor.
 
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { usePutIssueBody } from "../lib/queries";
 import { EditorModeToggle, type EditorMode } from "./EditorModeToggle";
 import { Loading } from "./states";
+import { cn } from "../lib/cn";
 
 const CodeMirrorEditor = lazy(() => import("../editor/CodeMirrorEditor"));
 const RichEditor = lazy(() => import("../editor/RichEditor"));
@@ -18,7 +19,36 @@ const RichEditor = lazy(() => import("../editor/RichEditor"));
 // roughly 1.8s after the last keystroke. Mirrors the doc editor's constant.
 const AUTOSAVE_DELAY_MS = 1500;
 
-export function BodyEditor({ issueId, body }: { issueId: string; body: string }) {
+/** What the surface around the editor may want to say about it. */
+export interface BodyEditorState {
+  /** The buffer differs from the body in the repo. */
+  dirty: boolean;
+  /** A commit is in flight. */
+  saving: boolean;
+  mode: EditorMode;
+  setMode: (mode: EditorMode) => void;
+}
+
+export function BodyEditor({
+  issueId,
+  body,
+  className,
+  editorClassName,
+  header,
+  onSaved,
+}: {
+  issueId: string;
+  body: string;
+  /** Class of the box the editor sits in (the design's `.desc`). */
+  className?: string;
+  /** Class of the editor itself (the design's `.md` typography). */
+  editorClassName?: string;
+  /** Renders above the box — the section heading with the save state. When
+   *  absent, the plain mode toggle and status line are drawn instead. */
+  header?: (state: BodyEditorState) => ReactNode;
+  /** After a commit landed — the surface refreshes what it shows about it. */
+  onSaved?: () => void;
+}) {
   const [text, setText] = useState(body);
   const [mode, setMode] = useState<EditorMode>("rich");
   const save = usePutIssueBody(issueId);
@@ -49,9 +79,9 @@ export function BodyEditor({ issueId, body }: { issueId: string; body: string })
       if (next === body) return;
       sent.current = next;
       setText(next);
-      save.mutate(next);
+      save.mutate(next, { onSuccess: () => onSaved?.() });
     },
-    [body, save, text],
+    [body, onSaved, save, text],
   );
 
   useEffect(() => {
@@ -61,16 +91,21 @@ export function BodyEditor({ issueId, body }: { issueId: string; body: string })
   }, [text, body, saveNow]);
 
   const dirty = text !== body;
+  const state: BodyEditorState = { dirty, saving: save.isPending, mode, setMode };
 
   return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex items-center gap-2">
-        <EditorModeToggle mode={mode} onChange={setMode} showPreview={false} />
-        <span className="text-[11px] text-muted">
-          {save.isPending ? "Saving…" : dirty ? "Unsaved changes" : ""}
-        </span>
-      </div>
-      <div className="min-h-72">
+    <div className="flex flex-col">
+      {header ? (
+        header(state)
+      ) : (
+        <div className="mb-1.5 flex items-center gap-2">
+          <EditorModeToggle mode={mode} onChange={setMode} showPreview={false} />
+          <span className="text-[11px] text-muted">
+            {save.isPending ? "Saving…" : dirty ? "Unsaved changes" : ""}
+          </span>
+        </div>
+      )}
+      <div className={className}>
         <Suspense fallback={<Loading label="Loading editor…" />}>
           {mode === "rich" ? (
             <RichEditor
@@ -78,7 +113,7 @@ export function BodyEditor({ issueId, body }: { issueId: string; body: string })
               onChange={setText}
               onSave={saveNow}
               onFallbackToSource={() => setMode("source")}
-              className="h-full min-h-72 rounded-md border border-edge bg-card/60 p-2"
+              className={cn("desc-body", editorClassName)}
             />
           ) : (
             <CodeMirrorEditor value={text} onChange={setText} onSave={saveNow} />

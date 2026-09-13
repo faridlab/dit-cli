@@ -1,382 +1,658 @@
 // The pieces an issue surface is made of, in one place because there are
 // two surfaces: the side panel that opens over a list, and the full page.
-// Both render the same fields, the same always-on description editor and the
-// same activity stream — only the layout around them differs.
+// Both render the same property rows, the same always-on description editor
+// and the same activity stream — only the layout around them differs.
 //
-// Text inputs commit on Enter or blur (no save button per field — this is a
-// keyboard tool); they are keyed by the server value, so a live refresh
-// never destroys in-progress typing unless the server itself changed that
-// field.
+// Every row emits the class recipes the approved design is written in
+// (styles.css, "Workbench recipes"): `.props` / `.k` / `.v` / `.blame`,
+// `.desc` / `.md`, `.act-h` / `.seg` / `.tl` / `.ev` / `.composer`. Each
+// property change is one PATCH — one commit — and says so in a toast.
 
-import { type KeyboardEvent, lazy, Suspense, useMemo, useState } from "react";
-import { Star } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  Calendar,
+  Check,
+  ChevronDown,
+  Copy,
+  Hash,
+  Link2,
+  Maximize2,
+  MessageSquare,
+  PanelRight,
+  Star,
+  Trash2,
+  X,
+} from "lucide-react";
+import { toast } from "sonner";
 import { BodyEditor } from "../BodyEditor";
 import { Markdown } from "../Markdown";
-import { SelectField } from "../SelectField";
-import { PriorityDot } from "../badges";
-import { ErrorBox, Loading } from "../states";
-import { INPUT_CLASS, SectionHeading } from "../chrome";
+import { Avatar, AssigneeCircles, Chip, PriorityDot, StatusPill, TypeBadge } from "../badges";
+import { Btn, HeadingNote, MenuButton, SectionHeading, Sp, type MenuItem } from "../chrome";
+import { ApiError } from "../../lib/api";
+import { getToken } from "../../lib/auth";
+import { dueInfo, fullTimestamp, relativeTime, resolveIdValue } from "../../lib/format";
 import {
-  circleColor,
-  fullTimestamp,
-  initials,
-  parseCsvList,
-  relativeTime,
-} from "../../lib/format";
-import { useAddComment, useComments, usePatchIssue, useSchema } from "../../lib/queries";
+  queryKeys,
+  useAddComment,
+  useComments,
+  useCreateIssue,
+  useIssues,
+  usePatchIssue,
+  useSchema,
+  useStatus,
+} from "../../lib/queries";
 import { mergeActivity } from "../../lib/activity";
-import { toggleStar, useIsStarred } from "../../lib/starred";
-import type { FieldEventDto, IssueDto, IssueType, Priority } from "../../lib/types";
+import { navigate, routeToHash, withPeek, type PeekHost, type Route } from "../../lib/router";
+import { isStarred, toggleStar } from "../../lib/starred";
+import type { FieldEventDto, FieldPatch, IssueDto, Priority, StatusDto } from "../../lib/types";
 import { cn } from "../../lib/cn";
 
-/** `rail` stacks label over control in a narrow column (the page's right
- *  rail); `panel` puts them side by side, which reads better in the wider
- *  side panel and keeps the description closer to the top. */
-export type FieldLayout = "rail" | "panel";
+// ---------------------------------------------------------------------------
+// Small shared helpers
+// ---------------------------------------------------------------------------
 
-const TYPE_OPTIONS: Array<{ value: IssueType; label: string }> = [
-  { value: "task", label: "task" },
-  { value: "bug", label: "bug" },
-  { value: "story", label: "story" },
-  { value: "spike", label: "spike" },
-  { value: "chore", label: "chore" },
-];
+/** Copy to the clipboard and say so. When the clipboard is unavailable (an
+ *  insecure origin, a denied permission) the text itself goes in the toast so
+ *  it can still be picked up by hand. */
+export async function copyText(text: string, label: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(`${label} — ${text}`);
+  } catch {
+    toast(`${label}: ${text}`);
+  }
+}
 
-const PRIORITY_OPTIONS: Priority[] = ["p0", "p1", "p2", "p3", "p4"];
+/** Star or unstar, with the design's wording: a star is a private bookmark
+ *  in this browser, never a file and never a commit. */
+export function starWithToast(shortRef: string): void {
+  const starred = toggleStar(shortRef);
+  toast(starred ? "Starred (kept in this browser, never in git)" : "Unstarred");
+}
 
-// The comment composer is the same Notion-like editor the description uses
-// (lazy chunk, TipTap + the Rust bridge in WASM).
-const RichEditor = lazy(() => import("../../editor/RichEditor"));
+const PRIORITIES: Priority[] = ["p0", "p1", "p2", "p3", "p4"];
 
-function FieldRow({
+/** Fields the server writes on every commit; showing them as "changes" would
+ *  drown the ones a person made. */
+const NOISE_FIELDS = new Set(["updated", "number", "created"]);
+
+function isNoise(event: FieldEventDto): boolean {
+  if (NOISE_FIELDS.has(event.field)) return true;
+  return event.field === "reporter" && event.old_value === null;
+}
+
+// The PATCH contract is typed from the server's DTO. `epic` is being added
+// to it; until the generated type catches up the field is sent through this
+// widening so the menu can be wired now and typed later.
+type PatchWithEpic = FieldPatch & { epic?: string };
+
+/** The bounded pool every picker reads: known aliases, known labels and the
+ *  stories an issue can belong to. Closed issues count too — a label or a
+ *  person is still "known" after their work is done. */
+export function useIssuePool(): IssueDto[] {
+  const issues = useIssues({ limit: 500 });
+  return issues.data?.items ?? [];
+}
+
+/** The surfaces fetch an issue by whatever the route carried — usually the
+ *  short ref — while the shared mutations invalidate by the ULID. Refresh
+ *  the short-ref keys too, so a commit shows up without waiting for the
+ *  live index event. */
+export function useRefreshIssue(issue: IssueDto): () => void {
+  const client = useQueryClient();
+  return () => {
+    for (const key of [issue.short_ref, issue.id]) {
+      void client.invalidateQueries({ queryKey: queryKeys.issue(key) });
+      void client.invalidateQueries({ queryKey: ["history", key] });
+      void client.invalidateQueries({ queryKey: ["comments", key] });
+    }
+  };
+}
+
+export function useKnownPeople(): string[] {
+  const pool = useIssuePool();
+  const status = useStatus();
+  return useMemo(() => {
+    const set = new Set<string>();
+    for (const issue of pool) {
+      for (const alias of issue.assignees) set.add(alias);
+      if (issue.reporter) set.add(issue.reporter);
+    }
+    if (status.data?.me) set.add(status.data.me);
+    return [...set].sort();
+  }, [pool, status.data?.me]);
+}
+
+export function useKnownLabels(): string[] {
+  const pool = useIssuePool();
+  return useMemo(() => {
+    const set = new Set<string>();
+    for (const issue of pool) for (const label of issue.labels) set.add(label);
+    return [...set].sort();
+  }, [pool]);
+}
+
+// ---------------------------------------------------------------------------
+// Properties block
+// ---------------------------------------------------------------------------
+
+/** One `.k` / `.v` row. Editable rows open their menu on click, Enter or
+ *  Space; the blame span inside opens its own menu without opening the row. */
+function PropRow({
   label,
-  layout,
+  field,
+  items,
+  align,
   blame,
+  readOnly = false,
   children,
 }: {
   label: string;
-  layout: FieldLayout;
-  /** "Who touched it last", shown beside the value. */
-  blame?: string | null;
-  children: React.ReactNode;
+  field: string;
+  items?: MenuItem[];
+  align?: "start" | "end";
+  blame?: ReactNode;
+  readOnly?: boolean;
+  children: ReactNode;
 }) {
-  if (layout === "panel") {
+  const [open, setOpen] = useState(false);
+  if (readOnly || !items) {
     return (
       <>
-        <span className="flex h-[30px] items-center text-[12px] text-muted">{label}</span>
-        <span className="flex min-w-0 items-center gap-2">
-          {/* Capped so every row's control ends on the same line and the
-              blame column stays where the eye expects it. */}
-          <span className="min-w-0 max-w-[300px] flex-1">{children}</span>
-          {blame ? (
-            <span className="ml-auto hidden shrink-0 font-mono text-[10.5px] text-faint min-[560px]:block">
-              {blame}
-            </span>
-          ) : null}
-        </span>
+        <div className="k">{label}</div>
+        <div className="v prop ro" data-f={field} title="Derived from git — not editable">
+          {children}
+          <span className="blame" />
+        </div>
       </>
     );
   }
   return (
-    <div className="flex flex-col gap-1">
-      <span className="text-[10.5px] font-medium uppercase tracking-[0.05em] text-muted">
-        {label}
-      </span>
-      {children}
-      {blame ? <span className="text-[11px] text-dim">{blame}</span> : null}
-    </div>
-  );
-}
-
-/** Text input that starts from `initial` and commits on Enter/blur. Keyed
- *  remount on server-side change keeps it honest without controlled state. */
-function CommitInput({
-  initial,
-  onCommit,
-  placeholder,
-  type = "text",
-  format,
-}: {
-  initial: string;
-  onCommit: (value: string) => void;
-  placeholder?: string;
-  type?: "text" | "number" | "date";
-  format?: "csv";
-}) {
-  const commit = (event: React.FocusEvent<HTMLInputElement> | KeyboardEvent<HTMLInputElement>) => {
-    const raw = event.currentTarget.value;
-    if (format === "csv") {
-      const next = parseCsvList(raw);
-      const current = parseCsvList(initial);
-      if (next.join(",") !== current.join(",")) onCommit(next.join(","));
-    } else if (raw !== initial) {
-      onCommit(raw);
-    }
-  };
-  return (
-    <input
-      key={initial}
-      type={type}
-      defaultValue={initial}
-      placeholder={placeholder}
-      onBlur={commit}
-      onKeyDown={(event) => {
-        if (event.key === "Enter") commit(event);
-      }}
-      className={cn(INPUT_CLASS, "w-full")}
-    />
-  );
-}
-
-/** Labels as chips: click × to drop one, "+ label" to add. Every commit
- *  sends the whole array — the patch replaces the set. */
-function LabelEditor({
-  labels,
-  disabled,
-  onCommit,
-}: {
-  labels: string[];
-  disabled?: boolean;
-  onCommit: (labels: string[]) => void;
-}) {
-  const [adding, setAdding] = useState(false);
-  const [draft, setDraft] = useState("");
-
-  const commit = () => {
-    const added = parseCsvList(draft);
-    setAdding(false);
-    setDraft("");
-    if (added.length === 0) return;
-    onCommit([...labels, ...added.filter((label) => !labels.includes(label))]);
-  };
-
-  return (
-    <span className="flex flex-wrap gap-1.5">
-      {labels.map((label) => (
-        <button
-          key={label}
-          type="button"
-          disabled={disabled}
-          onClick={() => onCommit(labels.filter((each) => each !== label))}
-          title={`Remove ${label}`}
-          className="group flex items-center gap-1.5 rounded-[3px] border border-ctl bg-card px-2 py-0.5 font-mono text-[11px] text-ink-2 hover:border-crit-text hover:text-crit-text disabled:opacity-50"
-        >
-          {label}
-          <span className="text-dim group-hover:text-crit-text" aria-hidden>
-            ×
-          </span>
-        </button>
-      ))}
-      {adding ? (
-        <input
-          autoFocus
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onBlur={commit}
+    <>
+      <div className="k">{label}</div>
+      {/* `relative` keeps the popover in flow so Radix can measure it; the
+          shared `.menu` recipe's position:fixed would measure as 0×0 and
+          push end-aligned menus off screen. */}
+      <MenuButton items={items} className="relative" open={open} onOpenChange={setOpen} align={align}>
+        <div
+          className="v prop edit cursor-pointer"
+          data-f={field}
+          role="button"
+          tabIndex={0}
+          title="Click to change · commits immediately"
           onKeyDown={(event) => {
-            if (event.key === "Enter") commit();
-            if (event.key === "Escape") {
-              setAdding(false);
-              setDraft("");
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              setOpen(true);
             }
           }}
-          placeholder="label, label"
-          aria-label="Add labels"
-          className="h-[24px] w-28 rounded-[3px] border border-accent bg-app px-1.5 font-mono text-[11px] text-ink focus:outline-none"
-        />
-      ) : (
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={() => setAdding(true)}
-          className="rounded-[3px] border border-dashed border-ctl px-2 py-0.5 font-mono text-[11px] text-dim hover:border-dim hover:text-ink-2 disabled:opacity-50"
         >
-          + label
-        </button>
-      )}
+          {children}
+          {blame}
+        </div>
+      </MenuButton>
+    </>
+  );
+}
+
+/** "Who touched it last" for one field, from `field_events` — computed on
+ *  read, never stored (invariant 5). Click for that field's whole history. */
+function Blame({
+  field,
+  history,
+  issue,
+  onShowChanges,
+}: {
+  field: string;
+  history: FieldEventDto[];
+  issue: IssueDto;
+  onShowChanges: (seq?: number) => void;
+}) {
+  const events = history.filter((event) => event.field === field);
+  const last = events[events.length - 1];
+  const text = last
+    ? `${last.author}, ${relativeTime(last.ts)}`
+    : `${issue.reporter ?? "unknown"}, ${relativeTime(issue.created)}`;
+  const items: MenuItem[] = [
+    { kind: "head", label: `${field} · history (${events.length})` },
+    ...(events.length > 0
+      ? [...events].reverse().map(
+          (event): MenuItem => ({
+            label: `${event.old_value ?? "∅"} → ${event.new_value ?? "∅"}`,
+            meta: `${event.author} · ${relativeTime(event.ts)}`,
+            run: () => onShowChanges(event.seq),
+          }),
+        )
+      : [{ kind: "text" as const, node: "Unchanged since the issue was created." }]),
+  ];
+  return (
+    <MenuButton items={items} className="relative" align="end">
+      <span
+        className="blame blm cursor-pointer"
+        data-f={field}
+        role="button"
+        tabIndex={-1}
+        title="Who touched it last — click for the field's history"
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+      >
+        {text}
+      </span>
+    </MenuButton>
+  );
+}
+
+/** The workflow's small pill for menu rows: one letter in the category's
+ *  color, so a long status list still scans. */
+function MiniPill({ status }: { status: StatusDto }) {
+  return (
+    <span className={cn("pill", status.category)} style={{ height: 16, fontSize: 10.5 }}>
+      {status.label[0]}
     </span>
   );
 }
 
-/** Every editable frontmatter field, with the per-field blame line derived
- *  from `field_events` — computed on read, never stored (invariant 5). */
-export function IssueFields({
+function isoInDays(days: number): string {
+  return new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+}
+
+/** Every frontmatter field as a `.props` grid. `compact` (the side panel)
+ *  leaves out the read-only Reporter row. */
+export function IssueProps({
   issue,
   history,
-  layout,
+  compact,
+  onShowChanges,
 }: {
   issue: IssueDto;
   history: FieldEventDto[];
-  layout: FieldLayout;
+  compact: boolean;
+  /** Switch the activity stream to Changes, optionally scrolling to a seq. */
+  onShowChanges: (seq?: number) => void;
 }) {
   const schema = useSchema();
   const patch = usePatchIssue(issue.id);
+  const refresh = useRefreshIssue(issue);
+  const people = useKnownPeople();
+  const labels = useKnownLabels();
+  const pool = useIssuePool();
 
   const statuses = schema.data?.workflow.statuses ?? [];
-  const statusOptions =
-    statuses.length > 0
-      ? statuses.map((status) => ({ value: status.id, label: status.label }))
-      : [{ value: issue.status, label: issue.status }];
+  const status = statuses.find((each) => each.id === issue.status);
+  const stories = pool.filter((each) => each.type === "story" && each.id !== issue.id);
+  const epic = issue.epic ? pool.find((each) => each.id === issue.epic) : undefined;
+  // A cleared field can come back as "" from a server that stores the
+  // empty string; both mean "none" here.
+  const priority = issue.priority || null;
+  const due = dueInfo(issue.due || null);
 
-  // The events arrive ordered by seq — the order things actually happened —
-  // so the last one mentioning a field is that field's latest change.
-  const blameFor = (field: string): string | null => {
-    for (let i = history.length - 1; i >= 0; i--) {
-      const event = history[i];
-      if (event && event.field === field) {
-        return `${event.author}, ${relativeTime(event.ts)}`;
-      }
-    }
-    return null;
+  /** One field, one commit, one toast. */
+  const commit = (field: string, set: PatchWithEpic, shown: string) => {
+    patch.mutate(set as FieldPatch, {
+      onSuccess: () => {
+        refresh();
+        toast(`Committed · ${field} → ${shown}`);
+      },
+    });
   };
 
-  return (
-    <div
-      className={cn(
-        layout === "panel"
-          ? "grid grid-cols-[92px_minmax(0,1fr)] items-center gap-x-3 gap-y-1.5"
-          : "flex flex-col gap-3",
-      )}
-    >
-      <FieldRow label="Status" layout={layout} blame={blameFor("status")}>
-        <SelectField
-          ariaLabel="Status"
-          value={issue.status}
-          options={statusOptions}
-          disabled={patch.isPending}
-          onChange={(status) => patch.mutate({ status })}
-        />
-      </FieldRow>
-      <FieldRow label="Type" layout={layout} blame={blameFor("type")}>
-        <SelectField
-          ariaLabel="Type"
-          value={issue.type}
-          options={TYPE_OPTIONS}
-          disabled={patch.isPending}
-          onChange={(type) => patch.mutate({ type })}
-        />
-      </FieldRow>
-      <FieldRow label="Priority" layout={layout} blame={blameFor("priority")}>
-        {/* No "clear" affordance: v0.1's patch contract treats null as
-            "absent", so a field can be changed but not emptied. */}
-        <SelectField
-          ariaLabel="Priority"
-          value={issue.priority ?? ""}
-          options={PRIORITY_OPTIONS.map((value) => ({ value, label: value }))}
-          disabled={patch.isPending}
-          onChange={(priority) => patch.mutate({ priority })}
-        />
-      </FieldRow>
-      <FieldRow label="Assignees" layout={layout} blame={blameFor("assignees")}>
-        <CommitInput
-          initial={issue.assignees.join(", ")}
-          format="csv"
-          placeholder="alias, alias"
-          onCommit={(assignees) => patch.mutate({ assignees: parseCsvList(assignees) })}
-        />
-      </FieldRow>
-      <FieldRow label="Labels" layout={layout} blame={blameFor("labels")}>
-        <LabelEditor
-          labels={issue.labels}
-          disabled={patch.isPending}
-          onCommit={(labels) => patch.mutate({ labels })}
-        />
-      </FieldRow>
-      <FieldRow label="Estimate" layout={layout} blame={blameFor("estimate")}>
-        <CommitInput
-          initial={issue.estimate === null ? "" : String(issue.estimate)}
-          type="number"
-          placeholder="—"
-          onCommit={(value) => {
-            const trimmed = value.trim();
-            if (trimmed.length > 0) patch.mutate({ estimate: Number(trimmed) });
-          }}
-        />
-      </FieldRow>
-      <FieldRow label="Due" layout={layout} blame={blameFor("due")}>
-        <CommitInput
-          initial={issue.due ?? ""}
-          type="date"
-          onCommit={(value) => {
-            const trimmed = value.trim();
-            if (trimmed.length > 0) patch.mutate({ due: trimmed });
-          }}
-        />
-      </FieldRow>
-      <FieldRow label="Sprint" layout={layout} blame={blameFor("sprint")}>
-        <CommitInput
-          initial={issue.sprint ?? ""}
-          placeholder="—"
-          onCommit={(value) => {
-            const trimmed = value.trim();
-            if (trimmed.length > 0) patch.mutate({ sprint: trimmed });
-          }}
-        />
-      </FieldRow>
-    </div>
+  const blame = (field: string) => (
+    <Blame field={field} history={history} issue={issue} onShowChanges={onShowChanges} />
   );
-}
 
-/** The description is the editor: always on, autosaving per pause — the
- *  same surface for reading and writing, like the doc editor. Keyed by the
- *  issue so switching issues never carries a buffer across. */
-export function DescriptionSection({ issue }: { issue: IssueDto }) {
+  const statusItems: MenuItem[] = [
+    { kind: "head", label: "Status" },
+    ...statuses.map(
+      (each): MenuItem => ({
+        label: each.label,
+        icon: <MiniPill status={each} />,
+        on: issue.status === each.id,
+        run: () => {
+          if (issue.status !== each.id) commit("status", { status: each.id }, each.label);
+        },
+      }),
+    ),
+  ];
+
+  const priorityItems: MenuItem[] = [
+    { kind: "head", label: "Priority" },
+    ...[...PRIORITIES, null].map(
+      (each): MenuItem => ({
+        label: each
+          ? `${each.toUpperCase()}${each === "p0" ? " · drop everything" : each === "p1" ? " · this week" : ""}`
+          : "No priority",
+        icon: <PriorityDot priority={each} />,
+        on: priority === each,
+        run: () => {
+          if (priority === each) return;
+          // Clearing sends the empty string — the server's "unset" spelling.
+          // If it refuses, the toast says so; nothing is pretended.
+          commit("priority", { priority: each ?? "" }, each ? each.toUpperCase() : "none");
+        },
+      }),
+    ),
+  ];
+
+  const assigneeItems: MenuItem[] = [
+    { kind: "head", label: "Assignees · click to toggle" },
+    ...people.map(
+      (alias): MenuItem => ({
+        label: alias,
+        check: issue.assignees.includes(alias),
+        run: () => {
+          const next = issue.assignees.includes(alias)
+            ? issue.assignees.filter((each) => each !== alias)
+            : [...issue.assignees, alias];
+          commit("assignees", { assignees: next }, next.join(", ") || "none");
+        },
+      }),
+    ),
+    { kind: "sep" },
+    {
+      label: "Unassign everyone",
+      icon: <X className="i" aria-hidden />,
+      run: () => commit("assignees", { assignees: [] }, "none"),
+    },
+  ];
+
+  const labelItems: MenuItem[] = [
+    { kind: "head", label: "Labels" },
+    {
+      kind: "input",
+      placeholder: "New label, e.g. area:web",
+      button: "Add",
+      run: (value) => {
+        if (value && !issue.labels.includes(value)) {
+          const next = [...issue.labels, value];
+          commit("labels", { labels: next }, next.join(", "));
+        }
+      },
+    },
+    ...labels.map(
+      (label): MenuItem => ({
+        label,
+        check: issue.labels.includes(label),
+        run: () => {
+          const next = issue.labels.includes(label)
+            ? issue.labels.filter((each) => each !== label)
+            : [...issue.labels, label];
+          commit("labels", { labels: next }, next.join(", ") || "none");
+        },
+      }),
+    ),
+  ];
+
+  const epicItems: MenuItem[] = [
+    { kind: "head", label: "Epic" },
+    {
+      label: "None",
+      on: !issue.epic,
+      run: () => {
+        if (issue.epic) commit("epic", { epic: "" }, "none");
+      },
+    },
+    ...stories.map(
+      (story): MenuItem => ({
+        label: story.title,
+        icon: <TypeBadge type="story" />,
+        on: issue.epic === story.id,
+        run: () => {
+          if (issue.epic !== story.id) commit("epic", { epic: story.id }, story.title);
+        },
+      }),
+    ),
+  ];
+
+  const estimateItems: MenuItem[] = [
+    { kind: "head", label: "Estimate (points)" },
+    {
+      kind: "input",
+      placeholder: "e.g. 3",
+      type: "number",
+      value: issue.estimate === null ? "" : String(issue.estimate),
+      run: (value) => {
+        if (value === "") return;
+        const n = Number(value);
+        if (Number.isFinite(n) && n !== issue.estimate) commit("estimate", { estimate: n }, `${n} pt`);
+      },
+    },
+    ...[1, 2, 3, 5, 8].map(
+      (n): MenuItem => ({
+        label: `${n} pt`,
+        on: issue.estimate === n,
+        run: () => {
+          if (issue.estimate !== n) commit("estimate", { estimate: n }, `${n} pt`);
+        },
+      }),
+    ),
+  ];
+
+  const dueItems: MenuItem[] = [
+    { kind: "head", label: "Due date" },
+    {
+      kind: "input",
+      placeholder: "YYYY-MM-DD",
+      type: "date",
+      value: issue.due ?? "",
+      run: (value) => {
+        if ((value || null) !== (issue.due || null)) commit("due", { due: value }, value || "none");
+      },
+    },
+    {
+      label: "Tomorrow",
+      icon: <Calendar className="i" aria-hidden />,
+      run: () => commit("due", { due: isoInDays(1) }, isoInDays(1)),
+    },
+    {
+      label: "In a week",
+      icon: <Calendar className="i" aria-hidden />,
+      run: () => commit("due", { due: isoInDays(7) }, isoInDays(7)),
+    },
+    {
+      label: "Clear",
+      icon: <X className="i" aria-hidden />,
+      run: () => {
+        if (issue.due) commit("due", { due: "" }, "none");
+      },
+    },
+  ];
+
   return (
-    <section>
-      <SectionHeading size="sm" className="mb-3">
-        Description
-      </SectionHeading>
-      <BodyEditor key={issue.id} issueId={issue.id} body={issue.body} />
-    </section>
-  );
-}
+    <div className="props">
+      <PropRow label="Status" field="status" items={statusItems} blame={blame("status")}>
+        {status ? <StatusPill status={status} /> : <StatusPill label={issue.status} />}
+        <ChevronDown className="i" aria-hidden />
+      </PropRow>
 
-/** One line of a commit entry: what a single field became. Creation reads
- *  as "set to X" — there is no "from" when the issue did not exist yet. */
-function FieldChange({ event, statusLabel }: { event: FieldEventDto; statusLabel: (id: string) => string }) {
-  const render = (value: string | null) => {
-    if (value === null || value.length === 0) {
-      return <span className="text-faint">—</span>;
-    }
-    if (event.field === "status") {
-      return <span className="text-ink-2">{statusLabel(value)}</span>;
-    }
-    if (event.field === "priority") {
-      return (
-        <span className="inline-flex items-center gap-1.5">
-          <PriorityDot priority={value as Priority} />
-          <span className="font-mono text-ink-2">{value}</span>
-        </span>
-      );
-    }
-    return <span className="font-mono text-ink-2">{value}</span>;
-  };
+      <PropRow label="Priority" field="priority" items={priorityItems} blame={blame("priority")}>
+        <PriorityDot priority={priority} />
+        <span>{priority ? priority.toUpperCase() : <span className="ph">No priority</span>}</span>
+      </PropRow>
 
-  return (
-    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[12px]">
-      <span className="text-muted">{event.field}</span>
-      {event.old_value === null ? (
-        render(event.new_value)
-      ) : (
-        <>
-          {render(event.old_value)}
-          <span className="text-faint" aria-label="changed to">
-            →
+      <PropRow label="Assignees" field="assignees" items={assigneeItems} blame={blame("assignees")}>
+        {issue.assignees.length > 0 ? (
+          <>
+            <AssigneeCircles assignees={issue.assignees} hollow={false} />
+            <span>{issue.assignees.join(", ")}</span>
+          </>
+        ) : (
+          <span className="ph">Unassigned</span>
+        )}
+      </PropRow>
+
+      <PropRow label="Labels" field="labels" items={labelItems} blame={blame("labels")}>
+        <span className="lbls">
+          {issue.labels.map((label) => (
+            <Chip key={label} label={label} />
+          ))}
+          <span
+            className="chip"
+            style={{ background: "transparent", border: "1px dashed var(--edge-2)", color: "var(--faint)" }}
+          >
+            +
           </span>
-          {render(event.new_value)}
-        </>
+        </span>
+      </PropRow>
+
+      <PropRow label="Epic" field="epic" items={epicItems} blame={blame("epic")}>
+        {issue.epic ? (
+          <>
+            <TypeBadge type="story" />
+            <span>{epic?.title ?? issue.epic}</span>
+          </>
+        ) : (
+          <span className="ph">None</span>
+        )}
+      </PropRow>
+
+      <PropRow label="Estimate" field="estimate" items={estimateItems} blame={blame("estimate")}>
+        {issue.estimate !== null ? (
+          <span className="mono">{issue.estimate} pt</span>
+        ) : (
+          <span className="ph">—</span>
+        )}
+      </PropRow>
+
+      <PropRow label="Due" field="due" items={dueItems} blame={blame("due")}>
+        {due ? (
+          <span className={cn("due", due.cls)} style={{ fontSize: 12.5 }}>
+            {issue.due} · {due.text}
+          </span>
+        ) : (
+          <span className="ph">No date</span>
+        )}
+      </PropRow>
+
+      {compact ? null : (
+        <PropRow label="Reporter" field="reporter" readOnly>
+          {issue.reporter ? (
+            <>
+              <Avatar name={issue.reporter} />
+              <span>{issue.reporter}</span>
+            </>
+          ) : (
+            <span className="ph">—</span>
+          )}{" "}
+          <span className="ph" style={{ fontSize: 11 }}>
+            · from the creating commit
+          </span>
+        </PropRow>
       )}
     </div>
   );
 }
 
-/** "status, priority and due" — the fields one commit touched. */
-function fieldList(fields: string[]): string {
-  if (fields.length <= 1) return fields[0] ?? "";
-  return `${fields.slice(0, -1).join(", ")} and ${fields[fields.length - 1]}`;
+// ---------------------------------------------------------------------------
+// Title and description
+// ---------------------------------------------------------------------------
+
+/** The title, edited in place like the design's contenteditable heading:
+ *  Enter commits, Escape abandons, blur commits when something changed. An
+ *  empty title is refused — it is how the issue is read everywhere else. */
+export function IssueTitle({ issue, as, className }: { issue: IssueDto; as: "h1" | "h2"; className?: string }) {
+  const patch = usePatchIssue(issue.id);
+  const refresh = useRefreshIssue(issue);
+  const Tag = as;
+  const commit = (element: HTMLElement) => {
+    const title = element.textContent?.trim() ?? "";
+    if (title.length > 0 && title !== issue.title) {
+      patch.mutate(
+        { title },
+        {
+          onSuccess: () => {
+            refresh();
+            toast(`Committed · title → ${title}`);
+          },
+        },
+      );
+    } else {
+      element.textContent = issue.title;
+    }
+  };
+  return (
+    <Tag
+      // Remount when the server's title changes so a live refresh never
+      // overwrites what someone is typing unless the title itself moved.
+      key={issue.title}
+      className={cn("ttl issue-title", className)}
+      contentEditable
+      suppressContentEditableWarning
+      spellCheck={false}
+      title="Edit the title — Enter commits"
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          event.currentTarget.blur();
+        }
+        // The panel's Escape closes it; inside the title it should only
+        // abandon the edit.
+        if (event.key === "Escape") {
+          event.stopPropagation();
+          event.currentTarget.textContent = issue.title;
+          event.currentTarget.blur();
+        }
+      }}
+      onBlur={(event) => commit(event.currentTarget)}
+    >
+      {issue.title}
+    </Tag>
+  );
 }
 
-type ActivityFilter = "all" | "comments" | "changes";
+/** The description is the editor: always on, one commit per typing pause.
+ *  The heading says where the bytes stand — saved when the buffer matches
+ *  the repo, "editing" while it does not. */
+export function DescriptionSection({ issue }: { issue: IssueDto }) {
+  const refresh = useRefreshIssue(issue);
+  return (
+    <div className="group/desc">
+      <BodyEditor
+        key={issue.id}
+        issueId={issue.id}
+        body={issue.body}
+        onSaved={refresh}
+        className="desc"
+        editorClassName="md min-h-6 [&_.dit-rich]:px-0 [&_.dit-rich]:text-[13.5px] [&_.dit-rich]:leading-[1.6]"
+        header={({ dirty, saving, mode, setMode }) => (
+          <SectionHeading className="mb-2">
+            Description
+            <Sp />
+            {/* Source mode is the escape hatch for bytes the rich editor
+                cannot own; it stays out of the way until the section is
+                hovered or focused. */}
+            <span
+              className="seg opacity-0 transition-opacity group-hover/desc:opacity-100 group-focus-within/desc:opacity-100"
+              style={{ marginLeft: 0 }}
+              role="group"
+              aria-label="Editor mode"
+            >
+              <button type="button" className={cn(mode === "rich" && "on")} onClick={() => setMode("rich")}>
+                Rich
+              </button>
+              <button type="button" className={cn(mode === "source" && "on")} onClick={() => setMode("source")}>
+                Source
+              </button>
+            </span>
+            <HeadingNote>
+              {saving
+                ? "committing…"
+                : dirty
+                  ? "editing · commits after a pause"
+                  : `saved · ${relativeTime(issue.updated)}`}
+            </HeadingNote>
+          </SectionHeading>
+        )}
+      />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Activity
+// ---------------------------------------------------------------------------
+
+export type ActivityFilter = "all" | "comments" | "changes";
 
 const FILTERS: Array<{ value: ActivityFilter; label: string }> = [
   { value: "all", label: "All" },
@@ -384,220 +660,387 @@ const FILTERS: Array<{ value: ActivityFilter; label: string }> = [
   { value: "changes", label: "Changes" },
 ];
 
+/** A field value in the stream: status as its pill, priority as dot + P1,
+ *  nothing as a quiet dash, everything else mono. */
+function ChangeValue({
+  field,
+  value,
+  statuses,
+  titleOf,
+}: {
+  field: string;
+  value: string | null;
+  statuses: StatusDto[];
+  /** Resolves an issue id to its title, for `epic` and `blocked_by`. */
+  titleOf?: (id: string) => string | undefined;
+}) {
+  if (value === null || value.length === 0 || value === "—" || value === "null") {
+    return <span style={{ color: "var(--faint)" }}>—</span>;
+  }
+  if (field === "status") {
+    const status = statuses.find((each) => each.id === value);
+    return status ? <StatusPill status={status} /> : <StatusPill label={value} />;
+  }
+  if (field === "priority" && /^p\d$/.test(value)) {
+    return (
+      <>
+        <PriorityDot priority={value as Priority} /> {value.toUpperCase()}
+      </>
+    );
+  }
+  return <span className="mono">{titleOf ? resolveIdValue(field, value, titleOf) : value}</span>;
+}
+
 /** Comments and field changes as one stream — what happened to this issue,
  *  in the order it happened. Both come out of git; neither is stored as an
- *  activity log (invariant 5). */
+ *  activity log (invariant 5). The segment is owned by the surface so the
+ *  blame menus and the page's History rail can switch it. */
 export function IssueActivity({
-  issueId,
+  issue,
   history,
+  filter,
+  onFilterChange,
+  highlight,
 }: {
-  issueId: string;
+  issue: IssueDto;
   history: FieldEventDto[];
+  filter: ActivityFilter;
+  onFilterChange: (filter: ActivityFilter) => void;
+  /** Scroll the change with this seq into view and flash it. The nonce
+   *  makes clicking the same row twice work twice. */
+  highlight: { seq: number; nonce: number } | null;
 }) {
-  const comments = useComments(issueId);
-  const add = useAddComment(issueId);
+  const comments = useComments(issue.id);
+  const add = useAddComment(issue.id);
+  const refresh = useRefreshIssue(issue);
   const schema = useSchema();
+  const statuses = schema.data?.workflow.statuses ?? [];
+  // An `epic` change records an issue id; the pool turns it into the title.
+  const pool = useIssuePool();
+  const titleOf = (id: string) => pool.find((candidate) => candidate.id === id)?.title;
   const [draft, setDraft] = useState("");
-  const [filter, setFilter] = useState<ActivityFilter>("all");
+  const listRef = useRef<HTMLDivElement>(null);
 
-  const statusLabel = (id: string) =>
-    schema.data?.workflow.statuses.find((status) => status.id === id)?.label ?? id;
+  const entries = useMemo(() => mergeActivity(history, comments.data ?? []), [history, comments.data]);
 
-  const entries = useMemo(
-    () => mergeActivity(history, comments.data ?? []),
-    [history, comments.data],
-  );
-  const shown = entries.filter((entry) =>
-    filter === "all" ? true : filter === "comments" ? entry.kind === "comment" : entry.kind === "commit",
-  );
+  type Shown =
+    | { kind: "cm"; id: string; author: string; ts: string; html: string }
+    | { kind: "chg"; seq: number; author: string; ts: string; event: FieldEventDto };
+  const shown: Shown[] = [];
+  for (const entry of entries) {
+    if (entry.kind === "comment") {
+      if (filter !== "changes") {
+        shown.push({ kind: "cm", id: entry.id, author: entry.author, ts: entry.ts, html: entry.bodyHtml });
+      }
+      continue;
+    }
+    // The birth of the issue is the first line of the stream, not a burst
+    // of "changed" rows.
+    if (entry.creation || filter === "comments") continue;
+    for (const event of entry.events) {
+      if (isNoise(event)) continue;
+      shown.push({ kind: "chg", seq: event.seq, author: entry.author, ts: event.ts, event });
+    }
+  }
+
+  useEffect(() => {
+    if (!highlight || !listRef.current) return;
+    const target = listRef.current.querySelector<HTMLElement>(`[data-seq="${highlight.seq}"]`);
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.animate([{ background: "var(--active)" }, { background: "transparent" }], { duration: 1200 });
+  }, [highlight]);
 
   // A comment is a discrete message in git history, so the composer sends
-  // when the writer says so rather than on a typing pause: Mod+Enter (the
-  // editor hands over its just-serialized bytes) or the button.
-  const send = (markdown?: string) => {
-    const body = (markdown ?? draft).trim();
-    if (body.length === 0 || add.isPending) return;
-    add.mutate(body, { onSuccess: () => setDraft("") });
+  // when the writer says so — the button or ⌘↵ — never on a typing pause.
+  const send = () => {
+    const body = draft.trim();
+    if (body.length === 0) {
+      toast("Write something first");
+      return;
+    }
+    if (add.isPending) return;
+    add.mutate(body, {
+      onSuccess: () => {
+        setDraft("");
+        refresh();
+        toast("Comment committed");
+      },
+    });
   };
 
   return (
-    <section>
-      <div className="mb-3 flex items-center gap-2">
-        <SectionHeading size="sm">Activity</SectionHeading>
-        <div className="ml-auto flex overflow-hidden rounded-md border border-edge" role="group" aria-label="Filter activity">
-          {FILTERS.map((option, index) => (
+    <div>
+      <div className="act-h">
+        <SectionHeading>Activity</SectionHeading>
+        <div className="seg" role="group" aria-label="Filter activity">
+          {FILTERS.map((option) => (
             <button
               key={option.value}
               type="button"
+              className={cn("actf", filter === option.value && "on")}
               aria-pressed={filter === option.value}
-              onClick={() => setFilter(option.value)}
-              className={cn(
-                "px-2 py-0.5 text-[11.5px] transition-colors",
-                index > 0 && "border-l border-edge",
-                filter === option.value ? "bg-sunken text-ink" : "text-muted hover:text-ink",
-              )}
+              onClick={() => onFilterChange(option.value)}
             >
               {option.label}
             </button>
           ))}
         </div>
       </div>
-
-      {comments.isPending ? <Loading label="Loading activity…" /> : null}
-      {comments.isError ? (
-        <ErrorBox
-          error={comments.error}
-          title="Could not load comments"
-          onRetry={() => void comments.refetch()}
-        />
-      ) : null}
-
-      <ol className="mb-4 flex flex-col gap-3">
-        {shown.map((entry) =>
-          entry.kind === "comment" ? (
-            <li key={entry.id} className="flex gap-2.5">
-              <span
-                className={cn(
-                  "mt-0.5 inline-flex size-[22px] shrink-0 items-center justify-center rounded-full font-mono text-[9px] leading-none text-white",
-                  circleColor(entry.author),
-                )}
-                title={entry.author}
-              >
-                {initials(entry.author)}
+      <div className="tl" ref={listRef}>
+        <div className="ev sys">
+          <span className="dotc">
+            <i />
+          </span>
+          <div>
+            <div className="who">
+              <b>{issue.reporter ?? history[0]?.author ?? "unknown"}</b> created this issue
+              <span className="ts" title={fullTimestamp(issue.created)}>
+                {relativeTime(issue.created)}
               </span>
-              <div className="min-w-0 flex-1 rounded-lg border border-edge bg-card/60 px-3 py-2.5">
-                <div className="flex items-baseline gap-2">
-                  <span className="font-mono text-[11.5px] text-ink-2">{entry.author}</span>
-                  <span className="text-[11.5px] text-dim" title={fullTimestamp(entry.ts)}>
+            </div>
+          </div>
+        </div>
+        {shown.map((entry) =>
+          entry.kind === "cm" ? (
+            <div className="ev" key={entry.id}>
+              <Avatar name={entry.author} />
+              <div>
+                <div className="who">
+                  <b>{entry.author}</b> commented
+                  <span className="ts" title={fullTimestamp(entry.ts)}>
                     {relativeTime(entry.ts)}
                   </span>
                 </div>
-                <Markdown html={entry.bodyHtml} className="mt-1.5 text-sm" />
+                <div className="cm">
+                  <Markdown html={entry.html} className="md" />
+                </div>
               </div>
-            </li>
+            </div>
           ) : (
-            <li key={`${entry.sha}-${entry.seq}`} className="flex gap-2.5">
-              <span
-                className="mt-[7px] size-[7px] shrink-0 rounded-full bg-ctl"
-                aria-hidden
-              />
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-baseline gap-x-2 text-[12px] text-muted">
-                  <span className="font-mono text-ink-2">{entry.author}</span>
-                  <span>
-                    {entry.creation
-                      ? "created this issue"
-                      : `changed ${fieldList(entry.events.map((event) => event.field))}`}
-                  </span>
-                  <span
-                    className="ml-auto font-mono text-[11px] text-faint"
-                    title={`${fullTimestamp(entry.ts)}\ncommit ${entry.sha}`}
-                  >
+            <div className="ev sys" key={`chg-${entry.seq}`} data-seq={entry.seq}>
+              <span className="dotc">
+                <i />
+              </span>
+              <div>
+                <div className="who">
+                  <b>{entry.author}</b> changed {entry.event.field}
+                  <span className="ts" title={`${fullTimestamp(entry.ts)}\ncommit ${entry.event.commit_sha}`}>
                     {relativeTime(entry.ts)}
                   </span>
                 </div>
-                <div className="mt-1 flex flex-col gap-0.5 border-l border-edge pl-2.5">
-                  {entry.events.map((event) => (
-                    <FieldChange key={event.seq} event={event} statusLabel={statusLabel} />
-                  ))}
+                <div className="chg">
+                  <ChangeValue field={entry.event.field} value={entry.event.old_value} statuses={statuses} titleOf={titleOf} />
+                  <span className="arr">→</span>
+                  <ChangeValue field={entry.event.field} value={entry.event.new_value} statuses={statuses} titleOf={titleOf} />
                 </div>
               </div>
-            </li>
+            </div>
           ),
         )}
-      </ol>
-      {shown.length === 0 && !comments.isPending ? (
-        <p className="mb-4 text-xs text-faint">
-          {filter === "comments"
-            ? "No comments yet."
-            : filter === "changes"
-              ? "No recorded changes yet."
-              : "Nothing has happened to this issue yet."}
-        </p>
-      ) : null}
-
-      <div className="flex flex-col gap-2">
-        <Suspense fallback={<Loading label="Loading editor…" />}>
-          <RichEditor
-            value={draft}
-            onChange={setDraft}
-            onSave={send}
-            className="min-h-20 rounded-md border border-edge bg-card/60 p-2"
-          />
-        </Suspense>
-        <div className="flex items-center gap-2.5">
-          <button
-            type="button"
-            onClick={() => send()}
-            disabled={draft.trim().length === 0 || add.isPending}
-            className="rounded-md bg-accent px-2.5 py-1 text-[11px] font-medium text-on-accent hover:bg-accent-hi disabled:bg-card disabled:text-muted"
-          >
-            Comment
-          </button>
-          <span className="text-[11.5px] text-dim">Ctrl/⌘+Enter to send</span>
+        {shown.length === 0 && !comments.isPending ? <p className="empty">Nothing here yet.</p> : null}
+        {comments.isError ? (
+          <p className="empty" style={{ color: "var(--crit)" }}>
+            Could not load comments: {comments.error instanceof Error ? comments.error.message : String(comments.error)}
+          </p>
+        ) : null}
+      </div>
+      <div className="composer">
+        <MessageSquare className="i" aria-hidden />
+        <input
+          className="cmIn"
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+              event.preventDefault();
+              send();
+            }
+          }}
+          placeholder="Write a comment… Markdown"
+          aria-label="Comment"
+        />
+        <div className="bar2">
+          <span style={{ fontSize: 11, color: "var(--faint)" }}>
+            Comments are discrete messages in git history — sent when you say so.
+          </span>
+          <Sp />
+          <Btn primary className="cmSend" onClick={send} disabled={add.isPending}>
+            Comment<kbd>⌘↵</kbd>
+          </Btn>
         </div>
       </div>
-    </section>
+    </div>
   );
 }
 
-/** Star toggle. A star is a private bookmark — this browser only, never a
- *  file, never a commit — so the button says so on hover. */
-export function StarButton({ shortRef, className }: { shortRef: string; className?: string }) {
-  const starred = useIsStarred(shortRef);
-  return (
-    <button
-      type="button"
-      aria-pressed={starred}
-      aria-label={starred ? "Unstar" : "Star"}
-      title={starred ? "Starred — kept in this browser" : "Star (kept in this browser, never in the repo)"}
-      onClick={() => toggleStar(shortRef)}
-      className={cn(
-        "flex size-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-hover",
-        starred ? "text-warn-text" : "text-muted hover:text-ink",
-        className,
-      )}
-    >
-      <Star className={cn("size-4", starred && "fill-current")} aria-hidden />
-    </button>
-  );
+// ---------------------------------------------------------------------------
+// The "…" menu
+// ---------------------------------------------------------------------------
+
+/** DELETE /api/issues/{id}. Lives here rather than in lib/api so the two
+ *  issue surfaces can ship it without waiting on the shared client; it
+ *  follows the same token and error contract. */
+async function deleteIssueRequest(id: string): Promise<void> {
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+  let res: Response;
+  try {
+    res = await fetch(`/api/issues/${encodeURIComponent(id)}`, { method: "DELETE", headers });
+  } catch (cause) {
+    throw new ApiError(cause instanceof Error ? `Network error: ${cause.message}` : "Network error", 0);
+  }
+  if (!res.ok) {
+    let message = `Request failed (${res.status})`;
+    try {
+      const body = (await res.json()) as { error?: unknown };
+      if (typeof body.error === "string" && body.error.length > 0) message = body.error;
+    } catch {
+      // Non-JSON error body — keep the generic message.
+    }
+    throw new ApiError(message, res.status);
+  }
 }
 
-/** The title, edited in place. Commits on Enter or blur; an empty title is
- *  refused rather than committed, since the title is how an issue is read
- *  everywhere else. */
-export function IssueTitle({
+function useDeleteIssue() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => deleteIssueRequest(id),
+    onSuccess: (_data, id) => {
+      client.removeQueries({ queryKey: queryKeys.issue(id) });
+      void client.invalidateQueries({ queryKey: ["issues"] });
+      void client.invalidateQueries({ queryKey: queryKeys.board });
+      void client.invalidateQueries({ queryKey: queryKeys.status });
+      void client.invalidateQueries({ queryKey: ["activity"] });
+    },
+    onError: (error) => {
+      toast.error(`Could not delete: ${error instanceof Error ? error.message : String(error)}`);
+    },
+  });
+}
+
+/** The items behind the "…" button, shared by the panel and the page. */
+export function useMoreMenu({
   issue,
-  size,
+  inPeek,
+  route,
+  from,
+  onToggleSurface,
+  onDeleted,
 }: {
   issue: IssueDto;
-  size: "panel" | "page";
-}) {
+  inPeek: boolean;
+  /** The route the surface sits on — what "Copy link" points at. */
+  route: Route;
+  /** For the page: the list it came from, where a deletion returns to. */
+  from: PeekHost;
+  /** "Open as page" in the panel, "Show as panel" on the page. */
+  onToggleSurface: () => void;
+  onDeleted: () => void;
+}): MenuItem[] {
+  const schema = useSchema();
   const patch = usePatchIssue(issue.id);
-  return (
-    <input
-      key={issue.title}
-      defaultValue={issue.title}
-      aria-label="Title"
-      onKeyDown={(event) => {
-        if (event.key === "Enter") event.currentTarget.blur();
-        // The panel's Escape closes it; inside the title it should only
-        // abandon the edit.
-        if (event.key === "Escape") {
-          event.stopPropagation();
-          event.currentTarget.value = issue.title;
-          event.currentTarget.blur();
-        }
-      }}
-      onBlur={(event) => {
-        const title = event.currentTarget.value.trim();
-        if (title.length > 0 && title !== issue.title) patch.mutate({ title });
-        else event.currentTarget.value = issue.title;
-      }}
-      className={cn(
-        "w-full min-w-0 rounded-md border border-transparent bg-transparent px-1.5 py-0.5 font-semibold text-ink hover:border-ctl focus:border-accent focus:outline-none",
-        size === "page" ? "text-base" : "text-[17px] leading-snug",
-      )}
-    />
-  );
+  const create = useCreateIssue();
+  const remove = useDeleteIssue();
+  const refresh = useRefreshIssue(issue);
+  const starred = isStarred(issue.short_ref);
+  const statuses = schema.data?.workflow.statuses ?? [];
+  const doneStatus = statuses.find((each) => each.category === "done");
+  const todoStatus = statuses.find((each) => each.category === "todo");
+  const isDone = statuses.find((each) => each.id === issue.status)?.category === "done";
+  const link = `${window.location.origin}${window.location.pathname}${routeToHash(withPeek(route, issue.short_ref))}`;
+  const handle = issue.number !== null ? `#${issue.number}` : issue.short_ref;
+
+  const items: MenuItem[] = [
+    {
+      label: "Copy short ref",
+      icon: <Copy className="i" aria-hidden />,
+      meta: issue.short_ref,
+      run: () => void copyText(issue.short_ref, "Short ref copied"),
+    },
+    { label: "Copy link", icon: <Link2 className="i" aria-hidden />, run: () => void copyText(link, "Link copied") },
+    {
+      label: "Copy as markdown link",
+      icon: <Hash className="i" aria-hidden />,
+      run: () => void copyText(`[[${issue.short_ref}]] ${issue.title}`, "Wiki-link copied"),
+    },
+    { kind: "sep" },
+    {
+      label: inPeek ? "Open as page" : "Show as panel",
+      icon: inPeek ? <Maximize2 className="i" aria-hidden /> : <PanelRight className="i" aria-hidden />,
+      kbd: inPeek ? "⌘↵" : undefined,
+      run: onToggleSurface,
+    },
+    {
+      label: starred ? "Unstar" : "Star",
+      icon: <Star className="i" aria-hidden />,
+      run: () => starWithToast(issue.short_ref),
+    },
+    {
+      label: "Duplicate",
+      icon: <Copy className="i" aria-hidden />,
+      disabled: create.isPending,
+      run: () => {
+        const first = statuses[0];
+        create.mutate(
+          {
+            title: `${issue.title} (copy)`,
+            type: issue.type,
+            ...(issue.priority ? { priority: issue.priority } : {}),
+            ...(first ? { status: first.id } : {}),
+            assignees: [...issue.assignees],
+            labels: [...issue.labels],
+            ...(issue.estimate !== null ? { estimate: issue.estimate } : {}),
+            body: issue.body,
+          },
+          {
+            onSuccess: (created) => {
+              toast(`Created ${created.number !== null ? `#${created.number}` : created.short_ref}`);
+              if (inPeek) navigate(withPeek(route, created.short_ref));
+              else navigate({ name: "issue", id: created.short_ref, from });
+            },
+          },
+        );
+      },
+    },
+    { kind: "sep" },
+  ];
+
+  if (isDone ? todoStatus : doneStatus) {
+    const target = isDone ? todoStatus : doneStatus;
+    if (target) {
+      items.push({
+        label: isDone ? "Reopen" : "Mark done",
+        icon: <Check className="i" aria-hidden />,
+        run: () =>
+          patch.mutate(
+            { status: target.id },
+            {
+              onSuccess: () => {
+                refresh();
+                toast(`Committed · status → ${target.label}`);
+              },
+            },
+          ),
+      });
+    }
+  }
+
+  items.push({
+    label: "Delete issue…",
+    icon: <Trash2 className="i" aria-hidden />,
+    danger: true,
+    confirm: "Click again to confirm delete",
+    disabled: remove.isPending,
+    run: () =>
+      remove.mutate(issue.id, {
+        onSuccess: () => {
+          toast(`Deleted ${handle} · committed (git keeps the history)`);
+          onDeleted();
+        },
+      }),
+  });
+
+  return items;
 }

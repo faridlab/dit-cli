@@ -1,206 +1,284 @@
-// New issue as a page, not a dialog: it opens looking exactly like the
-// issue detail view it becomes, with the title input and the always-on
-// description editor ready. The issue is created on the writer's word
-// (⌘Enter or the button) — before that, nothing lands in the repo, so an
-// abandoned draft costs nothing. On creation the route becomes the real
-// issue and editing simply continues there.
+// New issue as a page, not a dialog: it opens looking like the issue page it
+// becomes, with the title and the always-on description editor ready. The
+// issue is created on the writer's word (⌘↵ or the button) — before that,
+// nothing lands in the repo, so an abandoned draft costs nothing. On
+// creation the route becomes the real issue and editing simply continues.
+//
+// The markup is the design's `.compose` recipe; every property is local
+// draft state until Create sends one POST.
 
-import { lazy, Suspense, useEffect, useState } from "react";
-import { ArrowLeft } from "lucide-react";
-import { SelectField } from "../components/SelectField";
-import { PriorityDot, TypeBadge } from "../components/badges";
-import { BUTTON_PRIMARY, INPUT_CLASS, SectionHeading } from "../components/chrome";
+import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
+import { ChevronDown, Plus } from "lucide-react";
+import { toast } from "sonner";
+import { AssigneeCircles, Chip, PriorityDot, StatusPill, TypeBadge } from "../components/badges";
+import { Btn, MenuButton, SectionHeading, Sp, type MenuItem } from "../components/chrome";
 import { Loading } from "../components/states";
-import { EditorModeToggle, type EditorMode } from "../components/EditorModeToggle";
-import { useCreateIssue, useSchema } from "../lib/queries";
-import { parseCsvList } from "../lib/format";
+import { useKnownLabels, useKnownPeople } from "../components/issue/parts";
+import { ISSUE_TYPES } from "../lib/lists";
+import { useCreateIssue, useSchema, useSettings } from "../lib/queries";
+import { navigate, useRoute } from "../lib/router";
 import type { IssueType, Priority } from "../lib/types";
 import { cn } from "../lib/cn";
 
 const CodeMirrorEditor = lazy(() => import("../editor/CodeMirrorEditor"));
 const RichEditor = lazy(() => import("../editor/RichEditor"));
 
-const TYPE_OPTIONS: Array<{ value: IssueType; label: string }> = [
-  { value: "task", label: "task" },
-  { value: "bug", label: "bug" },
-  { value: "story", label: "story" },
-  { value: "spike", label: "spike" },
-  { value: "chore", label: "chore" },
-];
+const TYPES: IssueType[] = ["task", "bug", "story", "spike", "chore"];
+const PRIORITIES: Priority[] = ["p0", "p1", "p2", "p3", "p4"];
 
-const PRIORITY_OPTIONS: Priority[] = ["p0", "p1", "p2", "p3", "p4"];
+function isIssueType(value: string | null | undefined): value is IssueType {
+  return value !== null && value !== undefined && (ISSUE_TYPES as readonly string[]).includes(value);
+}
 
-function FieldRow({ label, children }: { label: string; children: React.ReactNode }) {
+/** One draft property: label, then the value as the menu's trigger. */
+function DraftRow({
+  label,
+  field,
+  items,
+  children,
+}: {
+  label: string;
+  field: string;
+  items: MenuItem[];
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
   return (
-    <div className="flex w-[128px] flex-col gap-1">
-      <span className="text-[10.5px] font-medium uppercase tracking-[0.05em] text-muted">
-        {label}
-      </span>
-      {children}
-    </div>
+    <>
+      <div className="k">{label}</div>
+      <MenuButton items={items} className="relative" open={open} onOpenChange={setOpen}>
+        <div
+          className="v nprop cursor-pointer"
+          data-f={field}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              setOpen(true);
+            }
+          }}
+        >
+          {children}
+        </div>
+      </MenuButton>
+    </>
   );
 }
 
 export function NewIssueView({ onCreated }: { onCreated: (shortRef: string) => void }) {
+  const route = useRoute();
   const schema = useSchema();
+  const settings = useSettings();
   const create = useCreateIssue();
+  const people = useKnownPeople();
+  const knownLabels = useKnownLabels();
 
   const [title, setTitle] = useState("");
-  const [type, setType] = useState<IssueType>("task");
-  const [priority, setPriority] = useState("");
+  // The roadmap's "New epic" arrives with the type in the route.
+  const [type, setType] = useState<IssueType>(() =>
+    route.name === "new-issue" && isIssueType(route.type) ? route.type : "task",
+  );
   const [status, setStatus] = useState("");
-  const [labels, setLabels] = useState("");
+  const [priority, setPriority] = useState<Priority | null>(null);
+  const [assignees, setAssignees] = useState<string[]>([]);
+  const [labels, setLabels] = useState<string[]>([]);
   const [body, setBody] = useState("");
-  const [mode, setMode] = useState<EditorMode>("rich");
-  const [validation, setValidation] = useState<string | null>(null);
+  const [mode, setMode] = useState<"rich" | "source">("rich");
 
+  const statuses = schema.data?.workflow.statuses ?? [];
   // The workflow's first status is the default — the same hand-off the
   // quick-capture on Home uses.
   useEffect(() => {
-    if (status === "" && schema.data) {
-      const first = schema.data.workflow.statuses[0];
-      if (first) setStatus(first.id);
-    }
-  }, [schema.data, status]);
+    if (status === "" && statuses[0]) setStatus(statuses[0].id);
+  }, [statuses, status]);
+  const statusDto = statuses.find((each) => each.id === status);
 
   const submit = (markdown?: string) => {
     const trimmed = title.trim();
     if (trimmed.length === 0) {
-      setValidation("A title is required.");
+      toast("A title is required");
+      document.getElementById("nTitle")?.focus();
       return;
     }
     if (create.isPending) return;
-    setValidation(null);
     create.mutate(
       {
         title: trimmed,
         type,
         ...(priority ? { priority } : {}),
         ...(status ? { status } : {}),
-        labels: parseCsvList(labels),
-        // The editor hands over its just-serialized bytes on Mod+Enter; the
-        // button path uses the draft as it stands.
+        assignees,
+        labels,
+        // The editor hands over its just-serialized bytes on ⌘↵; the button
+        // path uses the draft as it stands.
         body: markdown ?? body,
       },
-      { onSuccess: (issue) => onCreated(issue.short_ref) },
+      {
+        onSuccess: (issue) => {
+          const label = statusDto?.label ?? status;
+          toast(`Created ${issue.number !== null ? `#${issue.number}` : issue.short_ref}${label ? ` in ${label}` : ""}`);
+          onCreated(issue.short_ref);
+        },
+      },
     );
   };
 
+  const cancel = () => {
+    if (window.history.length > 1) window.history.back();
+    else navigate({ name: "issues", q: null });
+  };
+
+  const typeItems: MenuItem[] = TYPES.map((each) => ({
+    label: each,
+    icon: <TypeBadge type={each} />,
+    on: type === each,
+    run: () => setType(each),
+  }));
+  const statusItems: MenuItem[] = statuses.map((each) => ({
+    label: each.label,
+    on: status === each.id,
+    run: () => setStatus(each.id),
+  }));
+  const priorityItems: MenuItem[] = [...PRIORITIES, null].map((each) => ({
+    label: each ? each.toUpperCase() : "No priority",
+    icon: <PriorityDot priority={each} />,
+    on: priority === each,
+    run: () => setPriority(each),
+  }));
+  const assigneeItems: MenuItem[] = people.map((alias) => ({
+    label: alias,
+    check: assignees.includes(alias),
+    run: () =>
+      setAssignees((current) =>
+        current.includes(alias) ? current.filter((each) => each !== alias) : [...current, alias],
+      ),
+  }));
+  const labelItems: MenuItem[] = [
+    {
+      kind: "input",
+      placeholder: "New label",
+      button: "Add",
+      run: (value) => {
+        if (value && !labels.includes(value)) setLabels((current) => [...current, value]);
+      },
+    },
+    ...knownLabels.map(
+      (label): MenuItem => ({
+        label,
+        check: labels.includes(label),
+        run: () =>
+          setLabels((current) =>
+            current.includes(label) ? current.filter((each) => each !== label) : [...current, label],
+          ),
+      }),
+    ),
+  ];
+
+  const templates = settings.data?.templates ?? [];
+  const template = templates.includes(type) ? `${type}.md` : "default.md";
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex items-center gap-3 border-b border-edge px-5 py-3">
-        <a
-          href="#/issues"
-          title="Back to issues"
-          className="rounded-md p-1 text-muted hover:bg-card hover:text-ink"
-        >
-          <ArrowLeft className="size-4" aria-hidden />
-        </a>
-        <span className="rounded bg-edge px-1.5 py-0.5 font-mono text-[10.5px] font-medium text-ink-2">
-          NEW
-        </span>
-        <TypeBadge type={type} />
-        {priority ? <PriorityDot priority={priority as Priority} /> : null}
-        <input
-          value={title}
-          onChange={(event) => setTitle(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              submit();
-            }
-          }}
-          placeholder="Issue title"
-          aria-label="Title"
-          autoFocus
-          className="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1.5 py-0.5 text-base font-semibold text-ink placeholder:text-faint hover:border-ctl focus:border-accent focus:outline-none"
-        />
-        {create.isPending ? <span className="text-[11.5px] text-dim">Creating…</span> : null}
-      </header>
-
-      <div className="flex min-h-0 flex-1">
-        <div className="flex min-w-0 flex-1 flex-col gap-[22px] overflow-y-auto px-6 pb-8 pt-5">
-          <section className="flex flex-wrap items-end gap-3">
-            <FieldRow label="Type">
-              <SelectField
-                ariaLabel="Type"
-                value={type}
-                options={TYPE_OPTIONS}
-                onChange={(value) => setType(value as IssueType)}
-              />
-            </FieldRow>
-            <FieldRow label="Priority">
-              <SelectField
-                ariaLabel="Priority"
-                value={priority}
-                options={PRIORITY_OPTIONS.map((value) => ({ value, label: value }))}
-                onChange={setPriority}
-              />
-            </FieldRow>
-            <FieldRow label="Status">
-              <SelectField
-                ariaLabel="Status"
-                value={status}
-                disabled={schema.isPending}
-                options={
-                  schema.data?.workflow.statuses.map((s) => ({ value: s.id, label: s.label })) ?? []
-                }
-                onChange={setStatus}
-              />
-            </FieldRow>
-            <FieldRow label="Labels">
-              <input
-                value={labels}
-                onChange={(event) => setLabels(event.target.value)}
-                placeholder="area:auth, team:core"
-                aria-label="Labels"
-                className={cn(INPUT_CLASS, "w-[200px]")}
-              />
-            </FieldRow>
-          </section>
-
-          <section>
-            <div className="mb-3 flex items-center gap-2">
-              <SectionHeading size="sm">Description</SectionHeading>
-              <EditorModeToggle mode={mode} onChange={setMode} showPreview={false} />
-            </div>
-            <div className="min-h-72">
-              <Suspense fallback={<Loading label="Loading editor…" />}>
-                {mode === "rich" ? (
-                  <RichEditor
-                    value={body}
-                    onChange={setBody}
-                    onSave={submit}
-                    onFallbackToSource={() => setMode("source")}
-                    className="h-full min-h-72 rounded-md border border-edge bg-card/60 p-2"
-                  />
-                ) : (
-                  <CodeMirrorEditor value={body} onChange={setBody} onSave={submit} />
-                )}
-              </Suspense>
-            </div>
-          </section>
-
-          <section className="mt-auto flex items-center gap-3 border-t border-edge pt-4">
-            <button
-              type="button"
-              onClick={() => submit()}
-              disabled={title.trim().length === 0 || create.isPending}
-              className={BUTTON_PRIMARY}
+    <div
+      className="compose"
+      onKeyDown={(event) => {
+        if (!(event.metaKey || event.ctrlKey) || event.key !== "Enter") return;
+        // The rich editor handles its own ⌘↵ (it hands over the serialized
+        // bytes through onSave); anywhere else on the page it creates.
+        if (event.target instanceof HTMLElement && event.target.closest(".ProseMirror")) return;
+        event.preventDefault();
+        submit();
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--muted)", fontSize: 12 }}>
+        <Plus className="i" aria-hidden />
+        Nothing is committed until you press Create. The page becomes the issue.
+      </div>
+      <input
+        id="nTitle"
+        className="ttl-in"
+        placeholder="Issue title"
+        aria-label="Title"
+        autoFocus
+        value={title}
+        onChange={(event) => setTitle(event.target.value)}
+      />
+      <div className="props" style={{ gridTemplateColumns: "88px minmax(0,1fr)" }}>
+        <DraftRow label="Type" field="type" items={typeItems}>
+          <TypeBadge type={type} />
+          <span>{type}</span>
+          <ChevronDown className="i" aria-hidden />
+        </DraftRow>
+        <DraftRow label="Status" field="status" items={statusItems}>
+          {statusDto ? <StatusPill status={statusDto} /> : <StatusPill label={status || "—"} />}
+          <ChevronDown className="i" aria-hidden />
+        </DraftRow>
+        <DraftRow label="Priority" field="priority" items={priorityItems}>
+          <PriorityDot priority={priority} />
+          <span>{priority ? priority.toUpperCase() : <span className="ph">No priority</span>}</span>
+          <ChevronDown className="i" aria-hidden />
+        </DraftRow>
+        <DraftRow label="Assignees" field="assignees" items={assigneeItems}>
+          {assignees.length > 0 ? (
+            <>
+              <AssigneeCircles assignees={assignees} hollow={false} />
+              <span>{assignees.join(", ")}</span>
+            </>
+          ) : (
+            <span className="ph">Unassigned</span>
+          )}
+          <ChevronDown className="i" aria-hidden />
+        </DraftRow>
+        <DraftRow label="Labels" field="labels" items={labelItems}>
+          <span className="lbls">
+            {labels.map((label) => (
+              <Chip key={label} label={label} />
+            ))}
+            <span
+              className="chip"
+              style={{ background: "transparent", border: "1px dashed var(--edge-2)", color: "var(--faint)" }}
             >
-              {create.isPending ? "Creating…" : "Create issue"}
-            </button>
-            <span className="text-[11.5px] text-dim">⌘Enter creates · nothing is committed until then</span>
-            {validation ? <p className="text-xs text-crit-text">{validation}</p> : null}
-            {create.isError ? (
-              <p className="text-xs text-crit-text">
-                {create.error instanceof Error
-                  ? create.error.message
-                  : "Could not create the issue"}
-              </p>
-            ) : null}
-          </section>
+              +
+            </span>
+          </span>
+        </DraftRow>
+      </div>
+
+      <div>
+        <SectionHeading className="mb-2">Description</SectionHeading>
+        <div
+          className={cn(
+            "body-in md focus-within:[border-color:var(--accent)]",
+            "[&_.dit-rich]:px-0 [&_.dit-rich]:text-[13.5px] [&_.dit-rich]:leading-[1.6]",
+          )}
+          id="nBody"
+        >
+          <Suspense fallback={<Loading label="Loading editor…" />}>
+            {mode === "rich" ? (
+              <RichEditor
+                value={body}
+                onChange={setBody}
+                onSave={submit}
+                onFallbackToSource={() => setMode("source")}
+              />
+            ) : (
+              <CodeMirrorEditor value={body} onChange={setBody} onSave={submit} />
+            )}
+          </Suspense>
         </div>
+      </div>
+
+      <div className="actions">
+        <span style={{ fontSize: 11.5, color: "var(--faint)" }}>
+          Template: <span className="mono">{template}</span>
+          {template !== "default.md" ? " (evidence-first)" : ""}
+        </span>
+        <Sp />
+        <Btn onClick={cancel}>Cancel</Btn>
+        <Btn primary onClick={() => submit()} disabled={create.isPending}>
+          {create.isPending ? "Creating…" : "Create"}
+          <kbd>⌘↵</kbd>
+        </Btn>
       </div>
     </div>
   );
