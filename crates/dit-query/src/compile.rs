@@ -471,4 +471,13 @@ mod tests {
         };
         assert!(err.to_string().contains("relative date"), "{err}");
     }
+
+    #[test]
+    fn bare_tilde_compiles_like_body_match() {
+        let bare = compile_str("~ \"merge driver\"");
+        let named = compile_str("body ~ \"merge driver\"");
+        assert_eq!(bare.where_sql, named.where_sql);
+        assert_eq!(bare.params, named.params);
+        assert!(bare.where_sql.contains("issues_fts MATCH"));
+    }
 }

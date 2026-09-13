@@ -30,8 +30,6 @@ pub enum LexError {
     UnexpectedChar { pos: usize, ch: char },
     #[error("position {pos}: unterminated string — close the quote")]
     UnterminatedString { pos: usize },
-    #[error("position {pos}: `~` only works as `field ~ \"text\"` (full-text match)")]
-    BareTilde { pos: usize },
 }
 
 pub fn lex(input: &str) -> Result<Vec<Tok>, LexError> {

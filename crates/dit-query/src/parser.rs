@@ -16,7 +16,7 @@ pub enum ParseError {
     UnexpectedList { op: String },
     #[error("IN needs a parenthesized list — e.g. `status IN (todo, in_progress)`")]
     InNeedsList,
-    #[error("expected a comparison like `status = todo`, found `{0}`")]
+    #[error("expected a comparison like `status = todo` or `~ \"text\"`, found `{0}`")]
     ExpectedComparison(String),
     #[error("`{0}` cannot appear here — expected a field name or `(`")]
     UnexpectedToken(String),
@@ -28,7 +28,7 @@ pub enum ParseError {
     TrailingAfterLimit(String),
     #[error("the query ended early — {0}")]
     UnexpectedEnd(String),
-    #[error("`~` matches text — e.g. `title ~ \"login\"` or `body ~ timeout`")]
+    #[error("`~` matches text — e.g. `~ \"login\"`, `title ~ \"login\"` or `body ~ timeout`")]
     MatchNeedsText,
 }
 
@@ -181,6 +181,20 @@ impl Parser {
     }
 
     fn comparison(&mut self) -> Result<Expr, ParseError> {
+        // A bare `~ "text"` — no field name — is a full-text match over the
+        // issue, the same as `body ~ "text"`.
+        if matches!(self.peek(), Some(Tok::Tilde)) {
+            self.next();
+            let value = match self.value(Op::Match)? {
+                Val::Str(s) => Val::Str(s),
+                _ => return Err(ParseError::MatchNeedsText),
+            };
+            return Ok(Expr::Cmp {
+                field: Field::Body,
+                op: Op::Match,
+                value,
+            });
+        }
         let Some(Tok::Ident(name)) = self.next() else {
             return Err(ParseError::ExpectedComparison(self.describe()));
         };
@@ -217,10 +231,13 @@ impl Parser {
     }
 
     fn value(&mut self, op: Op) -> Result<Val, ParseError> {
-        let tok = self.next().ok_or(ParseError::UnexpectedEnd(format!(
-            "a value after `{}`",
-            op.symbol()
-        )))?;
+        let tok = self.next().ok_or_else(|| {
+            if op == Op::Match {
+                ParseError::MatchNeedsText
+            } else {
+                ParseError::UnexpectedEnd(format!("a value after `{}`", op.symbol()))
+            }
+        })?;
         match tok {
             Tok::Str(s) => Ok(Val::Str(s)),
             Tok::Num(n) => Ok(Val::Num(n)),
@@ -232,8 +249,12 @@ impl Parser {
                     s.to_ascii_uppercase().as_str(),
                     "AND" | "OR" | "IN" | "NOT" | "ORDER" | "BY" | "LIMIT" | "ASC" | "DESC"
                 ) {
-                    return Err(ParseError::MissingValue {
-                        op: op.symbol().into(),
+                    return Err(if op == Op::Match {
+                        ParseError::MatchNeedsText
+                    } else {
+                        ParseError::MissingValue {
+                            op: op.symbol().into(),
+                        }
                     });
                 }
                 Ok(Val::Str(s))
@@ -399,5 +420,50 @@ mod tests {
     fn dangling_operator_is_a_clear_error() {
         let err = parse("status =").unwrap_err();
         assert!(err.to_string().contains("ended early"), "{err}");
+    }
+
+    #[test]
+    fn bare_tilde_is_a_body_match() {
+        let q = parse("~ \"merge driver\"").unwrap();
+        assert_eq!(
+            q.filter.unwrap(),
+            Expr::Cmp {
+                field: Field::Body,
+                op: Op::Match,
+                value: Val::Str("merge driver".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn bare_tilde_composes_with_other_comparisons() {
+        let q = parse("~ \"merge\" AND status != done").unwrap();
+        let Expr::And(left, right) = q.filter.unwrap() else {
+            panic!("expected And at the top");
+        };
+        assert!(matches!(
+            *left,
+            Expr::Cmp {
+                field: Field::Body,
+                op: Op::Match,
+                ..
+            }
+        ));
+        assert!(matches!(
+            *right,
+            Expr::Cmp {
+                field: Field::Status,
+                op: Op::Ne,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn bare_tilde_without_text_is_a_clear_error() {
+        let err = parse("~").unwrap_err();
+        assert!(err.to_string().contains("matches text"), "{err}");
+        let err = parse("~ AND status = done").unwrap_err();
+        assert!(err.to_string().contains("matches text"), "{err}");
     }
 }
