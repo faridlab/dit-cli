@@ -3,20 +3,32 @@
 // Code-style tabs — single click from the pane previews, double click pins
 // — each tab carries its own editing buffer, and the editor is always on:
 // there is no edit/done mode. Saves happen on their own, one commit per
-// typing pause; Mod+Enter commits immediately. The file tree is the source
-// of truth: a page's history is git, and every save is one commit through
-// the same write path issues use.
+// typing pause; ⌘S / Mod+Enter commit immediately. The file tree is the
+// source of truth: a page's history is git, and every save is one commit
+// through the same write path issues use.
+//
+// The markup follows the approved workbench design verbatim: a `.tabs`
+// strip, then a scrolling `article.doc` with a `.path` row, the editor
+// (`.md` rendered blocks or `.src` markdown) and a one-line hint.
 
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  type CSSProperties,
+} from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { FileText, Trash2, X } from "lucide-react";
+import { Copy, FileText, Pen, X } from "lucide-react";
 import { toast } from "sonner";
-import { queryKeys, useDeleteDoc, useDoc, useDocs, usePutDoc } from "../lib/queries";
-import { relativeTime } from "../lib/format";
+import { ApiError } from "../lib/api";
+import { queryKeys, useDoc, usePutDoc } from "../lib/queries";
+import { useViewOptions } from "../lib/viewopts";
 import type { DocTabs } from "../lib/doctabs";
 import type { DocBodyDto } from "../lib/types";
-import { EditorModeToggle, type EditorMode } from "../components/EditorModeToggle";
-import { Empty, ErrorBox, Loading } from "../components/states";
+import { ContextMenuFor, type MenuItem } from "../components/chrome";
+import { Empty, Loading } from "../components/states";
 import { cn } from "../lib/cn";
 
 const CodeMirrorEditor = lazy(() => import("../editor/CodeMirrorEditor"));
@@ -28,93 +40,116 @@ const RichEditor = lazy(() => import("../editor/RichEditor"));
 // roughly 1.8s after the last keystroke.
 const AUTOSAVE_DELAY_MS = 1500;
 
-function formatBytes(bytes: number): string {
-  return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
+async function copyText(text: string, label: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(label);
+  } catch {
+    // Clipboard access needs a secure context; the toast still shows the
+    // value so it can be copied by hand.
+    toast(`${label}: ${text}`);
+  }
 }
 
-function TabBar({
-  tabs,
+function Tab({
+  path,
   active,
+  pinned,
+  dirty,
   onActivate,
   onPin,
+  onUnpin,
   onClose,
+  onCloseOthers,
 }: {
-  tabs: DocTabs;
-  active: string | null;
+  path: string;
+  active: boolean;
+  pinned: boolean;
+  dirty: boolean;
   onActivate: (path: string) => void;
   onPin: (path: string) => void;
+  onUnpin: (path: string) => void;
   onClose: (path: string) => void;
+  onCloseOthers: (path: string) => void;
 }) {
-  if (tabs.paths.length === 0) return null;
+  const items: MenuItem[] = [
+    {
+      label: pinned ? "Unpin" : "Pin",
+      icon: <FileText className="i" aria-hidden />,
+      run: () => (pinned ? onUnpin(path) : onPin(path)),
+    },
+    {
+      label: "Close",
+      icon: <X className="i" aria-hidden />,
+      run: () => onClose(path),
+    },
+    {
+      label: "Close others",
+      icon: <X className="i" aria-hidden />,
+      run: () => onCloseOthers(path),
+    },
+    {
+      label: "Copy path",
+      icon: <Copy className="i" aria-hidden />,
+      run: () => void copyText(path, "Path copied"),
+    },
+  ];
   return (
-    <div
-      role="tablist"
-      aria-label="Open pages"
-      className="flex h-[34px] shrink-0 items-stretch overflow-x-auto border-b border-edge bg-panel/50"
-    >
-      {tabs.paths.map((path) => {
-        const isActive = path === active;
-        const pinned = tabs.pinned.has(path);
-        const dirty = tabs.isDirty(path);
-        return (
-          <div
-            key={path}
-            role="tab"
-            aria-selected={isActive}
-            onDoubleClick={() => onPin(path)}
-            // Middle-click closes — the reflex every tabbed UI teaches.
-            onAuxClick={(event) => {
-              if (event.button === 1) {
-                event.preventDefault();
-                onClose(path);
-              }
+    <ContextMenuFor items={items}>
+      <div
+        role="tab"
+        tabIndex={0}
+        aria-selected={active}
+        title={pinned ? path : "preview tab — double-click to pin"}
+        className={cn(
+          "tab cursor-pointer select-none",
+          active && "on",
+          pinned && "pin",
+        )}
+        onClick={() => onActivate(path)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onActivate(path);
+          }
+        }}
+        onDoubleClick={() => {
+          onPin(path);
+          toast("Tab pinned");
+        }}
+        // Middle-click closes — the reflex every tabbed UI teaches.
+        onAuxClick={(event) => {
+          if (event.button === 1) {
+            event.preventDefault();
+            onClose(path);
+          }
+        }}
+      >
+        <FileText className="i" aria-hidden />
+        {path.split("/").pop() ?? path}
+        {dirty ? (
+          // A dot, not a times sign: there is something to lose — though
+          // with autosave it clears itself within seconds.
+          <span
+            className="dirty"
+            title="unsaved — autosaves after a pause"
+            aria-label="unsaved"
+          />
+        ) : (
+          <button
+            type="button"
+            className="x"
+            title="Close tab"
+            onClick={(event) => {
+              event.stopPropagation();
+              onClose(path);
             }}
-            title={path}
-            className={cn(
-              "group relative flex min-w-0 max-w-[200px] shrink-0 cursor-pointer select-none items-center gap-1.5 border-r border-edge px-2.5",
-              isActive
-                ? "bg-app text-ink"
-                : "text-ink-2 hover:bg-card/60 hover:text-ink",
-            )}
           >
-            {isActive ? (
-              <span className="absolute inset-x-0 top-0 h-[1.5px] bg-accent" aria-hidden />
-            ) : null}
-            <FileText
-              className={cn("size-3.5 shrink-0", pinned ? "text-ink-2" : "text-muted")}
-              aria-hidden
-            />
-            <button
-              type="button"
-              onClick={() => onActivate(path)}
-              className={cn(
-                "truncate py-0 font-mono text-[11.5px]",
-                !pinned && isActive && "italic",
-              )}
-            >
-              {path.split("/").pop() ?? path}
-            </button>
-            {dirty ? (
-              // A dot, not a times sign: there is something to lose — though
-              // with autosave it clears itself within seconds.
-              <span className="size-1.5 shrink-0 rounded-full bg-accent" aria-label="unsaved" />
-            ) : (
-              <button
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onClose(path);
-                }}
-                title="Close tab"
-                className="flex size-4 shrink-0 items-center justify-center rounded text-muted hover:bg-edge hover:text-ink"
-              >
-                <X className="size-3" aria-hidden />
-              </button>
-            )}
-          </div>
-        );
-      })}
-    </div>
+            <X className="i" aria-hidden />
+          </button>
+        )}
+      </div>
+    </ContextMenuFor>
   );
 }
 
@@ -132,15 +167,55 @@ export function DocsView({
   onCloseTab: (path: string) => void;
 }) {
   const client = useQueryClient();
-  const docs = useDocs();
   const doc = useDoc(p);
   const put = usePutDoc();
-  const remove = useDeleteDoc();
-  const [editMode, setEditMode] = useState<EditorMode>("rich");
+  // The header's Source button flips this; the view only reads it.
+  const { docSource, setDocSource } = useViewOptions();
 
-  // Rich by default, source as the escape hatch — one mode for the view,
-  // remembered across tabs within a visit.
   const draft = p === null ? undefined : tabs.drafts[p];
+
+  // Paths the server answered 404 for: a page deleted from the tree, or a
+  // deep link that never existed. Such a tab closes itself — there is
+  // nothing to edit — and is never restored. The shell re-adds the active
+  // tab while the URL is still changing, so the set outlives that instant
+  // and the stray tab is pruned on the next render.
+  const missing = useRef(new Set<string>());
+  const closing = useRef<string | null>(null);
+  const notFound =
+    doc.isError && doc.error instanceof ApiError && doc.error.status === 404;
+  useEffect(() => {
+    if (p === null || !notFound) {
+      closing.current = null;
+      return;
+    }
+    if (closing.current === p) return;
+    closing.current = p;
+    missing.current.add(p);
+    toast(`No page at ${p}`);
+    onCloseTab(p);
+  }, [p, notFound, onCloseTab]);
+  useEffect(() => {
+    // A path that loads again (a page re-created under the same name) is no
+    // longer missing.
+    if (p !== null && doc.isSuccess) missing.current.delete(p);
+  }, [p, doc.isSuccess]);
+
+  // Coming back to Docs with no page in the URL reopens the last tab, so a
+  // reload lands where the reader left off rather than on an empty screen.
+  // Tabs known to be missing are closed instead, whichever page is active.
+  useEffect(() => {
+    let reopened = p !== null;
+    for (const path of tabs.paths) {
+      if (missing.current.has(path) && path !== p) {
+        tabs.close(path);
+        continue;
+      }
+      if (!reopened) {
+        onSelect(path);
+        reopened = true;
+      }
+    }
+  }, [p, tabs, onSelect]);
 
   // The buffer materializes once, when the page's content first arrives;
   // afterwards only editing (or a save landing) touches it.
@@ -181,8 +256,9 @@ export function DocsView({
     return () => window.clearTimeout(timer);
   }, [tabs.drafts, client, save]);
 
-  // Mod+Enter / Mod+S from the editor: commit the exact bytes the editor
-  // just serialized, without waiting out the pause.
+  // ⌘S / Mod+Enter: commit the exact bytes the editor just serialized (or
+  // the buffer, when the shortcut came from outside the editor), without
+  // waiting out the pause.
   const saveNow = (markdown?: string) => {
     if (p === null || put.isPending) return;
     const body = markdown ?? draft;
@@ -191,99 +267,154 @@ export function DocsView({
     if (saved !== undefined && body === saved) return;
     save(p, body);
   };
+  const saveNowRef = useRef(saveNow);
+  saveNowRef.current = saveNow;
 
-  const removeSelected = () => {
+  // ⌘S anywhere on the page commits now — the browser's "save page" dialog
+  // is never what someone editing a wiki means. The rich editor handles the
+  // shortcut itself with the bytes it holds, so it is left alone.
+  useEffect(() => {
     if (p === null) return;
-    const confirmed = window.confirm(
-      `Delete ${p}?\n\nThe page is removed in one commit — git history keeps every version, so nothing is lost permanently.`,
-    );
-    if (!confirmed) return;
-    remove.mutate(p, {
-      onSuccess: () => {
-        toast.success(`Deleted ${p}`);
-        onCloseTab(p);
-      },
-    });
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "s")
+        return;
+      event.preventDefault();
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest(".ProseMirror")) return;
+      saveNowRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [p]);
+
+  // "Close others" flushes the neighbours' unsaved text first: autosave
+  // would have committed it a second later anyway, and dropping it would be
+  // the one place the always-on editor loses work.
+  const closeOthers = (path: string) => {
+    for (const other of tabs.paths) {
+      if (other === path) continue;
+      const body = tabs.drafts[other];
+      if (body !== undefined && tabs.isDirty(other)) save(other, body);
+    }
+    tabs.closeOthers(path);
+    if (p !== path) onSelect(path);
   };
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col">
-      <TabBar tabs={tabs} active={p} onActivate={onSelect} onPin={tabs.pin} onClose={onCloseTab} />
-
-      {p === null ? (
-        <div className="flex flex-1 items-center justify-center">
-          <Empty
-            title="No page open"
-            hint="Pick a page from the sidebar — single click previews it, double click pins it as a tab. Every page is a Markdown file in the repo."
-          />
+    <>
+      {/* The strip only exists while something is open: an empty bar above
+          the empty state would be a border with nothing to hold. */}
+      {tabs.paths.length > 0 ? (
+        <div className="tabs" role="tablist" aria-label="Open pages">
+          {tabs.paths.map((path) => (
+            <Tab
+              key={path}
+              path={path}
+              active={path === p}
+              pinned={tabs.pinned.has(path)}
+              dirty={tabs.isDirty(path)}
+              onActivate={onSelect}
+              onPin={tabs.pin}
+              onUnpin={tabs.unpin}
+              onClose={onCloseTab}
+              onCloseOthers={closeOthers}
+            />
+          ))}
+          <span style={{ flex: 1 }} />
         </div>
-      ) : doc.isPending ? (
-        <Loading label="Opening page…" />
-      ) : doc.isError ? (
-        <ErrorBox
-          error={doc.error}
-          onRetry={() => void doc.refetch()}
-          title="Could not open page"
-        />
-      ) : doc.data === undefined ? null : (
-        <>
-          <div className="flex h-[42px] shrink-0 items-center gap-3 border-b border-edge px-4">
-            <span className="truncate font-mono text-xs text-ink-2">{p}</span>
-            {(() => {
-              const entry = (docs.data ?? []).find((candidate) => candidate.path === p);
-              return entry ? (
-                <span className="shrink-0 font-mono text-[10px] text-faint">
-                  {formatBytes(entry.bytes)} · {relativeTime(new Date(entry.updated_ms).toISOString())}
-                </span>
-              ) : null;
-            })()}
-            <span className="ml-auto flex shrink-0 items-center gap-2">
-              <span className="text-[11px] text-muted">
-                {put.isPending ? "Saving…" : draft !== undefined && draft !== doc.data.body ? "Unsaved" : ""}
-              </span>
-              <EditorModeToggle mode={editMode} onChange={setEditMode} showPreview={false} />
+      ) : null}
+
+      <div style={{ overflow: "auto", flex: 1 }} className="min-h-0">
+        {p === null ? (
+          <div className="flex h-full items-center justify-center">
+            <Empty
+              className="empty"
+              title="No page open"
+              hint="Pick a page from the sidebar — single click previews it, double click pins it as a tab. Every page is a Markdown file in the repo."
+            />
+          </div>
+        ) : doc.isPending ? (
+          <Loading label="Opening page…" />
+        ) : doc.isError ? (
+          <div className="empty" style={{ padding: 30 }}>
+            <p>
+              No page at {p}.{" "}
               <button
                 type="button"
-                onClick={removeSelected}
-                disabled={remove.isPending}
-                title="Delete page"
-                className="flex items-center gap-1.5 rounded-md border border-transparent px-2.5 py-1.5 text-xs text-muted transition-colors hover:border-crit-line hover:bg-crit-bg hover:text-crit-text disabled:opacity-50"
+                className="underline"
+                style={{ color: "var(--accent-ink)" }}
+                onClick={() => {
+                  missing.current.add(p);
+                  onCloseTab(p);
+                }}
               >
-                <Trash2 className="size-3.5" aria-hidden />
-                Delete
+                Back to docs
               </button>
-            </span>
+            </p>
+            <p className="mono" style={{ fontSize: 11.5, marginTop: 6 }}>
+              {doc.error instanceof Error
+                ? doc.error.message
+                : String(doc.error)}
+            </p>
           </div>
-
-          <div className="min-h-0 flex-1 overflow-y-auto">
+        ) : doc.data === undefined ? null : (
+          <article className="doc">
+            <div className="path">
+              {p.split("/").join(" / ")}
+              <span className="sp" style={{ flex: 1 }} />
+              <span>
+                <Pen className="i inline-block" aria-hidden /> always-on editor
+                · autosaves 1.5s after you pause
+              </span>
+            </div>
             {draft === undefined ? (
               <Loading label="Preparing editor…" />
             ) : (
-              <div className="mx-auto h-full w-full max-w-[860px] px-6 py-4">
-                <Suspense fallback={<Loading label="Loading editor…" />}>
-                  {editMode === "rich" ? (
-                    <RichEditor
-                      key={p}
-                      value={draft}
-                      onChange={(next) => tabs.setDraft(p, next)}
-                      onSave={saveNow}
-                      onFallbackToSource={() => setEditMode("source")}
-                      className="h-full"
-                    />
-                  ) : (
+              <Suspense fallback={<Loading label="Loading editor…" />}>
+                {docSource ? (
+                  // The source recipe draws the box; the editor's own chrome
+                  // (fixed height, second border) would double it up.
+                  <div className="src [&>div]:h-auto [&>div]:rounded-none [&>div]:border-0 [&>div]:bg-transparent">
                     <CodeMirrorEditor
                       key={p}
                       value={draft}
                       onChange={(next) => tabs.setDraft(p, next)}
                       onSave={saveNow}
                     />
-                  )}
-                </Suspense>
-              </div>
+                  </div>
+                ) : (
+                  // The editor's own 6px inset would shift the body off the
+                  // path row's left edge; the article already has margins.
+                  <div className="md" style={{ marginInline: -6 }}>
+                    <RichEditor
+                      key={p}
+                      value={draft}
+                      onChange={(next) => tabs.setDraft(p, next)}
+                      onSave={saveNow}
+                      // A document the bridge refuses (conflict markers, a
+                      // wasm failure) can still be edited as text.
+                      onFallbackToSource={() => setDocSource(true)}
+                      className=""
+                    />
+                  </div>
+                )}
+              </Suspense>
             )}
-          </div>
-        </>
-      )}
-    </div>
+            <p
+              style={
+                {
+                  color: "var(--faint)",
+                  fontSize: 12,
+                  marginTop: 20,
+                } as CSSProperties
+              }
+            >
+              Type <kbd>/</kbd> for blocks: heading, list, table, code,
+              dit-diagram. <kbd>⌘S</kbd> commits now.
+            </p>
+          </article>
+        )}
+      </div>
+    </>
   );
 }

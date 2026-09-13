@@ -2,11 +2,26 @@
 // (ADR 0010). The tree is built client-side from the flat page listing —
 // folders exist because pages live under them, plus hand-made folders
 // (git has no empty directories, so those live in this browser until a
-// page moves in). Clicking a folder selects it: the new-file and
-// new-folder buttons in the action row target the selection. Right-click
-// rename/delete, drag-a-file-onto-a-folder moves it through one commit.
+// page moves in). Clicking a folder selects it and folds it: the new-page
+// and new-folder buttons in the heading target the selection. Every other
+// action lives in the right-click menu — rename in place, move to another
+// folder, delete with a second confirming click — and dragging a page onto
+// a folder moves it through one commit.
+//
+// The markup follows the approved workbench design: an `.sb-h` heading
+// with three small buttons, then `.sb-body.tree` of `.row` buttons indented
+// through the `--d` custom property, and a hint paragraph at the bottom.
 
-import { useEffect, useMemo, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type ButtonHTMLAttributes,
+  type CSSProperties,
+  type ReactNode,
+  type Ref,
+  type RefCallback,
+} from "react";
 import {
   DndContext,
   PointerSensor,
@@ -16,24 +31,34 @@ import {
   useSensors,
   type DragEndEvent,
 } from "@dnd-kit/core";
-import * as ContextMenu from "@radix-ui/react-context-menu";
 import {
+  ChevronDown,
   ChevronRight,
-  ChevronsDownUp,
   ChevronsUpDown,
-  FilePlus2,
+  Copy,
   FileText,
   Folder,
-  FolderOpen,
-  FolderPlus,
-  RefreshCw,
+  Pencil,
+  Plus,
+  Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
-import { useDeleteDoc, useDocs, useMoveDoc, usePutDoc } from "../../lib/queries";
+import {
+  useDeleteDoc,
+  useDocs,
+  useMoveDoc,
+  usePutDoc,
+} from "../../lib/queries";
 import { cn } from "../../lib/cn";
 import type { DocEntryDto } from "../../lib/types";
 import { ErrorBox, Loading } from "../states";
-import { SectionHeading } from "../chrome";
+import {
+  ContextMenuFor,
+  MenuButton,
+  SectionHeading,
+  Sp,
+  type MenuItem,
+} from "../chrome";
 
 const DOC_ROOTS = ["docs", "notes", "epics", "changelogs"] as const;
 const FILE_DRAG_PREFIX = "file:";
@@ -41,364 +66,384 @@ const DIR_DROP_PREFIX = "dir:";
 const EXPANDED_KEY = "dit.docs.expanded";
 const FOLDERS_KEY = "dit.docs.folders";
 
-/** Client-side echo of the server's `DocPath` rules, so inline input can
- *  reject a bad path before the round trip. The server remains the
- *  authority — its 400 message lands in the same inline spot. */
-function newPathProblem(input: string): string | null {
-  const path = input.trim().replace(/\/+$/, "");
-  if (path.length === 0) return "give the page a path, e.g. docs/meeting-notes.md";
-  const segments = path.split("/");
-  const root = segments[0] ?? "";
-  if (!(DOC_ROOTS as readonly string[]).includes(root)) {
-    return `the first segment must be one of: ${DOC_ROOTS.join(", ")}`;
-  }
-  for (const folder of segments.slice(0, -1)) {
-    if (!/^[a-z0-9-]+$/.test(folder)) {
-      return `"${folder}" must be lowercase letters, digits and dashes`;
-    }
-  }
-  const name = segments[segments.length - 1] ?? "";
-  if (!/^[a-z0-9][a-z0-9-_.]*\.md$/.test(name)) {
-    return `"${name}" must be a .md name of lowercase letters, digits and dashes`;
-  }
-  return null;
+const EMPTY_FOLDER_NOTE =
+  "Git cannot hold an empty directory: the folder lives in this browser until a page is created inside it.";
+
+function nameOf(path: string): string {
+  return path.split("/").pop() ?? path;
+}
+
+function parentOf(path: string): string {
+  return path.split("/").slice(0, -1).join("/");
+}
+
+/** A typed name becomes a file-system-safe, lowercase segment: the server's
+ *  `DocPath` rules only accept lowercase letters, digits, dashes, dots and
+ *  underscores. */
+function slugify(input: string): string {
+  return input
+    .trim()
+    .replace(/\.md$/, "")
+    .replace(/[^\w.-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase();
 }
 
 /** The first heading a fresh page gets: its file name as a title. */
 function titleFor(path: string): string {
-  return (path.split("/").pop() ?? "untitled")
-    .replace(/\.md$/, "")
-    .replace(/[-_]+/g, " ");
+  const name = nameOf(path).replace(/\.md$/, "").replace(/[-_]+/g, " ");
+  return name.charAt(0).toUpperCase() + name.slice(1);
 }
 
-/** Folders the user created by hand. Git cannot hold an empty directory,
- *  so these live only in this browser until a page moves into them — from
- *  then on the pages themselves imply the folder. */
-function loadExplicitFolders(): Set<string> {
+async function copyText(text: string, label: string) {
   try {
-    const raw = window.localStorage.getItem(FOLDERS_KEY);
+    await navigator.clipboard.writeText(text);
+    toast(label);
+  } catch {
+    // Clipboard access needs a secure context; the toast still shows the
+    // value so it can be copied by hand.
+    toast(`${label}: ${text}`);
+  }
+}
+
+function loadStringSet(key: string, fallback: readonly string[]): Set<string> {
+  try {
+    const raw = window.localStorage.getItem(key);
     const parsed: unknown = raw === null ? null : JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.every((v) => typeof v === "string")) {
       return new Set(parsed as string[]);
     }
   } catch {
-    // Fall through to no hand-made folders.
+    // Fall through to the default.
   }
-  return new Set();
+  return new Set(fallback);
+}
+
+function persistStringSet(key: string, value: ReadonlySet<string>) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify([...value]));
+  } catch {
+    // A blocked or full localStorage only loses the remembered state.
+  }
 }
 
 // -- the tree -----------------------------------------------------------------
 
-type Node =
-  | { kind: "dir"; path: string; name: string; children: Node[] }
-  | { kind: "file"; path: string; name: string; updatedMs: number };
+interface TreeRow {
+  depth: number;
+  path: string;
+  label: string;
+  folder: boolean;
+  root: boolean;
+  /** A hand-made folder with no page under it yet — client-only. */
+  empty: boolean;
+}
 
-/** Folders are implied: every intermediate segment of a page's path becomes
- *  one. The four roots always exist so they can be dropped onto, right
- *  clicked, and created into even while empty; hand-made folders are merged
- *  in so they show before anything lives under them. */
-function buildTree(entries: DocEntryDto[], explicitFolders: ReadonlySet<string>): Node[] {
-  const roots: Extract<Node, { kind: "dir" }>[] = DOC_ROOTS.map((root) => ({
-    kind: "dir",
-    path: root,
-    name: root,
-    children: [],
-  }));
-  const dirs = new Map(roots.map((root) => [root.path, root]));
-
-  const dirAt = (path: string): Extract<Node, { kind: "dir" }> => {
-    const existing = dirs.get(path);
-    if (existing) return existing;
-    const segments = path.split("/");
-    const created: Extract<Node, { kind: "dir" }> = {
-      kind: "dir",
-      path,
-      name: segments[segments.length - 1] ?? path,
-      children: [],
-    };
-    dirs.set(path, created);
-    const parentPath = segments.slice(0, -1).join("/");
-    dirAt(parentPath).children.push(created);
-    return created;
-  };
-
+/** Every folder that exists: the roots, each intermediate segment of a
+ *  page's path, and the hand-made ones. */
+function allFolders(
+  entries: DocEntryDto[],
+  explicit: ReadonlySet<string>,
+): Set<string> {
+  const folders = new Set<string>(DOC_ROOTS);
   for (const entry of entries) {
-    const segments = entry.path.split("/");
-    dirAt(segments.slice(0, -1).join("/")).children.push({
-      kind: "file",
-      path: entry.path,
-      name: segments[segments.length - 1] ?? entry.path,
-      updatedMs: entry.updated_ms,
-    });
+    const parts = entry.path.split("/");
+    for (let k = 1; k < parts.length; k++)
+      folders.add(parts.slice(0, k).join("/"));
   }
-  for (const folder of explicitFolders) {
-    if ((DOC_ROOTS as readonly string[]).some((root) => folder === root || folder.startsWith(`${root}/`))) {
-      dirAt(folder);
-    }
+  for (const folder of explicit) {
+    if (!DOC_ROOTS.some((root) => folder.startsWith(`${root}/`))) continue;
+    const parts = folder.split("/");
+    for (let k = 1; k <= parts.length; k++)
+      folders.add(parts.slice(0, k).join("/"));
   }
+  return folders;
+}
 
-  const sortLevel = (nodes: Node[]) => {
-    nodes.sort((a, b) => a.name.localeCompare(b.name));
-    for (const node of nodes) if (node.kind === "dir") sortLevel(node.children);
+/** The visible rows, top to bottom: folders first at each level (sorted),
+ *  then pages, descending only into folders that are not folded. */
+function flattenTree(
+  entries: DocEntryDto[],
+  folders: ReadonlySet<string>,
+  expanded: ReadonlySet<string>,
+): TreeRow[] {
+  const rows: TreeRow[] = [];
+  const directChild = (candidate: string, dir: string) =>
+    candidate.startsWith(`${dir}/`) &&
+    !candidate.slice(dir.length + 1).includes("/");
+  const walk = (dir: string, depth: number) => {
+    const subs = [...folders]
+      .filter((folder) => directChild(folder, dir))
+      .sort();
+    const files = entries
+      .filter((entry) => directChild(entry.path, dir))
+      .sort((a, b) => a.path.localeCompare(b.path));
+    for (const sub of subs) {
+      rows.push({
+        depth,
+        path: sub,
+        label: nameOf(sub),
+        folder: true,
+        root: false,
+        empty: !entries.some((entry) => entry.path.startsWith(`${sub}/`)),
+      });
+      if (expanded.has(sub)) walk(sub, depth + 1);
+    }
+    for (const file of files) {
+      rows.push({
+        depth,
+        path: file.path,
+        label: nameOf(file.path),
+        folder: false,
+        root: false,
+        empty: false,
+      });
+    }
   };
-  for (const root of roots) sortLevel(root.children);
-  return roots;
-}
-
-/** Every folder path in the tree, roots included — the expand-all target. */
-function collectDirs(nodes: Node[], into: Set<string>): Set<string> {
-  for (const node of nodes) {
-    if (node.kind === "dir") {
-      into.add(node.path);
-      collectDirs(node.children, into);
-    }
+  for (const root of DOC_ROOTS) {
+    rows.push({
+      depth: 0,
+      path: root,
+      label: root,
+      folder: true,
+      root: true,
+      empty: false,
+    });
+    if (expanded.has(root)) walk(root, 1);
   }
-  return into;
-}
-
-function loadExpanded(): Set<string> {
-  try {
-    const raw = window.localStorage.getItem(EXPANDED_KEY);
-    const parsed: unknown = raw === null ? null : JSON.parse(raw);
-    if (Array.isArray(parsed) && parsed.every((v) => typeof v === "string")) {
-      return new Set(parsed as string[]);
-    }
-  } catch {
-    // Fall through to the default: roots open.
-  }
-  return new Set(DOC_ROOTS as readonly string[]);
+  return rows;
 }
 
 // -- rows ---------------------------------------------------------------------
 
-const menuContent =
-  "min-w-[168px] rounded-md border border-ctl bg-card p-1 text-xs text-ink-2 shadow-xl";
-const menuItem =
-  "flex cursor-default select-none items-center gap-2 rounded px-2 py-1.5 outline-none data-highlighted:bg-edge data-highlighted:text-ink";
+function depthStyle(depth: number): CSSProperties {
+  return { "--d": depth } as CSSProperties;
+}
+
+/** The rows are wrapped by Radix `asChild` triggers (context menu, follow-up
+ *  menu), which clone their ref and handlers onto the child. A row therefore
+ *  forwards everything it does not use to its `<button>`, and merges the
+ *  trigger's ref with dnd-kit's. */
+type RowButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
+  ref?: Ref<HTMLButtonElement>;
+};
+
+function mergeRefs<T>(...refs: Array<Ref<T> | undefined>): RefCallback<T> {
+  return (node) => {
+    for (const ref of refs) {
+      if (typeof ref === "function") ref(node);
+      else if (ref) ref.current = node;
+    }
+  };
+}
 
 /** An inline text entry that commits on Enter, cancels on Escape or blur —
- *  the one interaction every editor row (new file, rename) shares. */
-function InlineInput({
-  initial,
-  placeholder,
+ *  the one interaction every rename row shares. */
+function RenameRow({
+  row,
   onCommit,
   onCancel,
 }: {
-  initial: string;
-  placeholder: string;
+  row: TreeRow;
   onCommit: (value: string) => void;
   onCancel: () => void;
 }) {
-  const [value, setValue] = useState(initial);
+  const [value, setValue] = useState(
+    row.folder ? row.label : row.label.replace(/\.md$/, ""),
+  );
   return (
-    <input
-      autoFocus
-      value={value}
-      placeholder={placeholder}
-      onChange={(event) => setValue(event.target.value)}
-      onBlur={() => onCancel()}
+    <div className="row" style={depthStyle(row.depth)}>
+      {row.folder ? (
+        <Folder className="i" aria-hidden />
+      ) : (
+        <FileText className="i" aria-hidden />
+      )}
+      <input
+        autoFocus
+        value={value}
+        placeholder={row.folder ? "folder-name" : "page-name"}
+        aria-label={`Rename ${row.path}`}
+        onChange={(event) => setValue(event.target.value)}
+        onFocus={(event) => event.target.select()}
+        onBlur={() => onCancel()}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            onCommit(value);
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            onCancel();
+          }
+        }}
+      />
+    </div>
+  );
+}
+
+/** A second menu opened from a context-menu item ("New page here", "Move
+ *  to…") anchors to the row it came from. A row has either its context
+ *  menu or its follow-up menu attached — both wrap the same element. */
+function RowMenus({
+  items,
+  followUp,
+  onFollowUpClose,
+  children,
+}: {
+  items: MenuItem[];
+  followUp: MenuItem[] | null;
+  onFollowUpClose: () => void;
+  children: ReactNode;
+}) {
+  if (followUp !== null) {
+    return (
+      <MenuButton
+        items={followUp}
+        open
+        onOpenChange={(open) => {
+          if (!open) onFollowUpClose();
+        }}
+      >
+        {children}
+      </MenuButton>
+    );
+  }
+  return <ContextMenuFor items={items}>{children}</ContextMenuFor>;
+}
+
+function FolderRow({
+  row,
+  expanded,
+  selected,
+  onFold,
+  onRename,
+  onDelete,
+  ref,
+  className,
+  onClick,
+  onKeyDown,
+  ...rest
+}: {
+  row: TreeRow;
+  expanded: boolean;
+  selected: boolean;
+  /** Click: select the folder as the filing target and fold/unfold it. */
+  onFold: (path: string) => void;
+  onRename: (path: string) => void;
+  onDelete: (path: string) => void;
+} & RowButtonProps) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: `${DIR_DROP_PREFIX}${row.path}`,
+  });
+  return (
+    <button
+      type="button"
+      {...rest}
+      ref={mergeRefs(setNodeRef, ref)}
+      className={cn("row fold", (selected || isOver) && "selfold", className)}
+      style={depthStyle(row.depth)}
+      title={row.path}
+      onClick={(event) => {
+        onClick?.(event);
+        onFold(row.path);
+      }}
       onKeyDown={(event) => {
-        if (event.key === "Enter") {
+        onKeyDown?.(event);
+        if (event.key === "F2" && !row.root) {
           event.preventDefault();
-          onCommit(value);
-        } else if (event.key === "Escape") {
+          onRename(row.path);
+        } else if (event.key === "Delete" && row.empty) {
           event.preventDefault();
-          onCancel();
+          onDelete(row.path);
         }
       }}
-      onClick={(event) => event.stopPropagation()}
-      className="h-[24px] w-full min-w-0 rounded border border-accent bg-card px-1.5 font-mono text-xs text-ink outline-none"
-    />
+    >
+      {expanded ? (
+        <ChevronDown className="i" aria-hidden />
+      ) : (
+        <ChevronRight className="i" aria-hidden />
+      )}
+      <Folder className="i" aria-hidden />
+      <span className="lbl">{row.label}</span>
+      {row.empty && !row.root ? (
+        <span className="cnt" title="client-only until a page lives here">
+          empty
+        </span>
+      ) : null}
+    </button>
   );
 }
 
 function FileRow({
-  node,
-  depth,
+  row,
   active,
-  renaming,
   dirty,
   onActivate,
   onOpen,
-  onRenameCommit,
-  onRenameCancel,
+  onRename,
   onDelete,
-  onRenameStart,
+  ref,
+  className,
+  onClick,
+  onPointerDown,
+  onKeyDown,
+  ...rest
 }: {
-  node: Extract<Node, { kind: "file" }>;
-  depth: number;
+  row: TreeRow;
   active: boolean;
-  renaming: boolean;
   /** The open tab's buffer differs from the saved body — the same dot the
    *  tab shows, visible from the tree before you switch. */
   dirty: boolean;
   onActivate: (path: string) => void;
   onOpen: (path: string) => void;
-  onRenameCommit: (from: string, name: string) => void;
-  onRenameCancel: () => void;
+  onRename: (path: string) => void;
   onDelete: (path: string) => void;
-  onRenameStart: (path: string) => void;
-}) {
+} & RowButtonProps) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
-    id: `${FILE_DRAG_PREFIX}${node.path}`,
+    id: `${FILE_DRAG_PREFIX}${row.path}`,
   });
-
-  if (renaming) {
-    return (
-      <div
-        className="flex items-center gap-1.5 py-0.5 pr-2"
-        style={{ paddingLeft: 8 + depth * 12 }}
-      >
-        <FileText className="size-3.5 shrink-0 text-muted" aria-hidden />
-        <InlineInput
-          initial={node.name.replace(/\.md$/, "")}
-          placeholder="page name"
-          onCommit={(value) => onRenameCommit(node.path, value)}
-          onCancel={onRenameCancel}
+  return (
+    <button
+      type="button"
+      {...rest}
+      {...attributes}
+      ref={mergeRefs(setNodeRef, ref)}
+      onPointerDown={(event) => {
+        onPointerDown?.(event);
+        listeners?.onPointerDown?.(event);
+      }}
+      className={cn(
+        "row file",
+        active && "on",
+        isDragging && "opacity-30",
+        className,
+      )}
+      style={depthStyle(row.depth)}
+      title={row.path}
+      onClick={(event) => {
+        onClick?.(event);
+        onActivate(row.path);
+      }}
+      onDoubleClick={() => onOpen(row.path)}
+      onKeyDown={(event) => {
+        onKeyDown?.(event);
+        if (event.key === "F2") {
+          event.preventDefault();
+          onRename(row.path);
+        } else if (event.key === "Delete") {
+          event.preventDefault();
+          onDelete(row.path);
+        }
+      }}
+    >
+      <FileText className="i" aria-hidden />
+      <span className="lbl">{row.label}</span>
+      {dirty ? (
+        <span
+          className="dot"
+          title="buffer ahead of the committed body — autosaves after a pause"
         />
-      </div>
-    );
-  }
-
-  return (
-    <ContextMenu.Root>
-      <ContextMenu.Trigger asChild>
-        <button
-          type="button"
-          ref={setNodeRef}
-          {...attributes}
-          onPointerDown={(event) => listeners?.onPointerDown?.(event)}
-          onClick={() => onActivate(node.path)}
-          onDoubleClick={() => onOpen(node.path)}
-          onKeyDown={(event) => {
-            if (event.key === "F2") {
-              event.preventDefault();
-              onRenameStart(node.path);
-            } else if (event.key === "Delete") {
-              event.preventDefault();
-              onDelete(node.path);
-            }
-          }}
-          title={node.path}
-          className={cn(
-            "flex h-[26px] w-full items-center gap-1.5 rounded-md pr-2 text-left font-mono text-xs",
-            active
-              ? "bg-edge text-ink"
-              : "text-ink-2 hover:bg-card hover:text-ink",
-            isDragging && "opacity-30",
-          )}
-          style={{ paddingLeft: 8 + depth * 12 }}
-        >
-          <FileText className="size-3.5 shrink-0 text-muted" aria-hidden />
-          <span className="truncate">{node.name}</span>
-          {dirty ? (
-            <span
-              className="ml-auto size-1.5 shrink-0 rounded-full bg-accent"
-              aria-label="unsaved changes"
-            />
-          ) : null}
-        </button>
-      </ContextMenu.Trigger>
-      <ContextMenu.Portal>
-        <ContextMenu.Content className={menuContent}>
-          <ContextMenu.Item className={menuItem} onSelect={() => onRenameStart(node.path)}>
-            Rename <span className="ml-auto text-faint">F2</span>
-          </ContextMenu.Item>
-          <ContextMenu.Item
-            className={cn(menuItem, "text-crit-text data-highlighted:bg-crit-bg data-highlighted:text-crit-text")}
-            onSelect={() => onDelete(node.path)}
-          >
-            Delete
-          </ContextMenu.Item>
-        </ContextMenu.Content>
-      </ContextMenu.Portal>
-    </ContextMenu.Root>
-  );
-}
-
-function DirRow({
-  node,
-  depth,
-  expanded,
-  active,
-  onSelect,
-  onCreateStart,
-  onCreateFolderStart,
-  onDelete,
-  children,
-}: {
-  node: Extract<Node, { kind: "dir" }>;
-  depth: number;
-  expanded: boolean;
-  /** The folder the add-file/add-folder buttons target. */
-  active: boolean;
-  onSelect: (path: string) => void;
-  onCreateStart: (dir: string) => void;
-  onCreateFolderStart: (dir: string) => void;
-  onDelete: (dir: string) => void;
-  children: React.ReactNode;
-}) {
-  const { setNodeRef, isOver } = useDroppable({ id: `${DIR_DROP_PREFIX}${node.path}` });
-  // A root is a fixture of the schema, not a thing the user made — only a
-  // hand-made folder can be empty, and only empty folders can be deleted.
-  const deletable = node.children.length === 0 && node.path.includes("/");
-
-  return (
-    <ContextMenu.Root>
-      <div ref={setNodeRef} className="select-none">
-        <ContextMenu.Trigger asChild>
-          <button
-            type="button"
-            // Clicking a folder selects it (the target for new files and
-            // folders) and opens it — selecting a folder you cannot see
-            // into would feel like filing into the dark.
-            onClick={() => onSelect(node.path)}
-            title={node.path}
-            className={cn(
-              "flex h-[26px] w-full items-center gap-1.5 rounded-md pr-2 text-left font-mono text-xs",
-              active ? "bg-edge text-ink" : "text-ink-2 hover:bg-card hover:text-ink",
-              isOver && "bg-card ring-1 ring-inset ring-accent",
-            )}
-            style={{ paddingLeft: 8 + depth * 12 }}
-          >
-            <ChevronRight
-              className={cn(
-                "size-3.5 shrink-0 text-muted transition-transform",
-                expanded && "rotate-90",
-              )}
-              aria-hidden
-            />
-            {active ? (
-              <FolderOpen className="size-3.5 shrink-0 text-accent" aria-hidden />
-            ) : expanded ? (
-              <FolderOpen className="size-3.5 shrink-0 text-accent/80" aria-hidden />
-            ) : (
-              <Folder className="size-3.5 shrink-0 text-accent/80" aria-hidden />
-            )}
-            <span className="truncate">{node.name}</span>
-          </button>
-        </ContextMenu.Trigger>
-        <ContextMenu.Portal>
-          <ContextMenu.Content className={menuContent}>
-            <ContextMenu.Item className={menuItem} onSelect={() => onCreateStart(node.path)}>
-              <FilePlus2 className="size-3.5" aria-hidden /> New File
-            </ContextMenu.Item>
-            <ContextMenu.Item className={menuItem} onSelect={() => onCreateFolderStart(node.path)}>
-              <FolderPlus className="size-3.5" aria-hidden /> New Folder
-            </ContextMenu.Item>
-            {deletable ? (
-              <ContextMenu.Item
-                className={cn(menuItem, "text-crit-text data-highlighted:bg-crit-bg data-highlighted:text-crit-text")}
-                onSelect={() => onDelete(node.path)}
-              >
-                Delete
-              </ContextMenu.Item>
-            ) : null}
-          </ContextMenu.Content>
-        </ContextMenu.Portal>
-      </div>
-      {expanded ? <div>{children}</div> : null}
-    </ContextMenu.Root>
+      ) : null}
+    </button>
   );
 }
 
@@ -430,44 +475,50 @@ export function DocsPane({
   const move = useMoveDoc();
   const remove = useDeleteDoc();
 
-  const [expanded, setExpanded] = useState<Set<string>>(loadExpanded);
-  const [creatingIn, setCreatingIn] = useState<string | null>(null);
-  const [folderCreatingIn, setFolderCreatingIn] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(() =>
+    loadStringSet(EXPANDED_KEY, DOC_ROOTS),
+  );
+  const [explicitFolders, setExplicitFolders] = useState<Set<string>>(() =>
+    loadStringSet(FOLDERS_KEY, []),
+  );
+  // The folder the heading buttons file into. Clicking a folder selects it;
+  // clicking a page clears the selection, and "docs" is the fallback.
+  const [selectedDir, setSelectedDir] = useState<string | null>("docs");
   const [renaming, setRenaming] = useState<string | null>(null);
-  const [inlineError, setInlineError] = useState<string | null>(null);
-  // The folder the two add buttons target. Clicking a folder row selects
-  // it; "docs" is the sensible starting point before anything is clicked.
-  const [activeDir, setActiveDir] = useState<string>("docs");
-  const [explicitFolders, setExplicitFolders] = useState<Set<string>>(loadExplicitFolders);
+  const [followUp, setFollowUp] = useState<{
+    path: string;
+    items: MenuItem[];
+  } | null>(null);
 
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(EXPANDED_KEY, JSON.stringify([...expanded]));
-    } catch {
-      // A blocked or full localStorage only loses the remembered folders.
-    }
-  }, [expanded]);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(FOLDERS_KEY, JSON.stringify([...explicitFolders]));
-    } catch {
-      // A blocked or full localStorage only loses the empty folders.
-    }
-  }, [explicitFolders]);
+  useEffect(() => persistStringSet(EXPANDED_KEY, expanded), [expanded]);
+  useEffect(
+    () => persistStringSet(FOLDERS_KEY, explicitFolders),
+    [explicitFolders],
+  );
 
   // Four pixels of movement before a drag starts, so plain clicks still
   // open the page — same threshold the board uses.
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+  );
 
-  const tree = useMemo(() => buildTree(docs.data ?? [], explicitFolders), [docs.data, explicitFolders]);
-  const allDirs = useMemo(() => collectDirs(tree, new Set<string>()), [tree]);
-  // A folder can vanish while selected (its last page moved away, or it was
-  // deleted); the buttons always need a real target.
-  const selectedDir = allDirs.has(activeDir) ? activeDir : "docs";
-  const allExpanded = [...allDirs].every((dir) => expanded.has(dir));
+  const entries = docs.data ?? [];
+  const folders = useMemo(
+    () => allFolders(entries, explicitFolders),
+    [entries, explicitFolders],
+  );
+  const rows = useMemo(
+    () => flattenTree(entries, folders, expanded),
+    [entries, folders, expanded],
+  );
+  // A folder can vanish while selected (its last page moved away, or it
+  // was deleted); the buttons always need a real target.
+  const targetDir =
+    selectedDir !== null && folders.has(selectedDir) ? selectedDir : "docs";
+  const anyFolded = [...folders].some((folder) => !expanded.has(folder));
 
-  const toggleDir = (path: string) => {
+  const selectFolder = (path: string) => {
+    setSelectedDir(path);
     setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(path)) next.delete(path);
@@ -476,138 +527,142 @@ export function DocsPane({
     });
   };
 
-  const selectDir = (path: string) => {
-    setActiveDir(path);
-    toggleDir(path);
+  const reveal = (path: string) =>
+    setExpanded((prev) => (prev.has(path) ? prev : new Set(prev).add(path)));
+
+  // One button, both directions: anything folded opens the whole tree;
+  // otherwise every folder folds, roots included, leaving one row per root.
+  const toggleFoldAll = () => {
+    setExpanded(anyFolded ? new Set(folders) : new Set());
   };
 
-  // One button, both directions: everything open folds back to the roots,
-  // anything closed opens the whole tree.
-  const toggleExpandAll = () => {
-    setExpanded(allExpanded ? new Set(DOC_ROOTS as readonly string[]) : new Set(allDirs));
+  const createDoc = (dir: string, name: string) => {
+    const base = slugify(name) || "untitled";
+    let path = `${dir}/${base}.md`;
+    let k = 2;
+    while (entries.some((entry) => entry.path === path))
+      path = `${dir}/${base}-${k++}.md`;
+    put.mutate(
+      { path, body: `# ${titleFor(path)}\n\n` },
+      {
+        onSuccess: (saved) => {
+          toast(`Created ${saved.path} · committed`);
+          reveal(dir);
+          onSelect(saved.path);
+        },
+      },
+    );
   };
 
-  const createIn = (dir: string) => {
-    setRenaming(null);
-    setFolderCreatingIn(null);
-    setInlineError(null);
-    setCreatingIn(dir);
-    setActiveDir(dir);
-    // The input appears as the folder's last child; opening the folder
-    // must happen first or it would render nowhere.
-    setExpanded((prev) => (prev.has(dir) ? prev : new Set(prev).add(dir)));
-  };
-
-  const createFolderIn = (dir: string) => {
-    setCreatingIn(null);
-    setRenaming(null);
-    setInlineError(null);
-    setFolderCreatingIn(dir);
-    setActiveDir(dir);
-    setExpanded((prev) => (prev.has(dir) ? prev : new Set(prev).add(dir)));
-  };
-
-  const commitFolderCreate = (dir: string, name: string) => {
-    setFolderCreatingIn(null);
-    const folder = name.trim().replace(/\/+$/, "");
-    if (folder.length === 0) return;
-    if (!/^[a-z0-9-]+$/.test(folder)) {
-      setInlineError(`"${folder}" must be lowercase letters, digits and dashes`);
-      return;
-    }
-    const path = `${dir}/${folder}`;
-    if (allDirs.has(path)) {
-      setInlineError(`a folder named "${folder}" already exists there`);
+  const createFolder = (dir: string, name: string) => {
+    const slug = slugify(name);
+    if (slug.length === 0) return;
+    const path = `${dir}/${slug}`;
+    if (folders.has(path)) {
+      toast(`A folder named ${slug} already exists there`);
       return;
     }
     // A hand-made folder exists only here until a page lives under it —
     // git has no empty directories to commit.
     setExplicitFolders((prev) => new Set(prev).add(path));
-    setActiveDir(path);
-    setExpanded((prev) => new Set(prev).add(path));
+    setSelectedDir(path);
+    reveal(dir);
+    reveal(path);
+    toast(`Folder ${path} (client-only until it has a page)`);
   };
 
-  const deleteFolder = (path: string) => {
-    setExplicitFolders((prev) => {
-      const next = new Set(prev);
-      next.delete(path);
-      return next;
-    });
-    setFolderCreatingIn(null);
+  const deleteEmptyFolder = (path: string) => {
+    // Hand-made subfolders go with their parent; nothing under it is a page.
+    setExplicitFolders(
+      (prev) =>
+        new Set(
+          [...prev].filter(
+            (folder) => folder !== path && !folder.startsWith(`${path}/`),
+          ),
+        ),
+    );
     // Filing into a folder that no longer exists would silently pick the
     // wrong parent — climb to the closest surviving ancestor.
-    if (activeDir === path || activeDir.startsWith(`${path}/`)) {
-      setActiveDir(path.split("/").slice(0, -1).join("/") || "docs");
+    if (
+      selectedDir !== null &&
+      (selectedDir === path || selectedDir.startsWith(`${path}/`))
+    ) {
+      setSelectedDir(parentOf(path) || "docs");
     }
   };
 
-  const commitCreate = (dir: string, name: string) => {
-    setCreatingIn(null);
-    // Accepting a bare name is the point of an inline row; the .md the
-    // schema requires is appended rather than demanded.
-    const file = name.trim().replace(/\/+$/, "");
-    if (file.length === 0) return;
-    const path = `${dir}/${file.endsWith(".md") ? file : `${file}.md`}`;
-    const problem = newPathProblem(path);
-    if (problem !== null) {
-      setInlineError(problem);
+  const moveDoc = (from: string, to: string) => {
+    if (from === to) return;
+    if (entries.some((entry) => entry.path === to)) {
+      toast("A page with that name already exists (409 Conflict)");
       return;
     }
-    put.mutate(
-      { path, body: `# ${titleFor(path)}\n\n` },
-      {
-        onSuccess: (saved) => {
-          setInlineError(null);
-          onSelect(saved.path);
-        },
-        onError: (error) => {
-          setInlineError(error instanceof Error ? error.message : String(error));
-          setCreatingIn(dir);
-        },
-      },
-    );
-  };
-
-  const commitRename = (from: string, name: string) => {
-    setRenaming(null);
-    const file = name.trim().replace(/\/+$/, "");
-    if (file.length === 0) return;
-    const parent = from.split("/").slice(0, -1).join("/");
-    const to = `${parent}/${file.endsWith(".md") ? file : `${file}.md`}`;
-    const problem = newPathProblem(to);
-    if (problem !== null) {
-      setInlineError(problem);
-      return;
-    }
-    if (to === from) return;
     move.mutate(
       { from, to },
       {
         onSuccess: () => {
-          setInlineError(null);
-          toast.success(`Renamed to ${to}`);
+          toast(`Moved · git records R100 ${nameOf(from)} → ${nameOf(to)}`);
           onMoved(from, to);
-          // Renaming implies focus: the page follows its new name.
-          onSelect(to);
-        },
-        onError: (error) => {
-          setInlineError(error instanceof Error ? error.message : String(error));
-          setRenaming(from);
         },
       },
     );
   };
 
-  const deletePage = (path: string) => {
-    const confirmed = window.confirm(
-      `Delete ${path}?\n\nThe page is removed in one commit — git history keeps every version, so nothing is lost permanently.`,
+  const renamePage = (from: string, name: string) => {
+    const slug = slugify(name);
+    if (slug.length === 0) return;
+    moveDoc(from, `${parentOf(from)}/${slug}.md`);
+  };
+
+  // Renaming a folder is a move of every page under it — one commit each,
+  // the only shape the write path has. Hand-made folders just change name.
+  const renameFolder = async (from: string, name: string) => {
+    const slug = slugify(name);
+    if (slug.length === 0) return;
+    const to = `${parentOf(from)}/${slug}`;
+    if (to === from) return;
+    if (folders.has(to)) {
+      toast(`A folder named ${slug} already exists there`);
+      return;
+    }
+    const pages = entries.filter((entry) => entry.path.startsWith(`${from}/`));
+    for (const page of pages) {
+      const target = `${to}${page.path.slice(from.length)}`;
+      try {
+        await move.mutateAsync({ from: page.path, to: target });
+        onMoved(page.path, target);
+      } catch {
+        // The hook already surfaced the server's message; stop so the
+        // folder is not left half-moved without anyone noticing.
+        return;
+      }
+    }
+    setExplicitFolders((prev) => {
+      const next = new Set(
+        [...prev].filter(
+          (folder) => folder !== from && !folder.startsWith(`${from}/`),
+        ),
+      );
+      next.add(to);
+      return next;
+    });
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.delete(from)) next.add(to);
+      return next;
+    });
+    if (selectedDir === from) setSelectedDir(to);
+    toast(
+      pages.length > 0
+        ? `Moved ${pages.length} page${pages.length === 1 ? "" : "s"} to ${to}/`
+        : `Folder renamed to ${to}`,
     );
-    if (!confirmed) return;
+  };
+
+  const deletePage = (path: string) => {
     remove.mutate(path, {
       onSuccess: () => {
-        toast.success(`Deleted ${path}`);
-        if (renaming === path) setRenaming(null);
-        if (creatingIn !== null && path.startsWith(`${creatingIn}/`)) setCreatingIn(null);
+        toast(`Deleted ${path} · committed`);
         onDeleted(path);
       },
     });
@@ -618,172 +673,233 @@ export function DocsPane({
     if (!over) return;
     const from = String(active.id);
     const dir = String(over.id);
-    if (!from.startsWith(FILE_DRAG_PREFIX) || !dir.startsWith(DIR_DROP_PREFIX)) return;
+    if (!from.startsWith(FILE_DRAG_PREFIX) || !dir.startsWith(DIR_DROP_PREFIX))
+      return;
     const path = from.slice(FILE_DRAG_PREFIX.length);
     const targetDir = dir.slice(DIR_DROP_PREFIX.length);
-    const name = path.split("/").pop() ?? path;
-    const to = `${targetDir}/${name}`;
-    if (to === path) return;
-    move.mutate(
-      { from: path, to },
-      {
-        onSuccess: () => {
-          toast.success(`Moved to ${to}`);
-          onMoved(path, to);
-        },
-      },
-    );
+    moveDoc(path, `${targetDir}/${nameOf(path)}`);
   };
 
-  const renderNodes = (nodes: Node[], depth: number): React.ReactNode =>
-    nodes.map((node) => {
-      if (node.kind === "dir") {
-        const showCreate = creatingIn === node.path;
-        const showFolderCreate = folderCreatingIn === node.path;
-        return (
-          <DirRow
-            key={node.path}
-            node={node}
-            depth={depth}
-            expanded={expanded.has(node.path)}
-            active={node.path === selectedDir}
-            onSelect={selectDir}
-            onCreateStart={createIn}
-            onCreateFolderStart={createFolderIn}
-            onDelete={deleteFolder}
-          >
-            {renderNodes(node.children, depth + 1)}
-            {showCreate ? (
-              <div
-                className="flex items-center gap-1.5 py-0.5 pr-2"
-                style={{ paddingLeft: 8 + (depth + 1) * 12 }}
-              >
-                <FileText className="size-3.5 shrink-0 text-muted" aria-hidden />
-                <InlineInput
-                  initial=""
-                  placeholder="page-name.md"
-                  onCommit={(value) => commitCreate(node.path, value)}
-                  onCancel={() => setCreatingIn(null)}
-                />
-              </div>
-            ) : null}
-            {showFolderCreate ? (
-              <div
-                className="flex items-center gap-1.5 py-0.5 pr-2"
-                style={{ paddingLeft: 8 + (depth + 1) * 12 }}
-              >
-                <Folder className="size-3.5 shrink-0 text-muted" aria-hidden />
-                <InlineInput
-                  initial=""
-                  placeholder="folder-name"
-                  onCommit={(value) => commitFolderCreate(node.path, value)}
-                  onCancel={() => setFolderCreatingIn(null)}
-                />
-              </div>
-            ) : null}
-          </DirRow>
+  // -- menus ------------------------------------------------------------------
+
+  const newPageItems = (dir: string): MenuItem[] => [
+    { kind: "head", label: `New page in ${dir}/` },
+    {
+      kind: "input",
+      placeholder: "page-name",
+      button: "Create",
+      run: (value) => createDoc(dir, value),
+    },
+  ];
+
+  const newFolderItems = (dir: string): MenuItem[] => [
+    { kind: "head", label: `New folder in ${dir}/` },
+    { kind: "text", node: EMPTY_FOLDER_NOTE },
+    {
+      kind: "input",
+      placeholder: "folder-name",
+      button: "Create",
+      run: (value) => createFolder(dir, value),
+    },
+  ];
+
+  const moveToItems = (path: string): MenuItem[] => [
+    { kind: "head", label: "Move to folder" },
+    ...[...folders].sort().map((folder) => ({
+      label: `${folder}/`,
+      icon: <Folder className="i" aria-hidden />,
+      disabled: folder === parentOf(path),
+      run: () => moveDoc(path, `${folder}/${nameOf(path)}`),
+    })),
+  ];
+
+  const deletePageItem = (path: string): MenuItem => ({
+    label: "Delete page…",
+    icon: <Trash2 className="i" aria-hidden />,
+    danger: true,
+    confirm: "Click again to confirm",
+    run: () => deletePage(path),
+  });
+
+  const rowItems = (row: TreeRow): MenuItem[] => {
+    const items: MenuItem[] = [{ kind: "head", label: row.path }];
+    if (row.folder) {
+      items.push(
+        {
+          label: "New page here",
+          icon: <Plus className="i" aria-hidden />,
+          run: () =>
+            setFollowUp({ path: row.path, items: newPageItems(row.path) }),
+        },
+        {
+          label: "New folder here",
+          icon: <Folder className="i" aria-hidden />,
+          run: () =>
+            setFollowUp({ path: row.path, items: newFolderItems(row.path) }),
+        },
+      );
+    } else {
+      items.push({
+        label: "Open in a pinned tab",
+        icon: <FileText className="i" aria-hidden />,
+        run: () => onOpen(row.path),
+      });
+    }
+    items.push({
+      label: "Copy path",
+      icon: <Copy className="i" aria-hidden />,
+      run: () => void copyText(row.path, "Path copied"),
+    });
+    // The four roots are fixtures of the schema, not names anyone chose.
+    if (!row.root) {
+      items.push({
+        label: "Rename",
+        icon: <Pencil className="i" aria-hidden />,
+        kbd: "F2",
+        run: () => setRenaming(row.path),
+      });
+    }
+    if (row.folder) {
+      if (row.empty && !row.root) {
+        items.push(
+          { kind: "sep" },
+          {
+            label: "Delete empty folder",
+            icon: <Trash2 className="i" aria-hidden />,
+            danger: true,
+            run: () => deleteEmptyFolder(row.path),
+          },
         );
       }
+    } else {
+      items.push(
+        {
+          label: "Move to…",
+          icon: <Folder className="i" aria-hidden />,
+          run: () =>
+            setFollowUp({ path: row.path, items: moveToItems(row.path) }),
+        },
+        { kind: "sep" },
+        deletePageItem(row.path),
+      );
+    }
+    return items;
+  };
+
+  const renderRow = (row: TreeRow) => {
+    if (renaming === row.path) {
       return (
-        <FileRow
-          key={node.path}
-          node={node}
-          depth={depth}
-          active={node.path === p}
-          renaming={renaming === node.path}
-          dirty={isDirty(node.path)}
-          onActivate={(path) => onSelect(path)}
-          onOpen={onOpen}
-          onRenameCommit={commitRename}
-          onRenameCancel={() => setRenaming(null)}
-          onDelete={deletePage}
-          onRenameStart={(path) => {
-            setCreatingIn(null);
-            setFolderCreatingIn(null);
-            setRenaming(path);
+        <RenameRow
+          key={`rename:${row.path}`}
+          row={row}
+          onCancel={() => setRenaming(null)}
+          onCommit={(value) => {
+            setRenaming(null);
+            if (row.folder) void renameFolder(row.path, value);
+            else renamePage(row.path, value);
           }}
         />
       );
-    });
+    }
+    return (
+      <RowMenus
+        key={row.path}
+        items={rowItems(row)}
+        followUp={followUp?.path === row.path ? followUp.items : null}
+        onFollowUpClose={() => setFollowUp(null)}
+      >
+        {row.folder ? (
+          <FolderRow
+            row={row}
+            expanded={expanded.has(row.path)}
+            selected={selectedDir === row.path}
+            onFold={selectFolder}
+            onRename={setRenaming}
+            onDelete={deleteEmptyFolder}
+          />
+        ) : (
+          <FileRow
+            row={row}
+            active={row.path === p}
+            dirty={isDirty(row.path)}
+            onActivate={(path) => {
+              setSelectedDir(null);
+              onSelect(path);
+            }}
+            onOpen={onOpen}
+            onRename={setRenaming}
+            // The Delete key asks the same way the menu does: a second click.
+            onDelete={(path) =>
+              setFollowUp({
+                path,
+                items: [{ kind: "head", label: path }, deletePageItem(path)],
+              })
+            }
+          />
+        )}
+      </RowMenus>
+    );
+  };
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      {/* The explorer's action row — creation on the left (into the selected
-          folder), the tree's state on the right. */}
-      <div className="flex shrink-0 items-center gap-0.5 px-2 py-1">
-        <SectionHeading size="sm" className="mr-1.5 pl-1">
-          Pages
-        </SectionHeading>
+    <>
+      <SectionHeading size="sm">
+        Pages
+        <Sp />
+        <MenuButton items={newPageItems(targetDir)} align="end">
+          <button type="button" title={`New page in ${targetDir}/`}>
+            <Plus className="i" aria-hidden />
+          </button>
+        </MenuButton>
+        <MenuButton items={newFolderItems(targetDir)} align="end">
+          <button type="button" title={`New folder in ${targetDir}/`}>
+            <Folder className="i" aria-hidden />
+          </button>
+        </MenuButton>
         <button
           type="button"
-          title={`New page in ${selectedDir}/`}
-          onClick={() => createIn(selectedDir)}
-          className="flex size-6 items-center justify-center rounded text-muted hover:bg-card hover:text-ink"
+          title={anyFolded ? "Expand all" : "Collapse all"}
+          onClick={toggleFoldAll}
         >
-          <FilePlus2 className="size-4" aria-hidden />
+          <ChevronsUpDown className="i" aria-hidden />
         </button>
-        <button
-          type="button"
-          title={`New folder in ${selectedDir}/`}
-          onClick={() => createFolderIn(selectedDir)}
-          className="flex size-6 items-center justify-center rounded text-muted hover:bg-card hover:text-ink"
-        >
-          <FolderPlus className="size-4" aria-hidden />
-        </button>
-        <div className="ml-auto flex items-center gap-0.5">
-          <button
-            type="button"
-            title="Refresh"
-            onClick={() => void docs.refetch()}
-            className="flex size-6 items-center justify-center rounded text-muted hover:bg-card hover:text-ink"
-          >
-            <RefreshCw className="size-4" aria-hidden />
-          </button>
-          <button
-            type="button"
-            title={allExpanded ? "Collapse all folders" : "Expand all folders"}
-            onClick={toggleExpandAll}
-            className="flex size-6 items-center justify-center rounded text-muted hover:bg-card hover:text-ink"
-          >
-            {allExpanded ? (
-              <ChevronsDownUp className="size-4" aria-hidden />
-            ) : (
-              <ChevronsUpDown className="size-4" aria-hidden />
-            )}
-          </button>
-        </div>
-      </div>
+      </SectionHeading>
 
       <div
-        className="min-h-0 flex-1 overflow-y-auto pb-2"
+        className="sb-body tree"
         onDoubleClick={(event) => {
-          // Blank space below the tree — not a row — starts a page in the
-          // selected folder, the way an empty explorer offers itself.
-          if (event.target === event.currentTarget) createIn(selectedDir);
+          // Blank space — not a row — starts a page in the selected folder,
+          // the way an empty explorer offers itself.
+          if (event.target instanceof Element && event.target.closest(".row"))
+            return;
+          createDoc(targetDir, "untitled");
         }}
       >
         {docs.isPending ? (
-          <Loading label="Loading pages…" className="p-4" />
+          <Loading label="Loading pages…" className="p-2" />
         ) : docs.isError ? (
-          <div className="p-2">
-            <ErrorBox
-              error={docs.error}
-              onRetry={() => void docs.refetch()}
-              title="Could not list pages"
-            />
-          </div>
+          <ErrorBox
+            error={docs.error}
+            onRetry={() => void docs.refetch()}
+            title="Could not list pages"
+          />
         ) : (
           <DndContext sensors={sensors} onDragEnd={onDragEnd}>
-            {renderNodes(tree, 0)}
+            {rows.map(renderRow)}
           </DndContext>
         )}
-      </div>
-
-      {inlineError ? (
-        <p className="shrink-0 border-t border-edge px-3 py-2 text-xs leading-relaxed text-warn-text">
-          {inlineError}
+        <p
+          className="empty"
+          style={{
+            padding: "12px 10px 0",
+            fontSize: 11.5,
+            color: "var(--faint)",
+          }}
+        >
+          Right-click a row for rename, delete, new page. Click a folder to
+          select it and fold it. Double-click blank space for a new page.
         </p>
-      ) : null}
-    </div>
+      </div>
+    </>
   );
 }

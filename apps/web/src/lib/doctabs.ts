@@ -6,13 +6,21 @@
 // drafts do not: unsaved work is never silently resurrected, and the
 // upcoming always-on editor autosaves it within seconds anyway.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "./queries";
 import type { DocBodyDto } from "./types";
 
 const TABS_KEY = "dit.docs.tabs";
 const PINNED_KEY = "dit.docs.pinned";
+
+// Closing or renaming the active tab navigates away, and the URL changes a
+// beat later than the tab list. In between, the shell still sees the old
+// page in the route and asks `ensure` to give it a tab again — which would
+// undo the close. A just-closed path is therefore ignored by `ensure` for
+// the length of that navigation; a real reopen (a click, a deep link) comes
+// well after the window.
+const ENSURE_GUARD_MS = 1000;
 
 function loadList(key: string): string[] {
   try {
@@ -50,12 +58,18 @@ export interface DocTabs {
   preview: (path: string) => void;
   /** Double click: keep this path as its own tab. */
   pin: (path: string) => void;
+  /** Demote a pinned tab back to the preview slot. The tab stays open; the
+   *  next single click on another page replaces it. */
+  unpin: (path: string) => void;
   /** The URL names an active page that has no tab (deep link, reload) —
    *  append it without disturbing the preview slot semantics. */
   ensure: (path: string) => void;
   /** Remove the tab, its pin and its draft. Callers decide about the
    *  neighbor to activate; they can see `paths` before calling. */
   close: (path: string) => void;
+  /** Keep only this tab. Callers flush any unsaved neighbour first — this
+   *  drops the other buffers without asking. */
+  closeOthers: (path: string) => void;
   /** Materialize the editing buffer the first time a page's content
    *  arrives. Later calls are no-ops — a buffer that exists is ahead of
    *  the server by definition, and must never be reset from under it. */
@@ -73,8 +87,11 @@ export interface DocTabs {
 export function useDocTabs(): DocTabs {
   const queryClient = useQueryClient();
   const [paths, setPaths] = useState<string[]>(() => loadList(TABS_KEY));
-  const [pinned, setPinned] = useState<Set<string>>(() => new Set(loadList(PINNED_KEY)));
+  const [pinned, setPinned] = useState<Set<string>>(
+    () => new Set(loadList(PINNED_KEY)),
+  );
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const guard = useRef<{ path: string; at: number } | null>(null);
 
   useEffect(() => persist(TABS_KEY, paths), [paths]);
   useEffect(() => persist(PINNED_KEY, [...pinned]), [pinned]);
@@ -83,7 +100,9 @@ export function useDocTabs(): DocTabs {
     (path: string) => {
       const draft = drafts[path];
       if (draft === undefined) return false;
-      const saved = queryClient.getQueryData<DocBodyDto>(queryKeys.doc(path))?.body;
+      const saved = queryClient.getQueryData<DocBodyDto>(
+        queryKeys.doc(path),
+      )?.body;
       return draft !== saved;
     },
     [drafts, queryClient],
@@ -111,11 +130,30 @@ export function useDocTabs(): DocTabs {
     setPaths((prev) => (prev.includes(path) ? prev : [...prev, path]));
   }, []);
 
+  const unpin = useCallback((path: string) => {
+    setPinned((prev) => {
+      if (!prev.has(path)) return prev;
+      const next = new Set(prev);
+      next.delete(path);
+      return next;
+    });
+  }, []);
+
+  const closeOthers = useCallback((path: string) => {
+    setPaths((prev) => (prev.includes(path) ? [path] : prev));
+    setPinned((prev) => (prev.has(path) ? new Set([path]) : new Set()));
+    setDrafts((prev) => (path in prev ? { [path]: prev[path] as string } : {}));
+  }, []);
+
   const ensure = useCallback((path: string) => {
+    const g = guard.current;
+    if (g !== null && g.path === path && Date.now() - g.at < ENSURE_GUARD_MS)
+      return;
     setPaths((prev) => (prev.includes(path) ? prev : [...prev, path]));
   }, []);
 
   const close = useCallback((path: string) => {
+    guard.current = { path, at: Date.now() };
     setPaths((prev) => prev.filter((tab) => tab !== path));
     setPinned((prev) => {
       if (!prev.has(path)) return prev;
@@ -139,12 +177,18 @@ export function useDocTabs(): DocTabs {
     setDrafts((prev) => (path in prev ? { ...prev, [path]: body } : prev));
   }, []);
 
-  const syncIfUnchanged = useCallback((path: string, sent: string, canonical: string) => {
-    setDrafts((prev) => (prev[path] === sent ? { ...prev, [path]: canonical } : prev));
-  }, []);
+  const syncIfUnchanged = useCallback(
+    (path: string, sent: string, canonical: string) => {
+      setDrafts((prev) =>
+        prev[path] === sent ? { ...prev, [path]: canonical } : prev,
+      );
+    },
+    [],
+  );
 
   const rekey = useCallback((from: string, to: string) => {
     if (from === to) return;
+    guard.current = { path: from, at: Date.now() };
     setPaths((prev) => prev.map((tab) => (tab === from ? to : tab)));
     setPinned((prev) => {
       if (!prev.has(from)) return prev;
@@ -162,5 +206,20 @@ export function useDocTabs(): DocTabs {
     });
   }, []);
 
-  return { paths, pinned, drafts, isDirty, preview, pin, ensure, close, initDraft, setDraft, syncIfUnchanged, rekey };
+  return {
+    paths,
+    pinned,
+    drafts,
+    isDirty,
+    preview,
+    pin,
+    unpin,
+    ensure,
+    close,
+    closeOthers,
+    initDraft,
+    setDraft,
+    syncIfUnchanged,
+    rekey,
+  };
 }
