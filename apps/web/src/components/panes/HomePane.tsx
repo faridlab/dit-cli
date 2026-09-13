@@ -1,182 +1,193 @@
 // The Home sidebar section: the glanceable layer of the dashboard — what is
-// blocked on other people, and the workspace activity feed. Both read the
-// same pool query the Home view runs (identical cache key), so the pane and
-// the dashboard can never disagree, and both are derived (invariant 5):
-// nothing here is stored.
+// waiting on other people, and the workspace activity feed. The waiting
+// list reads the same open pool the Home view runs (identical cache key),
+// so the pane and the view can never disagree; the feed is one windowed
+// request over `field_events`. Both are derived (invariant 5): nothing here
+// is stored.
 
 import { useMemo } from "react";
-import {
-  useActivity,
-  useIssues,
-  useSchema,
-  useStatus,
-} from "../../lib/queries";
-import { circleColor, initials, relativeTime } from "../../lib/format";
-import type { IssueDto } from "../../lib/types";
-import { cn } from "../../lib/cn";
-import { SectionHeading } from "../chrome";
-import { ErrorBox, Loading } from "../states";
+import { GitCommitHorizontal } from "lucide-react";
+import { useActivity, useIssues, useOpenPool, useSchema } from "../../lib/queries";
+import { relativeTime, resolveIdValue } from "../../lib/format";
+import type { IssueDto, StatusDto } from "../../lib/types";
+import { Sp } from "../chrome";
+import { AssigneeCircles, IssueHandle } from "../badges";
+import { routeToHash } from "../../lib/router";
 
-// Must match HomeView's pool size: the two components share one fetch.
-const POOL_LIMIT = 200;
+/** "Waiting" is workflow-defined, not a client concept: only statuses whose
+ *  id or label says review, waiting or blocked count. */
+const WAITING = /review|waiting|blocked/i;
+
+/** The fields worth a line in the feed. Body edits and comments have their
+ *  own surfaces; timestamps and the like are noise here. */
+const FEED_FIELDS = new Set([
+  "status",
+  "priority",
+  "assignees",
+  "labels",
+  "epic",
+  "estimate",
+  "due",
+  "start",
+  "title",
+]);
+
+const FEED_LENGTH = 6;
 
 function WaitingOn({
   pool,
-  blockedStatusIds,
-  me,
+  statuses,
   onOpen,
 }: {
-  pool: IssueDto[];
-  blockedStatusIds: ReadonlySet<string>;
-  me: string | null;
+  pool: readonly IssueDto[];
+  statuses: readonly StatusDto[];
   onOpen: (id: string) => void;
 }) {
-  // "Blocked" is workflow-defined, not a client concept: only statuses whose
-  // id or label says blocked/waiting count. No such status, no section.
-  const waiting = useMemo(() => {
-    if (blockedStatusIds.size === 0) return [];
-    return pool
-      .filter(
-        (issue) =>
-          blockedStatusIds.has(issue.status) &&
-          (me === null || !issue.assignees.includes(me)),
-      )
-      .slice(0, 3);
-  }, [pool, blockedStatusIds, me]);
-
-  if (blockedStatusIds.size === 0) return null;
+  const ids = useMemo(() => new Set(statuses.map((s) => s.id)), [statuses]);
+  const waiting = useMemo(() => pool.filter((issue) => ids.has(issue.status)), [pool, ids]);
+  // The same list as a query a person could type, for the count link.
+  const query = statuses.map((s) => `status = ${s.id}`).join(" OR ");
 
   return (
-    <section>
-      <SectionHeading size="sm" className="mb-3">
+    <>
+      <div className="sb-h">
         Waiting on
-      </SectionHeading>
-      <div className="flex flex-col gap-2.5">
-        {waiting.map((issue) => {
-          const first = issue.assignees[0];
-          return (
-            <button
-              key={issue.id}
-              type="button"
-              onClick={() => onOpen(issue.id)}
-              className="flex items-start gap-2.5 text-left"
-            >
-              <span
-                className={cn(
-                  "inline-flex size-[22px] shrink-0 items-center justify-center rounded-full font-mono text-[9px] leading-none text-white",
-                  first ? circleColor(first) : "bg-dim",
-                )}
-              >
-                {first ? initials(first) : "?"}
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[13.5px] leading-snug text-ink-2">
-                  {issue.title}
-                </span>
-                <span className="mt-0.5 block font-mono text-[11px] text-dim">
-                  {issue.number !== null ? `#${issue.number}` : issue.short_ref} ·{" "}
-                  {relativeTime(issue.updated)}
-                </span>
-              </span>
-            </button>
-          );
-        })}
-        {waiting.length === 0 ? (
-          <p className="text-xs text-dim">Nothing blocked on someone else.</p>
+        <Sp />
+        {statuses.length > 0 ? (
+          <a
+            className="cnt mono"
+            style={{ fontWeight: 400 }}
+            href={routeToHash({ name: "search", q: query })}
+            title={query}
+          >
+            {waiting.length}
+          </a>
         ) : null}
       </div>
-    </section>
+      <div className="sb-body">
+        {waiting.length === 0 ? (
+          <p className="empty" style={{ padding: "4px 8px" }}>
+            Nothing in review.
+          </p>
+        ) : (
+          waiting.map((issue) => (
+            <button key={issue.id} type="button" className="row" onClick={() => onOpen(issue.short_ref)}>
+              <AssigneeCircles assignees={issue.assignees} />
+              <span className="lbl">{issue.title}</span>
+              <span className="cnt">{relativeTime(issue.updated)}</span>
+            </button>
+          ))
+        )}
+      </div>
+    </>
   );
 }
 
-function ActivitySection() {
+function Activity({
+  statuses,
+  onOpen,
+}: {
+  statuses: readonly StatusDto[];
+  onOpen: (id: string) => void;
+}) {
   // One windowed request over the whole workspace, ordered by `seq` on the
   // server — the only order that is not self-contradictory (invariant 9).
-  // The full stream, with filters and time travel, is the Timeline screen.
-  const activity = useActivity({ limit: 15 });
+  // Fetch more than the six shown so the field filter still has enough.
+  const activity = useActivity({ limit: 60 });
+  const labelOf = useMemo(() => new Map(statuses.map((s) => [s.id, s.label])), [statuses]);
+  // `epic` events carry an issue id; the same pool the dashboard reads turns
+  // it back into the epic's title.
+  const everything = useIssues({ limit: 500 });
+  const titles = useMemo(
+    () => new Map((everything.data?.items ?? []).map((issue) => [issue.id, issue.title])),
+    [everything.data],
+  );
+  const titleOf = (id: string) => titles.get(id);
+
+  const events = useMemo(
+    () => (activity.data?.events ?? []).filter((event) => FEED_FIELDS.has(event.field)).slice(0, FEED_LENGTH),
+    [activity.data],
+  );
 
   return (
-    <section>
-      <div className="mb-2.5 flex items-center gap-2">
-        <SectionHeading size="sm">Activity</SectionHeading>
-        <a
-          href="#/timeline"
-          className="ml-auto text-[11px] text-muted transition-colors hover:text-ink"
+    <>
+      <div className="sb-h" style={{ marginTop: 6 }}>
+        Activity
+        <Sp />
+        <span
+          className="dql"
+          style={{
+            fontWeight: 400,
+            textTransform: "none",
+            letterSpacing: 0,
+            fontFamily: "var(--mono)",
+            fontSize: 10.5,
+            color: "var(--faint)",
+          }}
         >
-          Timeline →
-        </a>
+          field_events
+        </span>
       </div>
-      {activity.isPending ? (
-        <p className="text-xs text-faint">Loading…</p>
-      ) : activity.isError ? (
-        <p className="text-xs text-crit-text">
-          {activity.error instanceof Error ? activity.error.message : "Could not load activity"}
-        </p>
-      ) : (activity.data?.events.length ?? 0) === 0 ? (
-        <p className="text-xs text-faint">No field events yet.</p>
-      ) : (
-        <ol className="flex flex-col">
-          {(activity.data?.events ?? []).map((event) => (
-            <li
+      <div className="sb-body">
+        {activity.isPending ? (
+          <p className="empty" style={{ padding: "4px 8px" }}>
+            Loading…
+          </p>
+        ) : activity.isError ? (
+          <p className="empty" style={{ padding: "4px 8px" }}>
+            {activity.error instanceof Error ? activity.error.message : "Could not load activity"}
+          </p>
+        ) : events.length === 0 ? (
+          <p className="empty" style={{ padding: "4px 8px" }}>
+            No field events yet.
+          </p>
+        ) : (
+          events.map((event) => (
+            <button
               key={`${event.issue_id}-${event.seq}-${event.field}`}
-              className="flex flex-col gap-0.5 border-l border-edge py-2 pl-3"
+              type="button"
+              className="row"
+              style={{ height: "auto", padding: "5px 8px", alignItems: "flex-start" }}
+              onClick={() => onOpen(event.short_ref)}
             >
-              <div className="flex items-baseline gap-2 text-[11px] text-muted">
-                <span className="font-mono text-dim">
-                  {event.number !== null ? `#${event.number}` : event.short_ref}
+              <span style={{ width: 16, display: "grid", placeItems: "center", marginTop: 2 }}>
+                <GitCommitHorizontal className="i" aria-hidden />
+              </span>
+              <span className="lbl" style={{ whiteSpace: "normal", lineHeight: 1.35, fontSize: 12 }}>
+                <b style={{ fontWeight: 500 }}>{event.author}</b> set {event.field} →{" "}
+                <span className="mono">
+                  {event.field === "status"
+                    ? (labelOf.get(event.new_value ?? "") ?? event.new_value ?? "∅")
+                    : event.new_value === null
+                      ? "∅"
+                      : resolveIdValue(event.field, event.new_value, titleOf)}
                 </span>
-                <span className="font-mono text-ink-2">{event.author}</span>
-                <span className="ml-auto">{relativeTime(event.ts)}</span>
-              </div>
-              <p className="text-[13px] text-ink-2">{event.field}</p>
-              <p className="font-mono text-[11px] text-muted">
-                {event.old_value ?? "∅"} → {event.new_value ?? "∅"}
-              </p>
-            </li>
-          ))}
-        </ol>
-      )}
-    </section>
+                <br />
+                <span style={{ color: "var(--muted)" }}>
+                  <IssueHandle shortRef={event.short_ref} number={event.number} /> · {relativeTime(event.ts)}
+                </span>
+              </span>
+            </button>
+          ))
+        )}
+      </div>
+    </>
   );
 }
 
 export function HomePane({ onOpen }: { onOpen: (id: string) => void }) {
-  const status = useStatus();
   const schema = useSchema();
-  const pool = useIssues({ limit: POOL_LIMIT });
-
-  const me = status.data?.me ?? null;
-  // "Blocked" is whatever the workspace's workflow calls blocked — matched
-  // on the status's own id and label, never a hardcoded list.
-  const blockedStatusIds = useMemo(() => {
-    const set = new Set<string>();
-    for (const s of schema.data?.workflow.statuses ?? []) {
-      if (/block|wait/i.test(`${s.id} ${s.label}`)) set.add(s.id);
-    }
-    return set;
-  }, [schema.data]);
-
-  if (pool.isPending) {
-    return <Loading label="Loading workspace…" className="p-4" />;
-  }
-  if (pool.isError) {
-    return (
-      <div className="p-2">
-        <ErrorBox
-          error={pool.error}
-          onRetry={() => void pool.refetch()}
-          title="Could not load the workspace"
-        />
-      </div>
-    );
-  }
-
-  const items = pool.data?.items ?? [];
+  const pool = useOpenPool();
+  const statuses = schema.data?.workflow.statuses ?? [];
+  const waitingStatuses = useMemo(
+    () => statuses.filter((s) => WAITING.test(`${s.id} ${s.label}`)),
+    [statuses],
+  );
 
   return (
-    <div className="flex flex-col gap-[22px] px-[18px] pb-7 pt-4">
-      <WaitingOn pool={items} blockedStatusIds={blockedStatusIds} me={me} onOpen={onOpen} />
-      <ActivitySection />
-    </div>
+    <>
+      <WaitingOn pool={pool.data?.items ?? []} statuses={waitingStatuses} onOpen={onOpen} />
+      <Activity statuses={statuses} onOpen={onOpen} />
+    </>
   );
 }
