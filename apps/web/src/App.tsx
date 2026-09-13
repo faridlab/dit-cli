@@ -80,7 +80,9 @@ export function App() {
           }}
         />
       )}
-      <Toaster theme={theme.resolved} position="bottom-right" gap={6} />
+      {/* Clear of the status bar: the bottom strip is the one place a
+          person looks to confirm what a toast just claimed. */}
+      <Toaster theme={theme.resolved} position="bottom-right" gap={6} offset={40} />
     </QueryClientProvider>
   );
 }

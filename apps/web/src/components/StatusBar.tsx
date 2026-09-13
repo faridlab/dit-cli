@@ -1,60 +1,67 @@
-// Bottom strip: where you are (repo / branch / head), whether the repo is
-// dirty, who you are, and whether live updates are connected. Everything a
-// person glances at before trusting what they see.
+// Bottom strip: where you are (repo / branch / head), whether the tree is
+// clean, how big the workspace is, who you are, the version, and whether
+// live updates are connected. Everything a person glances at before
+// trusting what they see.
 
-import { CircleAlert, CircleCheck, GitBranch } from "lucide-react";
+import { Check, CircleAlert, Clock, GitBranch, Info } from "lucide-react";
+import { toast } from "sonner";
 import type { ConnectionState } from "../lib/events";
-import { useStatus } from "../lib/queries";
+import { useDocs, useIssues, useStatus } from "../lib/queries";
 import { shortSha } from "../lib/format";
 import { cn } from "../lib/cn";
+import { MenuButton, type MenuItem } from "./chrome";
 
 function ConnBadge({ state }: { state: ConnectionState }) {
   const label =
-    state === "live"
-      ? "live"
-      : state === "connecting"
-        ? "connecting"
-        : state === "retrying"
-          ? "reconnecting"
-          : "offline";
+    state === "live" ? "live" : state === "connecting" ? "connecting" : state === "retrying" ? "reconnecting" : "offline";
   return (
     <span
-      className={cn(
-        "flex items-center gap-1.5",
-        state === "live" ? "text-done-text" : state === "off" ? "text-muted" : "text-warn-text",
-      )}
+      className={cn("it", state === "live" && "live")}
+      style={state === "live" ? undefined : { color: state === "off" ? "var(--faint)" : "var(--warn)" }}
       title={
         state === "live"
           ? "Receiving live updates from the workspace watcher"
           : "Live updates disconnected — data refreshes on reconnect"
       }
     >
-      <span
-        className={cn(
-          "inline-block size-1.5 rounded-full",
-          state === "live" ? "bg-done-text" : state === "off" ? "bg-dim" : "bg-warn-text",
-        )}
-      />
       {label}
     </span>
   );
 }
 
-export function StatusBar({ conn }: { conn: ConnectionState }) {
+async function copy(text: string, label: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(`${label} — ${text}`);
+  } catch {
+    toast(`${label}: ${text}`);
+  }
+}
+
+export function StatusBar({
+  conn,
+  workspaceMenu,
+  onOpenSettings,
+  onNotes,
+}: {
+  conn: ConnectionState;
+  workspaceMenu: MenuItem[];
+  onOpenSettings: () => void;
+  onNotes: () => void;
+}) {
   const status = useStatus();
+  // Size of the workspace, not of any filtered list.
+  const all = useIssues({ limit: 1 });
+  const docs = useDocs();
 
   if (status.isError) {
     return (
-      <footer className="flex h-7 items-center gap-3 border-t border-edge bg-app px-3.5 font-mono text-[11px] text-muted">
-        <span className="flex items-center gap-1.5 text-crit-text">
-          <CircleAlert className="size-3" aria-hidden />
+      <footer className="status">
+        <span className="it" style={{ color: "var(--crit)" }}>
+          <CircleAlert aria-hidden />
           server unreachable
         </span>
-        <button
-          type="button"
-          className="underline decoration-dotted hover:text-ink"
-          onClick={() => void status.refetch()}
-        >
+        <button type="button" className="it underline decoration-dotted" onClick={() => void status.refetch()}>
           retry
         </button>
       </footer>
@@ -63,40 +70,51 @@ export function StatusBar({ conn }: { conn: ConnectionState }) {
 
   const data = status.data;
   const repo = data ? data.repo.split("/").filter(Boolean).pop() ?? data.repo : "…";
+  const head = data ? shortSha(data.head) : "…";
 
   return (
-    <footer className="flex h-7 items-center gap-4 border-t border-edge bg-app px-3.5 font-mono text-[11px] text-muted">
-      <span className="flex items-center gap-1.5" title={data ? data.repo : undefined}>
-        <span className="text-ink-2">{repo}</span>
-      </span>
+    <footer className="status">
+      <MenuButton items={workspaceMenu}>
+        <button type="button" className="it" title={data?.repo ?? "Workspace menu"}>
+          <b style={{ color: "var(--ink-2)", fontWeight: 500 }}>{repo}</b>
+        </button>
+      </MenuButton>
       {data ? (
-        <span className="flex items-center gap-1.5">
-          <GitBranch className="size-3" aria-hidden />
+        <button type="button" className="it" title="Copy HEAD" onClick={() => void copy(data.head ?? "", "HEAD copied")}>
+          <GitBranch aria-hidden />
           {data.branch}
-          <span className="text-faint">@</span>
-          {shortSha(data.head)}
+          <span style={{ color: "var(--faint)" }}>@</span>
+          {head}
+        </button>
+      ) : null}
+      {data ? (
+        <span
+          className="it"
+          style={{ color: data.dirty ? "var(--warn)" : "var(--done)" }}
+          title={data.dirty ? "The working tree has uncommitted changes" : "No uncommitted changes"}
+        >
+          {data.dirty ? <Clock aria-hidden /> : <Check aria-hidden />}
+          {data.dirty ? "dirty" : "clean"}
         </span>
       ) : null}
-      {data?.dirty ? (
-        <span className="flex items-center gap-1 text-warn-text" title="The repo has uncommitted changes">
-          <CircleAlert className="size-3" aria-hidden />
-          dirty
-        </span>
-      ) : data && !data.dirty ? (
-        <span className="flex items-center gap-1" title="No uncommitted changes">
-          <CircleCheck className="size-3 text-done-text" aria-hidden />
-          clean
+      {all.data && docs.data ? (
+        <span className="it" style={{ color: "var(--faint)" }}>
+          {all.data.total} {all.data.total === 1 ? "issue" : "issues"} · {docs.data.length}{" "}
+          {docs.data.length === 1 ? "page" : "pages"}
         </span>
       ) : null}
-      <span className="ml-auto flex items-center gap-4">
-        {data?.me ? (
-          <span title="the alias your writes are attributed to">
-            <span className="text-ink-2">{data.me}</span>
-          </span>
-        ) : null}
-        {data ? <span>v{data.version}</span> : null}
-        <ConnBadge state={conn} />
-      </span>
+      <span className="sp" />
+      {data?.me ? (
+        <button type="button" className="it" title="The alias your writes are attributed to — change it in Settings" onClick={onOpenSettings}>
+          {data.me}
+        </button>
+      ) : null}
+      {data ? <span className="it">v{data.version}</span> : null}
+      <ConnBadge state={conn} />
+      <button type="button" className="it" onClick={onNotes} title="Notes: how this workbench works, and the keys">
+        <Info aria-hidden />
+        notes
+      </button>
     </footer>
   );
 }

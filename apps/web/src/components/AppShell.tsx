@@ -1,29 +1,32 @@
-// Workbench layout: sidebar, main area, status bar, plus the two global
-// overlays. Route state, the ⌘K / ⌘B / ⌘1-⌘5 listeners, and the sidebar
-// width live here so the views below stay purely about data.
+// Workbench layout: sidebar, main area (header + content + issue panel),
+// status bar, plus the global overlays (palette, notes). Route state, the
+// keyboard listeners and the shared view options live here so the views
+// below stay purely about data.
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { Code, Columns3, PanelRight, Settings, Terminal } from "lucide-react";
+import { toast } from "sonner";
 import { useLiveEvents } from "../lib/events";
 import { useDocTabs } from "../lib/doctabs";
-import { invalidateWorkspaceData } from "../lib/queries";
-import { peekHost, peekOf, useNavigate, useRoute, withPeek } from "../lib/router";
+import { invalidateWorkspaceData, useIssue, useStatus } from "../lib/queries";
+import { parseHash, peekHost, peekOf, useNavigate, useRoute, withPeek, type Route } from "../lib/router";
 import { stepPeek, usePeekList } from "../lib/peeklist";
+import { useTheme } from "../lib/theme";
+import { ViewOptionsProvider, useViewOptions } from "../lib/viewopts";
+import { shortSha } from "../lib/format";
 import { CommandPalette } from "./CommandPalette";
 import { IssuePeek } from "./issue/IssuePeek";
-import {
-  SHORTCUT_VIEWS,
-  Sidebar,
-  SIDEBAR_DEFAULT_WIDTH,
-  SIDEBAR_MAX_WIDTH,
-  SIDEBAR_MIN_WIDTH,
-  type SidebarMode,
-} from "./Sidebar";
+import { Sidebar, SHORTCUT_VIEWS, type SidebarMode } from "./Sidebar";
 import { StatusBar } from "./StatusBar";
-import { BoardColumnsProvider, BoardPane } from "./panes/BoardPane";
+import { Header, crumbsFor } from "./Header";
+import { DisplayButton, FilterButton, HeaderHint, SortButton } from "./HeaderMenus";
+import { NotesDrawer } from "./NotesDrawer";
+import { Btn, type MenuItem } from "./chrome";
 import { GanttOptionsProvider, GanttPane } from "./panes/GanttPane";
 import { RoadmapOptionsProvider, RoadmapPane } from "./panes/RoadmapPane";
 import { TimelinePane } from "./panes/TimelinePane";
+import { BoardPane } from "./panes/BoardPane";
 import { DocsPane } from "./panes/DocsPane";
 import { HomePane } from "./panes/HomePane";
 import { IssuesPane } from "./panes/IssuesPane";
@@ -41,26 +44,52 @@ import { GanttView } from "../views/GanttView";
 import { RoadmapView } from "../views/RoadmapView";
 import { TimelineView } from "../views/TimelineView";
 
-const SIDEBAR_WIDTH_KEY = "dit.sidebar.width";
-
-function loadSidebarWidth(): number {
-  try {
-    const raw = window.localStorage.getItem(SIDEBAR_WIDTH_KEY);
-    const parsed = raw === null ? Number.NaN : Number.parseInt(raw, 10);
-    if (Number.isNaN(parsed)) return SIDEBAR_DEFAULT_WIDTH;
-    return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, parsed));
-  } catch {
-    return SIDEBAR_DEFAULT_WIDTH;
-  }
-}
-
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   if (target.isContentEditable) return true;
   return /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
 }
 
+async function copyText(text: string, label: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(`${label} — ${text}`);
+  } catch {
+    toast(`${label}: ${text}`);
+  }
+}
+
+/** The CLI spelling of the current screen, for the palette and the menus. */
+function cliFor(route: Route): string {
+  switch (route.name) {
+    case "board":
+      return "dit board";
+    case "issues":
+      return route.q ? `dit ls "${route.q}"` : "dit ls";
+    case "search":
+      return route.q ? `dit ls "${route.q}"` : "dit ls";
+    case "issue":
+      return `dit show ${route.id}`;
+    case "docs":
+      return route.p ? `dit doc show ${route.p}` : "dit doc ls";
+    default:
+      return "dit ui";
+  }
+}
+
 export function AppShell() {
+  return (
+    <ViewOptionsProvider>
+      <GanttOptionsProvider>
+        <RoadmapOptionsProvider>
+          <Shell />
+        </RoadmapOptionsProvider>
+      </GanttOptionsProvider>
+    </ViewOptionsProvider>
+  );
+}
+
+function Shell() {
   const queryClient = useQueryClient();
   // The watcher saw a new commit: everything it can have changed goes stale.
   const conn = useLiveEvents(() => {
@@ -69,47 +98,40 @@ export function AppShell() {
 
   const route = useRoute();
   const navigate = useNavigate();
+  const status = useStatus();
+  const theme = useTheme();
+  const options = useViewOptions();
   const [paletteOpen, setPaletteOpen] = useState(false);
-
-  // -- the sidebar --------------------------------------------------------
-  // ⌘B hides it and ⌘B brings it back; the pointer never does either, so
-  // the shortcut is a decision, not something a sweep across the screen
-  // undoes. The width is remembered per browser.
+  const [notesOpen, setNotesOpen] = useState(false);
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>("expanded");
-  const [sidebarWidth, setSidebarWidth] = useState(loadSidebarWidth);
-
   const toggleSidebar = useCallback(() => {
     setSidebarMode((mode) => (mode === "hidden" ? "expanded" : "hidden"));
   }, []);
 
-  const onResizeEnd = useCallback((width: number) => {
-    setSidebarWidth(width);
-    try {
-      window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(width));
-    } catch {
-      // A blocked or full localStorage only loses the remembered width.
-    }
-  }, []);
+  const workspace = status.data
+    ? (status.data.repo.split("/").filter(Boolean).pop() ?? status.data.repo)
+    : "…";
 
   // -- the issue panel ------------------------------------------------------
   // An issue opens beside the list, not instead of it: the route keeps the
   // list (and its filter) and gains `?issue=`. The full page is a deliberate
-  // second step — ⌘↵ or the expand button.
+  // second step — ⌘↵ or the expand button — unless Settings say otherwise.
   const peekId = peekOf(route);
-  // Subscribing to the on-screen order is what keeps the panel's next/prev
-  // buttons honest when a filter changes underneath it.
   const peekList = usePeekList();
   const peekIndex = peekId === null ? -1 : peekList.indexOf(peekId);
 
-  const openIssue = useCallback(
-    (id: string) => navigate(withPeek(route, id)),
-    [navigate, route],
-  );
-  const closePeek = useCallback(() => navigate(withPeek(route, null)), [navigate, route]);
   const expandPeek = useCallback(
     (id: string) => navigate({ name: "issue", id, from: peekHost(route) }),
     [navigate, route],
   );
+  const openIssue = useCallback(
+    (id: string) => {
+      if (options.openAs === "page") expandPeek(id);
+      else navigate(withPeek(route, id));
+    },
+    [expandPeek, navigate, options.openAs, route],
+  );
+  const closePeek = useCallback(() => navigate(withPeek(route, null)), [navigate, route]);
   const stepPeekTo = useCallback(
     (delta: -1 | 1) => {
       const next = stepPeek(peekId, delta);
@@ -121,47 +143,65 @@ export function AppShell() {
   // view it becomes, editor ready, nothing committed until it is created.
   const openNewIssue = useCallback(() => navigate({ name: "new-issue" }), [navigate]);
   const openSearch = useCallback((q: string) => navigate({ name: "search", q }), [navigate]);
-  const selectDoc = useCallback(
-    (p: string | null) => navigate({ name: "docs", p }),
-    [navigate],
-  );
-  // Filtering from the sidebar stays inside the list you are on: the
-  // shortlist narrowed by a context is still the shortlist.
+  const selectDoc = useCallback((p: string | null) => navigate({ name: "docs", p }), [navigate]);
+  // Filtering from the sidebar stays inside the list you are on.
   const filterIssues = useCallback(
     (q: string | null) =>
       navigate({
         name: "issues",
         q,
         starred: route.name === "issues" ? route.starred : undefined,
+        inbox: route.name === "issues" ? route.inbox : undefined,
       }),
     [navigate, route],
   );
+  const go = useCallback((hash: string) => navigate(parseHash(hash)), [navigate]);
 
   // -- keyboard -------------------------------------------------------------
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const mod = event.metaKey || event.ctrlKey;
       if (!mod) {
+        if (event.key === "Escape") {
+          // Innermost thing first. A menu or the palette that just dismissed
+          // itself marks the event handled, and the panel behind it stays.
+          if (event.defaultPrevented) return;
+          if (notesOpen) {
+            event.preventDefault();
+            setNotesOpen(false);
+            return;
+          }
+          if (isTypingTarget(event.target)) return;
+          if (peekId !== null) {
+            event.preventDefault();
+            closePeek();
+          }
+          return;
+        }
         // Bare-letter shortcuts, only while nobody is typing: `c` creates,
-        // and J/K walk the list whenever a panel is open over it. Escape
-        // closes the panel from anywhere it is not busy abandoning an edit.
+        // `/` opens the palette, J/K walk the list behind an open panel.
         if (event.altKey || event.shiftKey || isTypingTarget(event.target)) return;
         if (event.key === "c") {
           event.preventDefault();
           openNewIssue();
-        } else if (event.key === "Escape" && peekId !== null) {
+        } else if (event.key === "/") {
           event.preventDefault();
-          closePeek();
-        } else if ((event.key === "j" || event.key === "k") && peekId !== null) {
+          setPaletteOpen(true);
+        } else if ((event.key === "j" || event.key === "k") && peekList.length > 0) {
           event.preventDefault();
-          stepPeekTo(event.key === "j" ? 1 : -1);
+          if (peekId === null) {
+            const first = peekList[0];
+            if (first) navigate(withPeek(route, first));
+          } else {
+            stepPeekTo(event.key === "j" ? 1 : -1);
+          }
         }
         return;
       }
       if (event.altKey) return;
       // ⌘↵ promotes the open panel to the full page — the one place the
-      // page is reached without a click.
-      if (event.key === "Enter" && peekId !== null) {
+      // page is reached without a click. The comment composer keeps it.
+      if (event.key === "Enter" && peekId !== null && !isTypingTarget(event.target)) {
         event.preventDefault();
         expandPeek(peekId);
         return;
@@ -188,7 +228,7 @@ export function AppShell() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [closePeek, expandPeek, navigate, openNewIssue, peekId, stepPeekTo, toggleSidebar]);
+  }, [closePeek, expandPeek, navigate, notesOpen, openNewIssue, peekId, peekList, route, stepPeekTo, toggleSidebar]);
 
   // `dit serve` opens the browser without a fragment; default to Home so
   // the address bar always reflects where you are.
@@ -200,14 +240,16 @@ export function AppShell() {
   // Tab list, pins and per-path drafts live here (not in DocsView) so they
   // outlive navigation to another view; the URL's `p` is the active tab.
   const docsTabs = useDocTabs();
-  // The union narrowed once, so every callback below can read it plainly.
   const docsP = route.name === "docs" ? route.p : null;
 
-  // A deep link or reload names an active page no tab remembers — give it
-  // one. Idempotent, so re-running on any render is harmless.
+  // `useDocTabs` hands back a fresh object every render, so this effect must
+  // key on the path alone — otherwise it re-runs constantly and can re-add a
+  // tab that a close or a rename removed a moment ago.
+  const ensureTab = useRef(docsTabs.ensure);
+  ensureTab.current = docsTabs.ensure;
   useEffect(() => {
-    if (docsP !== null) docsTabs.ensure(docsP);
-  }, [docsP, docsTabs]);
+    if (docsP !== null) ensureTab.current(docsP);
+  }, [docsP]);
 
   const previewDoc = useCallback(
     (path: string) => {
@@ -216,7 +258,6 @@ export function AppShell() {
     },
     [docsTabs, selectDoc],
   );
-
   const pinDoc = useCallback(
     (path: string) => {
       docsTabs.pin(path);
@@ -224,9 +265,6 @@ export function AppShell() {
     },
     [docsTabs, selectDoc],
   );
-
-  // A rename or drag-move landed: the tab, its pin and its draft follow the
-  // new path; if the moved page was active, the URL follows too.
   const movedDoc = useCallback(
     (from: string, to: string) => {
       const wasActive = docsP === from;
@@ -235,10 +273,6 @@ export function AppShell() {
     },
     [docsTabs, docsP, selectDoc],
   );
-
-  /** Close a tab; when it was active, fall through to its right-hand
-   *  neighbor (leftmost when it was last). `force` skips the unsaved-changes
-   *  question — used after the page itself was deleted. */
   const closeDocTab = useCallback(
     (path: string, opts?: { force?: boolean }) => {
       if (!opts?.force && docsTabs.isDirty(path)) {
@@ -257,22 +291,61 @@ export function AppShell() {
     [docsTabs, docsP, selectDoc],
   );
 
-  // The sidebar's lower section is a pure function of the route: each view
-  // names its own secondary surface. The section fetches its own data
-  // (shared TanStack cache keys keep it in agreement with the main view),
-  // so no state is drilled down from here.
+  // -- the workspace menu ----------------------------------------------------
+  const workspaceMenu = useMemo<MenuItem[]>(
+    () => [
+      { kind: "head", label: "Workspace" },
+      {
+        kind: "text",
+        node: (
+          <>
+            <span className="mono">{status.data?.repo ?? "…"}</span>
+            <br />
+            {status.data ? `${status.data.branch} @ ${shortSha(status.data.head)}` : ""}
+          </>
+        ),
+      },
+      { label: "Open board", icon: <Columns3 className="i" aria-hidden />, run: () => navigate({ name: "board" }) },
+      {
+        label: "Copy CLI command for this view",
+        icon: <Terminal className="i" aria-hidden />,
+        run: () => void copyText(cliFor(route), "Command copied"),
+      },
+      { kind: "sep" },
+      { label: "Settings", icon: <Settings className="i" aria-hidden />, kbd: "⌘,", run: () => navigate({ name: "settings" }) },
+    ],
+    [navigate, route, status.data],
+  );
+
+  // -- the sidebar section and the header actions, both a function of the route
   let section: { title: string; node: ReactNode } | null = null;
+  let right: ReactNode = null;
+  let extraCrumb: string | null = null;
+  let back: { title: string; onClick: () => void } | null = null;
+
   if (route.name === "home") {
     section = { title: "Home", node: <HomePane onOpen={openIssue} /> };
   } else if (route.name === "search") {
     section = { title: "Search", node: <SearchPane q={route.q} onSearch={openSearch} /> };
   } else if (route.name === "board") {
     section = { title: "Board", node: <BoardPane /> };
+    right = (
+      <>
+        <FilterButton />
+        <DisplayButton />
+      </>
+    );
   } else if (route.name === "issues" || route.name === "issue" || route.name === "new-issue") {
-    // An open issue keeps the filters: the list is one back away. The
-    // composer does too — it is one back away from the same list.
     const q = route.name === "issues" ? route.q : null;
     section = { title: "Issues", node: <IssuesPane q={q} onFilter={filterIssues} /> };
+    if (route.name === "issues") {
+      right = (
+        <>
+          <FilterButton />
+          <SortButton />
+        </>
+      );
+    }
   } else if (route.name === "docs") {
     section = {
       title: "Docs",
@@ -287,54 +360,100 @@ export function AppShell() {
         />
       ),
     };
+    extraCrumb = route.p ? (route.p.split("/").pop() ?? route.p) : null;
+    const dirty = route.p ? docsTabs.isDirty(route.p) : false;
+    right = route.p ? (
+      <>
+        <Btn
+          primary={options.docSource}
+          onClick={() => options.setDocSource(!options.docSource)}
+          title="Toggle source mode (markdown as dit fmt writes it)"
+        >
+          <Code className="i" aria-hidden />
+          Source
+        </Btn>
+        <HeaderHint>
+          {dirty ? "unsaved · autosave pending" : `saved · ${status.data ? shortSha(status.data.head) : "…"}`}
+        </HeaderHint>
+      </>
+    ) : null;
   } else if (route.name === "timeline") {
     section = { title: "Timeline", node: <TimelinePane seq={route.seq ?? null} /> };
+    right = <HeaderHint>the history layer · read from git, never stored</HeaderHint>;
   } else if (route.name === "roadmap") {
     section = { title: "Roadmap", node: <RoadmapPane /> };
+    right = <HeaderHint>epics and releases · spans without dates are derived from children</HeaderHint>;
   } else if (route.name === "gantt") {
     section = { title: "Gantt", node: <GanttPane /> };
+    right = (
+      <>
+        <FilterButton />
+        <HeaderHint>drag a bar to move · edges change start / due · ← → keys nudge</HeaderHint>
+      </>
+    );
   } else if (route.name === "settings") {
     section = { title: "Settings", node: <SettingsPane /> };
+  }
+
+  if (route.name === "issue") {
+    const host = peekHost(route);
+    back = {
+      title: `Back to ${host} (keeps this issue open beside it)`,
+      onClick: () => navigate(withPeek(route, route.id)),
+    };
+    right = (
+      <Btn onClick={() => navigate(withPeek(route, route.id))} title="Collapse to the side panel">
+        <PanelRight className="i" aria-hidden />
+        Show as panel
+      </Btn>
+    );
   }
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-app text-ink">
       <div className="flex min-h-0 flex-1">
-        {/* The provider spans both sidebar and main: hidden board columns
-            are view state the two surfaces share, not a property of either. */}
-        <BoardColumnsProvider>
-         <GanttOptionsProvider>
-          <RoadmapOptionsProvider>
-          <Sidebar
-            route={route}
-            mode={sidebarMode}
-            width={sidebarWidth}
-            section={section}
-            onNavigate={navigate}
-            onNewIssue={openNewIssue}
-            onOpenPalette={() => setPaletteOpen(true)}
-            onToggle={toggleSidebar}
-            onResizeStart={() => undefined}
-            onResize={setSidebarWidth}
-            onResizeEnd={onResizeEnd}
-          />
-          {/* `relative` so the issue panel can sit over the view without
-              taking the list off screen. */}
-          <main className="relative flex min-w-0 flex-1 flex-col">
-            {route.name === "home" ? (
-              <HomeView conn={conn} onOpen={openIssue} onSearch={openSearch} />
-            ) : null}
+        <Sidebar
+          route={route}
+          mode={sidebarMode}
+          section={section}
+          onNavigate={navigate}
+          onNewIssue={openNewIssue}
+          onOpenPalette={() => setPaletteOpen(true)}
+          workspaceMenu={workspaceMenu}
+        />
+        {/* `.main` is relative so the issue panel can sit over the view
+            without taking the list off screen. */}
+        <main className="main flex-1">
+          {route.name === "issue" ? (
+            <IssueHeader
+              id={route.id}
+              crumbs={(handle) => crumbsFor(route, workspace, handle)}
+              back={back}
+              right={right}
+              onToggleSidebar={toggleSidebar}
+              onNewIssue={openNewIssue}
+              onNotes={() => setNotesOpen((open) => !open)}
+              notesOpen={notesOpen}
+            />
+          ) : (
+            <Header
+              crumbs={crumbsFor(route, workspace, extraCrumb)}
+              back={back}
+              right={right}
+              onToggleSidebar={toggleSidebar}
+              onNewIssue={openNewIssue}
+              onNotes={() => setNotesOpen((open) => !open)}
+              notesOpen={notesOpen}
+            />
+          )}
+          <div className="content">
+            {route.name === "home" ? <HomeView conn={conn} onOpen={openIssue} onSearch={openSearch} /> : null}
             {route.name === "board" ? <BoardView onOpen={openIssue} /> : null}
             {route.name === "issues" ? (
-              <IssuesView q={route.q} starred={route.starred === true} onOpen={openIssue} />
+              <IssuesView q={route.q} starred={route.starred === true} inbox={route.inbox === true} onOpen={openIssue} />
             ) : null}
             {route.name === "docs" ? (
-              <DocsView
-                p={route.p}
-                onSelect={selectDoc}
-                tabs={docsTabs}
-                onCloseTab={closeDocTab}
-              />
+              <DocsView p={route.p} onSelect={selectDoc} tabs={docsTabs} onCloseTab={closeDocTab} />
             ) : null}
             {route.name === "search" ? <SearchView q={route.q} onOpen={openIssue} /> : null}
             {route.name === "timeline" ? (
@@ -359,25 +478,28 @@ export function AppShell() {
               <NewIssueView onCreated={(id) => navigate({ name: "issue", id, from: "issues" })} />
             ) : null}
             {route.name === "settings" ? <SettingsView /> : null}
+          </div>
 
-            {peekId !== null ? (
-              <IssuePeek
-                key={peekId}
-                id={peekId}
-                route={route}
-                onClose={closePeek}
-                onExpand={() => expandPeek(peekId)}
-                onStep={stepPeekTo}
-                canStepBack={peekIndex > 0}
-                canStepForward={peekIndex >= 0 && peekIndex < peekList.length - 1}
-              />
-            ) : null}
-          </main>
-          </RoadmapOptionsProvider>
-         </GanttOptionsProvider>
-        </BoardColumnsProvider>
+          {peekId !== null ? (
+            <IssuePeek
+              key={peekId}
+              id={peekId}
+              route={route}
+              onClose={closePeek}
+              onExpand={() => expandPeek(peekId)}
+              onStep={stepPeekTo}
+              canStepBack={peekIndex > 0}
+              canStepForward={peekIndex >= 0 && peekIndex < peekList.length - 1}
+            />
+          ) : null}
+        </main>
       </div>
-      <StatusBar conn={conn} />
+      <StatusBar
+        conn={conn}
+        workspaceMenu={workspaceMenu}
+        onOpenSettings={() => navigate({ name: "settings" })}
+        onNotes={() => setNotesOpen((open) => !open)}
+      />
       <CommandPalette
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
@@ -385,7 +507,33 @@ export function AppShell() {
         onOpenIssue={openIssue}
         onNewIssue={openNewIssue}
         onOpenDoc={previewDoc}
+        onToggleSidebar={toggleSidebar}
+        sidebarHidden={sidebarMode === "hidden"}
+        onNotes={() => setNotesOpen(true)}
+        cli={cliFor(route)}
+      />
+      <NotesDrawer
+        open={notesOpen}
+        onClose={() => setNotesOpen(false)}
+        onOpenPalette={() => setPaletteOpen(true)}
+        onSwitchTheme={() => theme.setPreference(theme.resolved === "dark" ? "light" : "dark")}
+        onGo={go}
       />
     </div>
   );
 }
+
+/** The full page's header needs the issue's handle for its last crumb. */
+function IssueHeader({
+  id,
+  crumbs,
+  ...rest
+}: Omit<React.ComponentProps<typeof Header>, "crumbs"> & {
+  id: string;
+  crumbs: (handle: string) => string[];
+}) {
+  const issue = useIssue(id);
+  const handle = issue.data ? (issue.data.number !== null ? `#${issue.data.number}` : issue.data.short_ref) : id;
+  return <Header crumbs={crumbs(handle)} {...rest} />;
+}
+
