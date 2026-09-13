@@ -13,6 +13,8 @@ import { createRoot, type Root } from "react-dom/client";
 vi.mock("../lib/queries", () => ({
   useIssues: () => ({ data: undefined, isFetching: false, isError: false, error: null }),
   useDocs: () => ({ data: [] }),
+  useStatus: () => ({ data: undefined }),
+  useSchema: () => ({ data: undefined }),
 }));
 
 vi.mock("../lib/theme", () => ({
@@ -30,6 +32,7 @@ globalThis.ResizeObserver ??= NoopResizeObserver as unknown as typeof ResizeObse
 Element.prototype.scrollIntoView ??= function scrollIntoView() {};
 
 const { CommandPalette } = await import("./CommandPalette");
+const { ViewOptionsProvider } = await import("../lib/viewopts");
 
 let container: HTMLDivElement;
 let root: Root;
@@ -37,14 +40,20 @@ let root: Root;
 function render(open: boolean) {
   return act(async () => {
     root.render(
-      <CommandPalette
-        open={open}
-        onOpenChange={() => undefined}
-        onNavigate={() => undefined}
-        onOpenIssue={() => undefined}
-        onNewIssue={() => undefined}
-        onOpenDoc={() => undefined}
-      />,
+      <ViewOptionsProvider>
+        <CommandPalette
+          open={open}
+          onOpenChange={() => undefined}
+          onNavigate={() => undefined}
+          onOpenIssue={() => undefined}
+          onNewIssue={() => undefined}
+          onOpenDoc={() => undefined}
+          onToggleSidebar={() => undefined}
+          sidebarHidden={false}
+          onNotes={() => undefined}
+          cli="dit ui"
+        />
+      </ViewOptionsProvider>,
     );
   });
 }

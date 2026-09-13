@@ -1,44 +1,60 @@
-// ⌘K palette: navigation, actions, fuzzy issue quick-open, and doc-page
-// quick-open. Issue matching happens on the server (it owns the index); the
-// palette only fuzzy-matches the small static action list and the page
-// paths locally, so cmdk's built-in filter is switched off and every result
-// the server returns stays visible.
+// ⌘K palette: issues with a matching snippet, pages, a query runner,
+// navigation and actions — one box, grouped, with a scope footer. Issue
+// matching happens on the server (it owns the index); the palette only
+// fuzzy-matches the small static lists locally, so cmdk's built-in filter
+// is switched off and every result the server returns stays visible.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { Command } from "cmdk";
-import { Columns3, FileText, House, ListTodo, Moon, Plus, Search, Star, Sun, Terminal } from "lucide-react";
-import { useDocs, useIssues } from "../lib/queries";
+import {
+  ChartGantt,
+  Clock,
+  Columns3,
+  FileText,
+  House,
+  Inbox,
+  Info,
+  Layers,
+  ListTodo,
+  Moon,
+  PanelLeft,
+  Plus,
+  Search,
+  Settings,
+  Star,
+  Sun,
+  Terminal,
+  UserRound,
+} from "lucide-react";
+import { toast } from "sonner";
+import { useDocs, useIssues, useSchema, useStatus } from "../lib/queries";
 import { useDebouncedValue } from "../lib/hooks";
-import { looksLikeDql } from "../lib/dql";
+import { looksLikeDql, mineQuery } from "../lib/dql";
 import { snippet } from "../lib/snippet";
+import { relativeTime } from "../lib/format";
 import type { Route } from "../lib/router";
-import { useTheme, type ThemePreference } from "../lib/theme";
-import { cn } from "../lib/cn";
-import { PriorityDot, TypeBadge } from "./badges";
-import { Kbd } from "./chrome";
+import { useTheme } from "../lib/theme";
+import { useViewOptions } from "../lib/viewopts";
+import { TypeBadge } from "./badges";
 
-const NAV_ITEMS: Array<{ label: string; route: Route; keywords: string }> = [
-  { label: "Go to Home", route: { name: "home" }, keywords: "home dashboard inbox triage" },
-  { label: "Go to Board", route: { name: "board" }, keywords: "board kanban columns" },
-  { label: "Go to Issues", route: { name: "issues", q: null }, keywords: "issues list table" },
-  { label: "Go to Docs", route: { name: "docs", p: null }, keywords: "docs pages wiki markdown" },
-  { label: "Go to Search", route: { name: "search", q: "" }, keywords: "search dql query" },
-  {
-    label: "Go to Starred",
-    route: { name: "issues", q: null, starred: true },
-    keywords: "starred favourites favorites shortlist bookmarks",
-  },
+type Icon = typeof House;
+
+const NAV: Array<{ label: string; icon: Icon; route: Route; kbd?: string; keywords: string }> = [
+  { label: "Home", icon: House, route: { name: "home" }, kbd: "⌘1", keywords: "home dashboard" },
+  { label: "Board", icon: Columns3, route: { name: "board" }, kbd: "⌘3", keywords: "board kanban columns" },
+  { label: "Issues", icon: ListTodo, route: { name: "issues", q: null }, kbd: "⌘4", keywords: "issues list table" },
+  { label: "Docs", icon: FileText, route: { name: "docs", p: null }, kbd: "⌘5", keywords: "docs pages wiki markdown" },
+  { label: "Inbox", icon: Inbox, route: { name: "issues", q: null, inbox: true }, keywords: "inbox triage untriaged" },
+  { label: "Timeline", icon: Clock, route: { name: "timeline" }, kbd: "⌘6", keywords: "timeline history events" },
+  { label: "Roadmap", icon: Layers, route: { name: "roadmap" }, kbd: "⌘7", keywords: "roadmap epics releases quarters" },
+  { label: "Gantt", icon: ChartGantt, route: { name: "gantt" }, kbd: "⌘8", keywords: "gantt schedule dates" },
+  { label: "Starred", icon: Star, route: { name: "issues", q: null, starred: true }, keywords: "starred favourites shortlist" },
+  { label: "Settings", icon: Settings, route: { name: "settings" }, kbd: "⌘,", keywords: "settings preferences theme" },
 ];
 
-// cmdk group chrome, shared by every group below.
-const GROUP_CLASS =
-  "[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wide [&_[cmdk-group-heading]]:text-muted";
-const ITEM_CLASS =
-  "flex cursor-default items-center gap-2 rounded px-2 py-1.5 text-[13px] text-ink-2 data-selected:bg-edge data-selected:text-ink";
-
 // Subsequence match with a preference for contiguous runs — good enough for
-// a four-item list and never worse than the server's issue matching.
+// a dozen-item list and never worse than the server's issue matching.
 function fuzzyMatch(needle: string, haystack: string): boolean {
   const n = needle.toLowerCase();
   const h = haystack.toLowerCase();
@@ -51,25 +67,48 @@ function fuzzyMatch(needle: string, haystack: string): boolean {
   return false;
 }
 
-/** The matching line of body text, with the match marked. Renders nothing
- *  when the words are not in the body — the title already said everything
- *  there is to say. */
+/** `text` with every case-insensitive occurrence of `query` marked. */
+function Marked({ text, query }: { text: string; query: string }) {
+  if (query.length === 0) return <>{text}</>;
+  const parts: React.ReactNode[] = [];
+  const lower = text.toLowerCase();
+  const q = query.toLowerCase();
+  let from = 0;
+  for (;;) {
+    const at = lower.indexOf(q, from);
+    if (at < 0) break;
+    parts.push(text.slice(from, at), <mark key={at}>{text.slice(at, at + q.length)}</mark>);
+    from = at + q.length;
+  }
+  parts.push(text.slice(from));
+  return <>{parts}</>;
+}
+
+/** The matching line of body text, with the match marked. */
 function Snippet({ body, query }: { body: string; query: string }) {
   const segments = useMemo(() => snippet(body, query), [body, query]);
   if (segments.length === 0) return null;
   return (
-    <span className="mt-0.5 block truncate text-[11.5px] text-muted">
+    <div className="sn">
       {segments.map((segment, index) =>
-        segment.match ? (
-          <mark key={index} className="rounded-[2px] bg-accent-soft text-context">
-            {segment.text}
-          </mark>
-        ) : (
-          <span key={index}>{segment.text}</span>
-        ),
+        segment.match ? <mark key={index}>{segment.text}</mark> : <span key={index}>{segment.text}</span>,
       )}
-    </span>
+    </div>
   );
+}
+
+/** Quote user text for a DQL `~` match. */
+function dqlText(text: string): string {
+  return `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+async function copyText(text: string, label: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(`${label} — ${text}`);
+  } catch {
+    toast(`${label}: ${text}`);
+  }
 }
 
 export function CommandPalette({
@@ -79,58 +118,91 @@ export function CommandPalette({
   onOpenIssue,
   onNewIssue,
   onOpenDoc,
+  onToggleSidebar,
+  sidebarHidden,
+  onNotes,
+  cli,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onNavigate: (route: Route) => void;
-  /** Opens an issue in the side panel, over whatever list is behind it. */
   onOpenIssue: (shortRef: string) => void;
   onNewIssue: () => void;
-  /** Opens a doc page in the editor as a preview tab. */
   onOpenDoc: (path: string) => void;
+  onToggleSidebar: () => void;
+  sidebarHidden: boolean;
+  onNotes: () => void;
+  /** The CLI spelling of the current screen. */
+  cli: string;
 }) {
   const [search, setSearch] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const debouncedSearch = useDebouncedValue(search, 200);
   const trimmed = debouncedSearch.trim();
 
-  // A fresh palette should never show the previous session's leftovers.
   useEffect(() => {
     if (!open) setSearch("");
   }, [open]);
 
-  // Explicit title/body search: deterministic and fast on the server index.
-  const results = useIssues(
-    { q: `title ~ ${trimmed} OR body ~ ${trimmed}`, limit: 8 },
-    open && trimmed.length > 0,
-  );
+  const status = useStatus();
+  const schema = useSchema();
+  const statuses = schema.data?.workflow.statuses ?? [];
+  const statusLabel = (id: string) => statuses.find((s) => s.id === id)?.label ?? id;
+  const workspace = status.data ? (status.data.repo.split("/").filter(Boolean).pop() ?? status.data.repo) : "…";
 
-  // Pages match locally: the listing is small and already cached by the
-  // explorer, and a path subsequence ("dfla" → docs/flows/auth.md) is a
-  // better fit than any server round trip.
+  // Full text over title and body on the server index; a handle (`#12`)
+  // or a short ref matches by exact field so typing one jumps straight to it.
+  const handle = /^#?(\d+)$/.exec(trimmed);
+  const searchQuery = handle
+    ? `number = ${handle[1]}`
+    : /^[0-9A-HJKMNP-TV-Z]{7}$/i.test(trimmed)
+      ? `short_ref = ${trimmed.toUpperCase()}`
+      : `body ~ ${dqlText(trimmed)}`;
+  const results = useIssues({ q: searchQuery, limit: 6 }, open && trimmed.length > 0);
+  const all = useIssues({ limit: 1 }, open);
+
   const docs = useDocs(open);
   const pages = useMemo(() => {
     if (trimmed.length === 0) return [];
-    return (docs.data ?? []).filter((entry) => fuzzyMatch(trimmed, entry.path)).slice(0, 8);
+    return (docs.data ?? []).filter((entry) => fuzzyMatch(trimmed, entry.path)).slice(0, 6);
   }, [docs.data, trimmed]);
 
-  const navItems = useMemo(
+  const nav = useMemo(
     () =>
-      NAV_ITEMS.filter(
+      NAV.filter(
         (item) =>
-          fuzzyMatch(search, item.label) || item.keywords.split(" ").some((k) => fuzzyMatch(search, k)),
+          fuzzyMatch(search, item.label) || item.keywords.split(" ").some((word) => fuzzyMatch(search, word)),
       ),
     [search],
   );
+  const mine = mineQuery(statuses);
 
-  const showNewIssue = fuzzyMatch(search, "new issue create");
-  const isQuery = looksLikeDql(trimmed);
-
-  // Theme lives in the palette too: the settings page is the durable home,
-  // this is the reflex — "dark" or "light" typed into ⌘K flips it.
   const theme = useTheme();
-  const nextTheme: ThemePreference = theme.resolved === "dark" ? "light" : "dark";
-  const showTheme = fuzzyMatch(search, "theme dark light appearance");
+  const dark = theme.resolved === "dark";
+  const { board, setGroupBy } = useViewOptions();
+  const nextGroup = board.groupBy === "status" ? "assignee" : "status";
+
+  const actions: Array<{ label: string; icon: Icon; kbd?: string; run: () => void }> = [
+    { label: "New issue", icon: Plus, kbd: "C", run: onNewIssue },
+    { label: sidebarHidden ? "Show sidebar" : "Hide sidebar", icon: PanelLeft, kbd: "⌘B", run: onToggleSidebar },
+    {
+      label: dark ? "Switch to light theme" : "Switch to dark theme",
+      icon: dark ? Sun : Moon,
+      run: () => theme.setPreference(dark ? "light" : "dark"),
+    },
+    {
+      label: `Board: group by ${nextGroup}`,
+      icon: Columns3,
+      run: () => {
+        setGroupBy(nextGroup);
+        onNavigate({ name: "board" });
+      },
+    },
+    { label: "Copy CLI command for this view", icon: Terminal, run: () => void copyText(cli, "Command copied") },
+    { label: "Notes", icon: Info, run: onNotes },
+  ];
+  const shownActions = actions.filter((action) => fuzzyMatch(search, action.label));
+  const isQuery = looksLikeDql(trimmed);
 
   const pick = (action: () => void) => {
     onOpenChange(false);
@@ -140,155 +212,69 @@ export function CommandPalette({
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="fixed inset-0 z-40 bg-[var(--dit-scrim)]" />
+        <DialogPrimitive.Overlay className="overlay open" />
         <DialogPrimitive.Content
-          className="fixed left-1/2 top-28 z-50 w-[560px] max-w-[92vw] -translate-x-1/2 overflow-hidden rounded-lg border border-ctl bg-card shadow-[var(--dit-shadow-lg)]"
+          className="pal fixed left-1/2 top-[12vh] z-[51] -translate-x-1/2"
+          aria-label="Search and commands"
           onOpenAutoFocus={(event) => {
             // Radix would focus the dialog container, which leaves the first
-            // keystroke going nowhere. Take focus for the search box itself —
-            // the palette exists to be typed into.
+            // keystroke going nowhere. The palette exists to be typed into.
             event.preventDefault();
             inputRef.current?.focus();
           }}
         >
-          <DialogPrimitive.Title className="sr-only">Command palette</DialogPrimitive.Title>
-          <Command shouldFilter={false} className="flex flex-col" loop>
-            <div className="flex items-center gap-2 border-b border-edge px-3">
-              <Search className="size-4 shrink-0 text-muted" aria-hidden />
+          <DialogPrimitive.Title className="sr-only">Search and commands</DialogPrimitive.Title>
+          <Command shouldFilter={false} className="flex min-h-0 flex-col" loop>
+            <div className="pal-in">
+              <Search className="i" style={{ color: "var(--muted)" }} aria-hidden />
               <Command.Input
                 ref={inputRef}
                 value={search}
                 onValueChange={setSearch}
-                placeholder="Search issues, pages or type a command…"
-                className="h-11 w-full bg-transparent text-sm text-ink placeholder:text-faint focus:outline-none"
+                placeholder="Search issues and pages, type DQL, or run a command…"
+                autoComplete="off"
               />
-              <Kbd>esc</Kbd>
+              <span className="esc">esc</span>
             </div>
-            <Command.List className="max-h-80 overflow-y-auto p-1.5">
-              <Command.Empty className="px-3 py-6 text-center text-sm text-muted">
-                No matches.
+            <Command.List className="pal-list">
+              <Command.Empty className="empty" style={{ padding: 16 }}>
+                Nothing matches.
               </Command.Empty>
 
-              {navItems.length > 0 ? (
-                <Command.Group heading="Navigate" className={GROUP_CLASS}>
-                  {navItems.map((item) => (
-                    <Command.Item
-                      key={item.label}
-                      value={item.label}
-                      onSelect={() => pick(() => onNavigate(item.route))}
-                      className={ITEM_CLASS}
-                    >
-                      {item.route.name === "home" ? (
-                        <House className="size-4 text-muted" aria-hidden />
-                      ) : item.route.name === "board" ? (
-                        <Columns3 className="size-4 text-muted" aria-hidden />
-                      ) : item.route.name === "issues" && item.route.starred !== true ? (
-                        <ListTodo className="size-4 text-muted" aria-hidden />
-                      ) : item.route.name === "docs" ? (
-                        <FileText className="size-4 text-muted" aria-hidden />
-                      ) : item.route.name === "issues" ? (
-                        <Star className="size-4 text-muted" aria-hidden />
-                      ) : (
-                        <Search className="size-4 text-muted" aria-hidden />
-                      )}
-                      {item.label}
-                    </Command.Item>
-                  ))}
-                </Command.Group>
-              ) : null}
-
-              {showNewIssue || showTheme ? (
-                <Command.Group heading="Actions" className={GROUP_CLASS}>
-                  {showNewIssue ? (
-                    <Command.Item
-                      value="new issue"
-                      onSelect={() => pick(onNewIssue)}
-                      className={ITEM_CLASS}
-                    >
-                      <Plus className="size-4 text-muted" aria-hidden />
-                      New issue
-                    </Command.Item>
-                  ) : null}
-                  {showTheme ? (
-                    <Command.Item
-                      value="switch theme"
-                      onSelect={() => pick(() => theme.setPreference(nextTheme))}
-                      className={ITEM_CLASS}
-                    >
-                      {nextTheme === "dark" ? (
-                        <Moon className="size-4 text-muted" aria-hidden />
-                      ) : (
-                        <Sun className="size-4 text-muted" aria-hidden />
-                      )}
-                      Switch to {nextTheme} theme
-                    </Command.Item>
-                  ) : null}
-                </Command.Group>
-              ) : null}
-
-              {/* Typing a query and typing words are different intents, and
-                  the palette can tell them apart — so it offers to run the
-                  query instead of searching for its text. */}
               {trimmed.length > 0 ? (
-                <Command.Group heading="Query" className={GROUP_CLASS}>
-                  <Command.Item
-                    value="run query"
-                    onSelect={() => pick(() => onNavigate({ name: "search", q: trimmed }))}
-                    className={ITEM_CLASS}
-                  >
-                    {isQuery ? (
-                      <Terminal className="size-4 shrink-0 text-muted" aria-hidden />
-                    ) : (
-                      <Search className="size-4 shrink-0 text-muted" aria-hidden />
-                    )}
-                    <span className="min-w-0 truncate">
-                      {isQuery ? "Run " : "Search everything for "}
-                      <span className={isQuery ? "font-mono text-ink" : "text-ink"}>{trimmed}</span>
-                    </span>
-                    <Kbd className="ml-auto shrink-0">⏎</Kbd>
-                  </Command.Item>
-                </Command.Group>
-              ) : null}
-
-              {trimmed.length > 0 ? (
-                <Command.Group heading="Issues" className={GROUP_CLASS}>
+                <Command.Group heading="Issues">
                   {results.isFetching && (results.data?.items.length ?? 0) === 0 ? (
-                    <div className="px-2 py-2 text-xs text-muted">Searching…</div>
+                    <div className="empty" style={{ padding: "6px 10px" }}>
+                      Searching…
+                    </div>
                   ) : null}
                   {results.isError ? (
-                    <div className="px-2 py-2 text-xs text-crit-text">
+                    <div className="empty" style={{ padding: "6px 10px", color: "var(--crit)" }}>
                       {results.error instanceof Error ? results.error.message : "Search failed"}
                     </div>
                   ) : null}
                   {results.data?.items.length === 0 && !results.isFetching ? (
-                    <div className="px-2 py-2 text-xs text-muted">
+                    <div className="empty" style={{ padding: "6px 10px" }}>
                       No issues match “{trimmed}”.
                     </div>
                   ) : null}
                   {(results.data?.items ?? []).map((issue) => (
                     <Command.Item
                       key={issue.id}
-                      value={issue.id}
+                      value={`issue:${issue.id}`}
                       onSelect={() => pick(() => onOpenIssue(issue.short_ref))}
-                      className={cn(ITEM_CLASS, "items-start")}
+                      className="pi"
                     >
-                      <span className="mt-px font-mono text-xs tabular-nums text-muted">
-                        {issue.number !== null ? `#${issue.number}` : issue.short_ref}
-                      </span>
-                      <span className="mt-px">
-                        <TypeBadge type={issue.type} />
-                      </span>
-                      <span className="mt-1.5">
-                        <PriorityDot priority={issue.priority} />
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate">{issue.title}</span>
-                        {/* Why this one matched: a title alone often does not
-                            say, because the words were paragraphs down. */}
+                      <TypeBadge type={issue.type} />
+                      <div className="min-w-0">
+                        <div className="t">
+                          {issue.number !== null ? `#${issue.number}` : issue.short_ref}{" "}
+                          <Marked text={issue.title} query={trimmed} />
+                        </div>
                         <Snippet body={issue.body} query={trimmed} />
-                      </span>
-                      <span className="mt-px shrink-0 font-mono text-[10px] text-faint">
-                        {issue.status}
+                      </div>
+                      <span className="meta">
+                        {statusLabel(issue.status)} · {relativeTime(issue.updated)}
                       </span>
                     </Command.Item>
                   ))}
@@ -296,21 +282,118 @@ export function CommandPalette({
               ) : null}
 
               {pages.length > 0 ? (
-                <Command.Group heading="Pages" className={GROUP_CLASS}>
+                <Command.Group heading="Pages">
                   {pages.map((page) => (
                     <Command.Item
                       key={page.path}
                       value={`page:${page.path}`}
                       onSelect={() => pick(() => onOpenDoc(page.path))}
-                      className={ITEM_CLASS}
+                      className="pi"
                     >
-                      <FileText className="size-4 shrink-0 text-muted" aria-hidden />
-                      <span className="truncate font-mono text-xs">{page.path}</span>
+                      <FileText className="i" aria-hidden />
+                      <div className="min-w-0">
+                        <div className="t">
+                          <Marked text={page.path.split("/").pop() ?? page.path} query={trimmed} />
+                        </div>
+                        <div className="sn mono">{page.path}</div>
+                      </div>
+                      <span className="meta">page</span>
+                    </Command.Item>
+                  ))}
+                </Command.Group>
+              ) : null}
+
+              {trimmed.length > 0 ? (
+                <Command.Group heading="Query">
+                  <Command.Item
+                    value="query:run"
+                    onSelect={() => pick(() => onNavigate({ name: "search", q: trimmed }))}
+                    className="pi"
+                  >
+                    <Search className="i" aria-hidden />
+                    <div className="min-w-0">
+                      <div className="t">
+                        {isQuery ? (
+                          <>
+                            Run DQL <span className="mono">{trimmed}</span>
+                          </>
+                        ) : (
+                          <>Search everything for “{trimmed}”</>
+                        )}
+                      </div>
+                      <div className="sn">
+                        {isQuery
+                          ? "Same language the sidebar filters compose"
+                          : "Full text over titles, bodies, comments and pages"}
+                      </div>
+                    </div>
+                    <span className="meta">↵</span>
+                  </Command.Item>
+                </Command.Group>
+              ) : null}
+
+              {nav.length > 0 ? (
+                <Command.Group heading="Navigate">
+                  {nav.map((item) => (
+                    <Command.Item
+                      key={item.label}
+                      value={`nav:${item.label}`}
+                      onSelect={() => pick(() => onNavigate(item.route))}
+                      className="pi"
+                    >
+                      <item.icon className="i" aria-hidden />
+                      <div className="t">{item.label}</div>
+                      <span className="meta">{item.kbd ?? ""}</span>
+                    </Command.Item>
+                  ))}
+                  {fuzzyMatch(search, "my issues") || fuzzyMatch(search, "mine") ? (
+                    <Command.Item
+                      value="nav:mine"
+                      onSelect={() => pick(() => onNavigate({ name: "issues", q: mine }))}
+                      className="pi"
+                    >
+                      <UserRound className="i" aria-hidden />
+                      <div className="t">My issues</div>
+                      <span className="meta" />
+                    </Command.Item>
+                  ) : null}
+                </Command.Group>
+              ) : null}
+
+              {shownActions.length > 0 ? (
+                <Command.Group heading="Actions">
+                  {shownActions.map((action) => (
+                    <Command.Item
+                      key={action.label}
+                      value={`action:${action.label}`}
+                      onSelect={() => pick(action.run)}
+                      className="pi"
+                    >
+                      <action.icon className="i" aria-hidden />
+                      <div className="t">{action.label}</div>
+                      <span className="meta">{action.kbd ?? ""}</span>
                     </Command.Item>
                   ))}
                 </Command.Group>
               ) : null}
             </Command.List>
+            <div className="pal-f">
+              <span>
+                Scope: {workspace}
+                {all.data ? ` · ${all.data.total} issues` : ""}
+                {docs.data ? ` · ${docs.data.length} pages` : ""}
+              </span>
+              <span className="sp" />
+              <span className="k">
+                <kbd>↑↓</kbd> navigate
+              </span>
+              <span className="k">
+                <kbd>↵</kbd> open
+              </span>
+              <span className="k">
+                <kbd>esc</kbd> close
+              </span>
+            </div>
           </Command>
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
