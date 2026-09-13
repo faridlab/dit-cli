@@ -16,9 +16,28 @@ export function relativeTime(iso: string, now: number = Date.now()): string {
   if (delta < MINUTE) return "just now";
   if (delta < HOUR) return `${Math.floor(delta / MINUTE)}m ago`;
   if (delta < DAY) return `${Math.floor(delta / HOUR)}h ago`;
-  if (delta < 7 * DAY) return `${Math.floor(delta / DAY)}d ago`;
-  // Older than a week: unambiguous calendar date, timezone-independent.
+  if (delta < 14 * DAY) return `${Math.floor(delta / DAY)}d ago`;
+  if (delta < 365 * DAY) return `${Math.floor(delta / (7 * DAY))}w ago`;
+  // Older than a year: unambiguous calendar date, timezone-independent.
   return iso.slice(0, 10);
+}
+
+/** Due copy and tone in one place: past due is critical, today and the
+ *  next three days are soon, anything else is a quiet date. `null` when
+ *  the issue has no due date, so callers render nothing rather than "—". */
+export function dueInfo(
+  iso: string | null,
+  now: number = Date.now(),
+): { cls: "over" | "soon" | ""; text: string; days: number } | null {
+  if (!iso) return null;
+  const day = iso.slice(0, 10);
+  const today = new Date(now).toISOString().slice(0, 10);
+  const days = Math.round((Date.parse(day) - Date.parse(today)) / DAY);
+  if (Number.isNaN(days)) return null;
+  if (days < 0) return { cls: "over", text: `${-days}d overdue`, days };
+  if (days === 0) return { cls: "soon", text: "due today", days };
+  if (days <= 3) return { cls: "soon", text: `due in ${days}d`, days };
+  return { cls: "", text: `due ${day.slice(5)}`, days };
 }
 
 export function fullTimestamp(iso: string): string {
@@ -52,6 +71,16 @@ const CIRCLE_COLORS = [
   "bg-teal-600",
 ];
 
+const AVATAR_COLORS = ["#0F766E", "#6D28D9", "#B45309", "#0369A1", "#BE185D", "#4D7C0F"];
+
+/** Deterministic monogram background per alias, as a hex the `.av` recipe
+ *  paints inline. Same alias, same color, nothing stored. */
+export function avatarColor(name: string): string {
+  let hash = 0;
+  for (const ch of name) hash = (hash * 31 + ch.charCodeAt(0)) | 0;
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length] ?? "#0F766E";
+}
+
 export function circleColor(name: string): string {
   let hash = 0;
   for (const ch of name) hash = (hash * 31 + ch.charCodeAt(0)) | 0;
@@ -78,10 +107,11 @@ export function priorityDot(priority: Priority | null): string {
   }
 }
 
-// One letter per non-default type; plain tasks carry no badge so the
-// board reads calm — most work is tasks.
+// One letter per type, the same letter the CLI prints.
 export function typeLetter(type: IssueType): string | null {
   switch (type) {
+    case "task":
+      return "T";
     case "bug":
       return "B";
     case "story":
@@ -164,6 +194,36 @@ export function priorityRank(priority: Priority | null): number {
     default:
       return -1;
   }
+}
+
+/** Fields whose stored value is an issue id. A history line that says
+ *  `epic → 01M2CANY…` is technically true and humanly useless, so every
+ *  surface that shows field events resolves these to the issue's title. */
+const ID_VALUED_FIELDS = new Set(["epic", "blocked_by"]);
+
+export function isIdValued(field: string): boolean {
+  return ID_VALUED_FIELDS.has(field);
+}
+
+/** The title behind an id-valued field's value, when the workspace still has
+ *  that issue. Falls back to the raw value, which is the honest thing to
+ *  show for an issue that has since been deleted. */
+export function resolveIdValue(
+  field: string,
+  value: string,
+  titleOf: (id: string) => string | undefined,
+): string {
+  if (!isIdValued(field)) return value;
+  // A list field arrives as the frontmatter wrote it: `[id, id]`.
+  const inner = value.replace(/^\[|\]$/g, "");
+  return inner
+    .split(",")
+    .map((part) => {
+      const id = part.trim();
+      return titleOf(id) ?? id;
+    })
+    .filter((part) => part.length > 0)
+    .join(", ");
 }
 
 export function parseCsvList(value: string): string[] {
