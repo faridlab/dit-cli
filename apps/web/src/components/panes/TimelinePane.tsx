@@ -1,66 +1,133 @@
-// The Timeline sidebar section: what the feed is, and where its numbers come
-// from. There is nothing to configure that is not already in the URL — the
-// point in history rides in `?seq=`, so it is shareable and reloadable — so
-// this section explains rather than controls.
+// The Timeline sidebar section: how far back to look, which kinds of event
+// to show, and whose. The options live in the shared view-options context
+// so the header menus and the feed read the same state; the counts beside
+// each person come from the loaded feed itself, so they are never stale
+// relative to what the screen shows. Nothing here is a fact about the plan,
+// so nothing here is written to the repo.
 
-import { SectionHeading } from "../chrome";
-import { useActivitySummary } from "../../lib/queries";
+import type { LucideIcon } from "lucide-react";
+import {
+  GitCommitHorizontal,
+  MessageSquare,
+  Pencil,
+  Plus,
+  Tag,
+  User,
+  Zap,
+} from "lucide-react";
+import { Avatar } from "../badges";
+import { Btn, CheckSquare, Row, Sp } from "../chrome";
+import { workspaceTimeline, type TimelineBucket } from "../../lib/activity";
+import { useActivity, useWorkspaceComments } from "../../lib/queries";
+import { useViewOptions, type TimelineRange } from "../../lib/viewopts";
+import { cn } from "../../lib/cn";
 
-export function TimelinePane({ seq }: { seq: number | null }) {
-  const summary = useActivitySummary({ seq });
-  const travelling = summary.data ? summary.data.seq < summary.data.max_seq : false;
+/** The same page the view loads, so the cache is shared and the people
+ *  counts describe exactly the feed on screen. */
+export const TIMELINE_FEED_LIMIT = 500;
+
+const RANGES: ReadonlyArray<[TimelineRange, string]> = [
+  ["7d", "7d"],
+  ["30d", "30d"],
+  ["90d", "90d"],
+  ["all", "All"],
+];
+
+const KINDS: ReadonlyArray<[TimelineBucket, string, LucideIcon]> = [
+  ["status", "Status changes", GitCommitHorizontal],
+  ["priority", "Priority", Zap],
+  ["assignees", "Assignment", User],
+  ["labels", "Labels", Tag],
+  ["comment", "Comments", MessageSquare],
+  ["created", "Created", Plus],
+  ["other", "Other fields (epic/estimate/dates/title)", Pencil],
+];
+
+export function TimelinePane(_props: { seq: number | null }) {
+  const { timeline, setTimelineRange, toggleTimelineKind, setTimelineWho } = useViewOptions();
+  const feed = useActivity({ limit: TIMELINE_FEED_LIMIT });
+  const comments = useWorkspaceComments(TIMELINE_FEED_LIMIT);
+
+  // Authors seen in the loaded feed, busiest first.
+  const people = new Map<string, number>();
+  for (const row of workspaceTimeline(feed.data?.events ?? [], comments.data ?? [])) {
+    people.set(row.author, (people.get(row.author) ?? 0) + 1);
+  }
+  const authors = [...people.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const nothingPicked = timeline.kinds.size === 0;
 
   return (
-    <div className="flex flex-col gap-4 p-3">
-      <section>
-        <SectionHeading size="sm" className="px-1 pb-2">
-          Standing at
-        </SectionHeading>
-        <p className="px-1 font-mono text-[12px] text-ink-2">
-          {travelling && summary.data ? `seq ${summary.data.seq}` : "now"}
-        </p>
-        <p className="px-1 pt-1 text-[11.5px] leading-relaxed text-muted">
-          {travelling
-            ? "Click a day in the chart to move, or use “Back to now”."
-            : "Click a day in the chart to look at the workspace as it stood then."}
-        </p>
-      </section>
+    <>
+      <div className="sb-h">Range</div>
+      <div className="sb-body">
+        <div style={{ display: "flex", gap: 4, padding: "2px 8px 6px" }}>
+          {RANGES.map(([value, label]) => (
+            <Btn
+              key={value}
+              primary={timeline.range === value}
+              style={{ flex: 1, justifyContent: "center" }}
+              onClick={() => setTimelineRange(value)}
+            >
+              {label}
+            </Btn>
+          ))}
+        </div>
 
-      {summary.data ? (
-        <section>
-          <SectionHeading size="sm" className="px-1 pb-2">
-            Recorded history
-          </SectionHeading>
-          <dl className="flex flex-col gap-1 px-1 font-mono text-[11.5px] text-muted">
-            <div className="flex justify-between">
-              <dt>events</dt>
-              <dd className="tabular-nums text-ink-2">{summary.data.max_seq}</dd>
-            </div>
-            <div className="flex justify-between">
-              <dt>open now</dt>
-              <dd className="tabular-nums text-ink-2">
-                {summary.data.now.todo + summary.data.now.doing}
-              </dd>
-            </div>
-            <div className="flex justify-between">
-              <dt>done now</dt>
-              <dd className="tabular-nums text-ink-2">{summary.data.now.done}</dd>
-            </div>
-          </dl>
-        </section>
-      ) : null}
+        <div className="sb-h">
+          Kinds
+          <Sp />
+          <span
+            className="dql"
+            style={{ textTransform: "none", letterSpacing: 0, fontWeight: 400, fontSize: 11 }}
+          >
+            {nothingPicked ? "all" : `${timeline.kinds.size} of ${KINDS.length}`}
+          </span>
+        </div>
+        {KINDS.map(([kind, label, Icon]) => (
+          <Row key={kind} onClick={() => toggleTimelineKind(kind)} title={label}>
+            {/* With nothing picked every kind is shown, so every box reads as
+                checked — faintly, to say "default" rather than "chosen". */}
+            <CheckSquare
+              on={nothingPicked || timeline.kinds.has(kind)}
+              className={cn(nothingPicked && "opacity-45")}
+            />
+            <Icon className="i" aria-hidden />
+            <span className="lbl">{label}</span>
+          </Row>
+        ))}
 
-      <section>
-        <SectionHeading size="sm" className="px-1 pb-2">
-          Where this comes from
-        </SectionHeading>
-        <p className="px-1 text-[11.5px] leading-relaxed text-muted">
-          Every line is a field change observed in a commit, so an edit made in a text editor
-          appears exactly like one made here. The order is <span className="font-mono">seq</span>,
-          the position in the commit graph — never the timestamp, which a merge commit makes
-          contradict itself.
+        <div className="sb-h" style={{ marginTop: 8 }}>
+          People
+        </div>
+        {authors.length === 0 ? (
+          <p className="empty" style={{ padding: "2px 8px 0", fontSize: 11.5 }}>
+            Nobody yet — people appear here once the feed has loaded.
+          </p>
+        ) : null}
+        {authors.map(([author, count]) => (
+          <Row
+            key={author}
+            on={timeline.who === author}
+            onClick={() => setTimelineWho(author)}
+            title={timeline.who === author ? "Show everyone" : `Only ${author}`}
+          >
+            <Avatar name={author} />
+            <span className="lbl">{author}</span>
+            <span className="cnt">{count}</span>
+          </Row>
+        ))}
+
+        <div className="sb-h" style={{ marginTop: 8 }}>
+          Source
+        </div>
+        <p
+          className="empty"
+          style={{ padding: "2px 8px 0", fontSize: 11.5, lineHeight: 1.5, color: "var(--muted)" }}
+        >
+          Everything here is read from git: <span className="mono">field_events</span> ordered by{" "}
+          <span className="mono">seq</span> and comment files. Nothing on this screen is stored.
         </p>
-      </section>
-    </div>
+      </div>
+    </>
   );
 }

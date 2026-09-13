@@ -1,6 +1,6 @@
-// The history layer, made visible: every field change in the workspace, in
-// the order it happened, with a scrubber that answers "what did this look
-// like then?".
+// The history layer, made visible: every field change and comment in the
+// workspace, in the order it happened, with a scrubber that answers "what
+// did the board look like then?".
 //
 // Two things about this screen are only possible because the data lives in
 // git. The feed is derived from commits, so it says the same thing whether
@@ -8,77 +8,126 @@
 // as-of view is computed from `field_events` on demand rather than restored
 // from a snapshot, because there is no snapshot — nothing here is stored
 // (invariant 5).
+//
+// A point in history is a `seq`, never a date: a date maps to one only
+// through an author's clock. The density strip, the date input and the
+// release picker all resolve to "the newest event on or before that day"
+// among the events loaded here, and then the URL carries the seq.
 
-import { useMemo } from "react";
-import { GitCommitVertical, RotateCcw } from "lucide-react";
-import { useActivity, useActivitySummary } from "../lib/queries";
-import { fullTimestamp } from "../lib/format";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useQueries } from "@tanstack/react-query";
+import type { LucideIcon } from "lucide-react";
+import {
+  Calendar,
+  GitCommitHorizontal,
+  Hash,
+  Layers,
+  MessageSquare,
+  Pencil,
+  Plus,
+  Tag,
+  User,
+  X,
+  Zap,
+} from "lucide-react";
+import * as api from "../lib/api";
+import {
+  queryKeys,
+  useActivity,
+  useActivitySummary,
+  useIssues,
+  useReleases,
+  useSchema,
+  useWorkspaceComments,
+} from "../lib/queries";
+import {
+  fillDays,
+  filterBucket,
+  seqForDay,
+  workspaceTimeline,
+  type TimelineEvent,
+  type TimelineKind,
+} from "../lib/activity";
+import { useViewOptions } from "../lib/viewopts";
 import { useRegisterPeekList } from "../lib/peeklist";
 import { DAY_MS, toDay } from "../lib/schedule";
-import type { ActivityEventDto } from "../lib/types";
+import type { CategoryCountsDto, IssueType, Priority, StatusCategory } from "../lib/types";
+import { resolveIdValue } from "../lib/format";
+import { Avatar, IssueHandle, PriorityDot, StatusPill, TypeBadge } from "../components/badges";
+import { Btn, HeadingNote, SectionHeading } from "../components/chrome";
 import { ErrorBox, Loading } from "../components/states";
-import { SectionHeading } from "../components/chrome";
+import { TIMELINE_FEED_LIMIT } from "../components/panes/TimelinePane";
 import { cn } from "../lib/cn";
 
-const FEED_LIMIT = 150;
-const HISTOGRAM_DAYS = 56;
+const DENSITY_DAYS = 56;
+const RANGE_DAYS = { "7d": 7, "30d": 30, "90d": 90, all: Number.POSITIVE_INFINITY } as const;
+const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const ISSUE_TYPES: readonly string[] = ["task", "bug", "story", "spike", "chore"];
+const CATEGORIES: readonly StatusCategory[] = ["todo", "doing", "done"];
 
-/** Events for one day, in the order the server returned them. */
-interface DayGroup {
-  day: string;
-  events: ActivityEventDto[];
+const KIND_ICON: Record<TimelineKind, LucideIcon> = {
+  status: GitCommitHorizontal,
+  priority: Zap,
+  assignees: User,
+  labels: Tag,
+  epic: Layers,
+  estimate: Hash,
+  due: Calendar,
+  start: Calendar,
+  title: Pencil,
+  other: Pencil,
+  comment: MessageSquare,
+  created: Plus,
+};
+
+/** "Sep 12" for a `YYYY-MM-DD` day or an RFC3339 stamp, in UTC like the files. */
+function fmtShort(dayOrIso: string): string {
+  const d = new Date(dayOrIso.length === 10 ? `${dayOrIso}T00:00:00Z` : dayOrIso);
+  return `${MON[d.getUTCMonth()]} ${d.getUTCDate()}`;
 }
 
-function groupByDay(events: readonly ActivityEventDto[]): DayGroup[] {
-  const groups: DayGroup[] = [];
-  for (const event of events) {
-    const day = event.ts.slice(0, 10);
-    const open = groups[groups.length - 1];
-    if (open && open.day === day) open.events.push(event);
-    else groups.push({ day, events: [event] });
-  }
-  return groups;
+function plural(n: number, word: string): string {
+  return `${n} ${n === 1 ? word : `${word}s`}`;
 }
 
-function dayLabel(day: string, now: number): string {
-  const today = toDay(now);
-  if (day === today) return "Today";
-  if (day === toDay(now - DAY_MS)) return "Yesterday";
-  return new Date(`${day}T00:00:00Z`).toLocaleDateString(undefined, {
-    day: "numeric",
-    month: "short",
-    year: day.slice(0, 4) === today.slice(0, 4) ? undefined : "numeric",
-    timeZone: "UTC",
-  });
-}
-
-/** A field value as a person reads it. Statuses and priorities keep their
- *  own shape; everything else is shown verbatim, because inventing a
- *  presentation for an unknown field is how a UI starts lying. */
-function Value({ value }: { value: string | null }) {
-  if (value === null || value.length === 0) {
-    return <span className="text-faint">—</span>;
-  }
-  return <span className="font-mono text-[11.5px] text-ink-2">{value}</span>;
-}
-
-function Counts({ counts, label }: { counts: { todo: number; doing: number; done: number }; label: string }) {
+/** The three-tone bar of a board: to do · in flight · done. */
+function Stack({ counts }: { counts: CategoryCountsDto }) {
   const total = counts.todo + counts.doing + counts.done || 1;
-  const bar = (n: number, tone: string) =>
-    n > 0 ? <i className={cn("block h-full", tone)} style={{ width: `${(n / total) * 100}%` }} /> : null;
   return (
-    <div className="grid grid-cols-[54px_minmax(0,1fr)_86px] items-center gap-3">
-      <span className="font-mono text-[11px] text-muted">{label}</span>
-      <span className="flex h-2.5 gap-[2px] overflow-hidden rounded-[3px] bg-sunken">
-        {bar(counts.todo, "bg-todo-text/50")}
-        {bar(counts.doing, "bg-doing-text/70")}
-        {bar(counts.done, "bg-done-text/70")}
-      </span>
-      <span className="text-right font-mono text-[11px] tabular-nums text-muted">
+    <span className="stack">
+      {CATEGORIES.map((cat) => (
+        <i key={cat} className={cat} style={{ width: `${(counts[cat] / total) * 100}%` }} title={`${cat}: ${counts[cat]}`} />
+      ))}
+    </span>
+  );
+}
+
+function CompareRow({ label, counts }: { label: string; counts: CategoryCountsDto }) {
+  return (
+    <div className="cmp">
+      <span className="cl">{label}</span>
+      <Stack counts={counts} />
+      <span className="cn mono">
         {counts.todo}·{counts.doing}·{counts.done}
       </span>
     </div>
   );
+}
+
+interface DayGroup {
+  day: string;
+  items: TimelineEvent[];
+}
+
+function groupByDay(rows: readonly TimelineEvent[]): DayGroup[] {
+  const groups: DayGroup[] = [];
+  for (const row of rows) {
+    const day = row.ts.slice(0, 10);
+    const open = groups[groups.length - 1];
+    if (open && open.day === day) open.items.push(row);
+    else groups.push({ day, items: [row] });
+  }
+  return groups;
 }
 
 export function TimelineView({
@@ -91,229 +140,365 @@ export function TimelineView({
   onOpen: (id: string) => void;
   onSeek: (seq: number | null) => void;
 }) {
-  const feed = useActivity({ limit: FEED_LIMIT });
-  const summary = useActivitySummary({ seq, days: HISTOGRAM_DAYS });
+  const { timeline } = useViewOptions();
   const now = Date.now();
+  const today = toDay(now);
 
-  const events = useMemo(() => feed.data?.events ?? [], [feed.data]);
-  // J/K walk the issues the feed mentions, in the order they appear.
-  useRegisterPeekList(
-    useMemo(() => [...new Set(events.map((event) => event.short_ref))], [events]),
+  // The newest page, plus any older pages the reader asked for. Each cursor
+  // is its own query, so paging never overwrites the page behind it.
+  const feed = useActivity({ limit: TIMELINE_FEED_LIMIT });
+  const [cursors, setCursors] = useState<number[]>([]);
+  const olderPages = useQueries({
+    queries: cursors.map((beforeSeq) => ({
+      queryKey: queryKeys.activity({ beforeSeq, limit: TIMELINE_FEED_LIMIT }),
+      queryFn: () => api.getActivity({ beforeSeq, limit: TIMELINE_FEED_LIMIT }),
+      staleTime: 15_000,
+    })),
+  });
+  const events = useMemo(() => {
+    const out = [...(feed.data?.events ?? [])];
+    for (const page of olderPages) if (page.data) out.push(...page.data.events);
+    return out;
+  }, [feed.data, olderPages]);
+  const lastPage = olderPages.length > 0 ? olderPages[olderPages.length - 1]?.data : feed.data;
+  const nextBeforeSeq = lastPage?.next_before_seq ?? null;
+  const loadingOlder = olderPages.some((page) => page.isPending);
+
+  const comments = useWorkspaceComments(TIMELINE_FEED_LIMIT);
+  const schema = useSchema();
+  // `epic` events carry an issue id; resolve it to the epic's title so a
+  // history line reads like a sentence rather than a key.
+  const everything = useIssues({ limit: 500 });
+  const titles = useMemo(
+    () => new Map((everything.data?.items ?? []).map((issue) => [issue.id, issue.title])),
+    [everything.data],
   );
-  const groups = useMemo(() => groupByDay(events), [events]);
+  const titleOf = (id: string) => titles.get(id);
+  const releases = useReleases();
 
-  const days = summary.data?.days ?? [];
+  const rows = useMemo(() => workspaceTimeline(events, comments.data ?? []), [events, comments.data]);
+
+  // --- where we stand -------------------------------------------------------
+  const travelling = seq !== null;
+  const cutoffEvent = travelling ? events.find((event) => event.seq === seq) : undefined;
+  const cutoffDay = cutoffEvent?.ts.slice(0, 10) ?? null;
+  const oldestLoadedDay = events.length > 0 ? (events[events.length - 1]?.ts.slice(0, 10) ?? null) : null;
+
+  const rangeDays = RANGE_DAYS[timeline.range];
+  const since = Number.isFinite(rangeDays) ? now - rangeDays * DAY_MS : Number.NEGATIVE_INFINITY;
+
+  // The "what changed" card compares against a point in history. When
+  // travelling that is the as-of seq; otherwise it is the start of the
+  // range, so "Last 30d" counts the last thirty days rather than nothing.
+  const rangeStartSeq = useMemo(() => {
+    if (!Number.isFinite(since)) return 0;
+    const found = seqForDay(toDay(since), events);
+    if (found !== null) return found;
+    // Nothing loaded before the window: exact only if history is fully loaded.
+    return nextBeforeSeq === null && !feed.isPending ? 0 : null;
+  }, [since, events, nextBeforeSeq, feed.isPending]);
+  const summary = useActivitySummary({ seq: travelling ? seq : rangeStartSeq, days: DENSITY_DAYS });
+
+  // --- the feed --------------------------------------------------------------
+  const visible = useMemo(
+    () =>
+      rows.filter(
+        (row) =>
+          Date.parse(row.ts) >= since &&
+          (!travelling || row.seq <= seq) &&
+          (timeline.kinds.size === 0 || timeline.kinds.has(filterBucket(row.kind))) &&
+          (timeline.who === null || row.author === timeline.who),
+      ),
+    [rows, since, travelling, seq, timeline.kinds, timeline.who],
+  );
+  const groups = useMemo(() => groupByDay(visible), [visible]);
+  useRegisterPeekList(useMemo(() => [...new Set(visible.map((row) => row.issue.short_ref))], [visible]));
+
+  const commentsInWindow = rows.filter(
+    (row) => row.kind === "comment" && (travelling ? row.seq > seq : Date.parse(row.ts) >= since),
+  ).length;
+
+  // --- the density strip ------------------------------------------------------
+  const days = useMemo(() => fillDays(summary.data?.days ?? [], today, DENSITY_DAYS), [summary.data, today]);
   const peak = Math.max(1, ...days.map((day) => day.count));
-  const travelling = summary.data ? summary.data.seq < summary.data.max_seq : false;
+  const markDay = travelling ? (cutoffDay ?? days[0]?.day ?? today) : today;
+  const markIndex = Math.max(0, days.findIndex((day) => day.day === markDay));
+  const markLeft = (markIndex / (DENSITY_DAYS - 1)) * 100;
+
+  // Resolve a day to a point in history and go there. A day at or after
+  // today is "now"; a day older than the loaded window cannot be resolved
+  // here, so it is left alone (the bar says why).
+  const lastSought = useRef<number | null | undefined>(undefined);
+  useEffect(() => {
+    lastSought.current = seq;
+  }, [seq]);
+  const seekDay = (day: string) => {
+    const target = day >= today ? null : seqForDay(day, events);
+    if (day < today && target === null) return;
+    if (lastSought.current !== undefined && lastSought.current === target) return;
+    lastSought.current = target;
+    onSeek(target);
+  };
+  const dragging = useRef(false);
+  const pick = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const bar = document.elementFromPoint(e.clientX, e.clientY)?.closest<HTMLElement>(".db");
+    const day = bar?.dataset.day;
+    if (day) seekDay(day);
+  };
+
+  const shipped = (releases.data ?? []).filter((r) => r.status === "released" && r.target !== null);
+  const pickedRelease = shipped.find((r) => r.target === cutoffDay)?.version ?? "";
+
+  const fmtValue = (field: string, value: string | null) => {
+    if (value === null || value === "" || value === "—") return <span style={{ color: "var(--faint)" }}>—</span>;
+    if (field === "status") {
+      const status = schema.data?.workflow.statuses.find((s) => s.id === value);
+      if (status) return <StatusPill status={status} />;
+    }
+    if (field === "priority" && /^p\d$/.test(value)) {
+      return (
+        <>
+          <PriorityDot priority={value as Priority} /> {value.toUpperCase()}
+        </>
+      );
+    }
+    return <span className="mono">{resolveIdValue(field, value, titleOf)}</span>;
+  };
+
+  const rowText = (row: TimelineEvent) => {
+    if (row.kind === "created") {
+      return (
+        <>
+          created{" "}
+          {row.type !== null && ISSUE_TYPES.includes(row.type) ? (
+            <TypeBadge type={row.type as IssueType} />
+          ) : (
+            <span className="mono">{row.type ?? "issue"}</span>
+          )}
+        </>
+      );
+    }
+    if (row.kind === "comment") {
+      return (
+        <>
+          commented <span className="tlq">{row.text.slice(0, 90)}</span>
+        </>
+      );
+    }
+    return (
+      <>
+        set <b>{row.field}</b> {fmtValue(row.field, row.old)} <span style={{ color: "var(--faint)" }}>→</span>{" "}
+        {fmtValue(row.field, row.new)}
+      </>
+    );
+  };
+
+  const asOfNote = travelling
+    ? `${cutoffDay ?? "before the loaded window"} · seq ≤ ${seq}`
+    : "HEAD · now";
+  const sinceLabel = travelling
+    ? `Since ${cutoffDay ? fmtShort(cutoffDay) : `seq ${seq}`}`
+    : `Last ${timeline.range === "all" ? "everything" : timeline.range}`;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex items-center gap-3 border-b border-edge px-5 py-3">
-        <h1 className="shrink-0 text-lg font-semibold text-ink">Timeline</h1>
-        <span className="font-mono text-[11px] text-dim">
-          read from git · nothing on this screen is stored
-        </span>
-        {travelling ? (
-          <button
-            type="button"
-            onClick={() => onSeek(null)}
-            className="ml-auto flex items-center gap-1.5 rounded-md border border-accent px-2.5 py-1 text-[12px] text-context transition-colors hover:bg-accent-soft"
-          >
-            <RotateCcw className="size-3.5" aria-hidden />
-            Back to now
-          </button>
-        ) : null}
-      </header>
-
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-[1000px] flex-col gap-6 px-6 pb-16 pt-5">
-          {summary.isError ? (
-            <ErrorBox
-              error={summary.error}
-              title="Could not read the history"
-              onRetry={() => void summary.refetch()}
-            />
-          ) : null}
-
-          {/* The scrubber: one bar per day, click to stand there. */}
-          <section className="flex flex-col gap-2">
-            <SectionHeading size="sm">
-              Activity · last {HISTOGRAM_DAYS} days
-            </SectionHeading>
-            <div className="flex h-14 items-end gap-[3px]">
-              {days.length === 0 && !summary.isPending ? (
-                <p className="text-xs text-faint">No changes recorded yet.</p>
-              ) : null}
-              {days.map((day) => {
-                // Stand at the last event on or before that day: a date maps
-                // to a position in history only through the events on it, and
-                // the feed is a window — days older than the oldest loaded
-                // change cannot be resolved here, so they say so.
-                const last = events.find((event) => event.ts.slice(0, 10) <= day.day);
-                const reachable = last !== undefined;
-                const standingHere = last !== undefined && seq === last.seq;
-                return (
-                  <button
-                    key={day.day}
-                    type="button"
-                    disabled={!reachable}
-                    aria-pressed={standingHere}
-                    title={
-                      reachable
-                        ? `${day.day} · ${day.count} ${day.count === 1 ? "change" : "changes"} · click to stand here`
-                        : `${day.day} · ${day.count} ${day.count === 1 ? "change" : "changes"} · older than the ${events.length} changes loaded below`
-                    }
-                    onClick={() => last && onSeek(last.seq)}
-                    className="group flex h-full flex-1 items-end disabled:cursor-default"
-                  >
-                    <span
-                      className={cn(
-                        "w-full rounded-[2px] transition-colors",
-                        standingHere
-                          ? "bg-accent"
-                          : reachable
-                            ? "bg-edge group-hover:bg-accent"
-                            : "bg-edge/50",
-                      )}
-                      style={{ height: `${Math.max(6, (day.count / peak) * 100)}%` }}
-                    />
-                  </button>
-                );
-              })}
-            </div>
-          </section>
-
-          {/* Then, now, and the difference. */}
-          <section className="grid gap-3 min-[900px]:grid-cols-2">
-            <div className="flex flex-col gap-2.5 rounded-lg border border-edge p-4">
-              <SectionHeading size="sm">
-                Board {travelling ? "then and now" : "now"}
-              </SectionHeading>
-              {summary.data ? (
-                <>
-                  {travelling ? (
-                    <Counts counts={summary.data.at_cutoff} label={`seq ${summary.data.seq}`} />
-                  ) : null}
-                  <Counts counts={summary.data.now} label="now" />
-                  <p className="font-mono text-[11px] leading-relaxed text-faint">
-                    to do · in flight · done, recomputed from field_events
-                  </p>
-                </>
-              ) : (
-                <Loading label="Reading history…" />
-              )}
-            </div>
-
-            <div className="flex flex-col gap-2.5 rounded-lg border border-edge p-4">
-              <SectionHeading size="sm">
-                {travelling ? "Since that point" : "Since the beginning"}
-              </SectionHeading>
-              {summary.data ? (
-                <div className="flex flex-wrap gap-2">
-                  {[
-                    ["finished", summary.data.since.finished, "bg-done-bg text-done-text"],
-                    ["created", summary.data.since.created, "bg-doing-bg text-doing-text"],
-                    ["reprioritized", summary.data.since.reprioritized, "bg-warn-bg text-warn-text"],
-                    ["issues touched", summary.data.since.touched, "bg-sunken text-ink-2"],
-                  ].map(([label, value, tone]) => (
-                    <span
-                      key={String(label)}
-                      className={cn(
-                        "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px]",
-                        String(tone),
-                      )}
-                    >
-                      <b className="font-mono font-semibold">{String(value)}</b>
-                      {String(label)}
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-              <p className="font-mono text-[11px] leading-relaxed text-faint">
-                a semantic diff: what changed, not which bytes
-              </p>
-            </div>
-          </section>
-
-          {/* The feed itself. */}
-          <section className="flex flex-col gap-4">
-            {feed.isPending ? <Loading label="Loading activity…" /> : null}
-            {feed.isError ? (
-              <ErrorBox
-                error={feed.error}
-                title="Could not load the activity feed"
-                onRetry={() => void feed.refetch()}
+    <div className="tlv">
+      <section className="tlhead">
+        <div
+          className="dens"
+          title="Events per day, last 8 weeks — click or drag to set the as-of point"
+          onPointerDown={(e) => {
+            if (e.button !== 0) return;
+            dragging.current = true;
+            pick(e);
+          }}
+          onPointerMove={(e) => {
+            if (dragging.current) pick(e);
+          }}
+          onPointerUp={() => {
+            dragging.current = false;
+          }}
+          onPointerLeave={() => {
+            dragging.current = false;
+          }}
+        >
+          {days.map((day) => {
+            const reachable = day.day >= today || (oldestLoadedDay !== null && day.day >= oldestLoadedDay);
+            return (
+              <i
+                key={day.day}
+                className={cn("db", day.day <= markDay && "on")}
+                data-day={day.day}
+                aria-disabled={!reachable}
+                style={{
+                  height: `${Math.max(2, (day.count / peak) * 100)}%`,
+                  ...(reachable ? {} : { opacity: 0.35, cursor: "not-allowed" }),
+                }}
+                title={
+                  reachable
+                    ? `${fmtShort(day.day)} · ${plural(day.count, "event")}`
+                    : `${fmtShort(day.day)} · ${plural(day.count, "event")} · older than the loaded feed — load older first`
+                }
               />
-            ) : null}
-            {feed.data && events.length === 0 ? (
-              <p className="py-8 text-center text-sm text-muted">
-                No field changes recorded yet. They appear here as soon as anything is committed.
-              </p>
-            ) : null}
-
-            {groups.map((group) => (
-              <div key={group.day} className="flex flex-col gap-0.5">
-                <div className="sticky top-0 z-10 flex items-baseline gap-2 bg-app py-1.5">
-                  <h2 className="text-[12px] font-semibold text-ink">
-                    {dayLabel(group.day, now)}
-                  </h2>
-                  <span className="font-mono text-[11px] text-faint">
-                    {group.events.length} {group.events.length === 1 ? "change" : "changes"}
-                  </span>
-                </div>
-                {group.events.map((event) => (
-                  <div
-                    key={`${event.seq}`}
-                    className={cn(
-                      "grid grid-cols-[20px_46px_minmax(0,1fr)] items-baseline gap-3 rounded-md px-2 py-1.5 text-[12.5px] min-[820px]:grid-cols-[20px_46px_120px_minmax(0,1fr)_220px]",
-                      seq !== null && event.seq === seq && "bg-accent-soft",
-                    )}
-                  >
-                    <GitCommitVertical className="size-4 self-center text-faint" aria-hidden />
-                    <span
-                      className="font-mono text-[11px] text-faint"
-                      title={`${fullTimestamp(event.ts)}\ncommit ${event.commit_sha}\nseq ${event.seq}`}
-                    >
-                      {event.ts.slice(11, 16)}
-                    </span>
-                    <span className="hidden truncate font-mono text-ink-2 min-[820px]:block">
-                      {event.author}
-                    </span>
-                    <span className="flex flex-wrap items-baseline gap-1.5 text-muted">
-                      <span className="text-ink-2">{event.field}</span>
-                      <Value value={event.old_value} />
-                      <span className="text-faint" aria-label="changed to">
-                        →
-                      </span>
-                      <Value value={event.new_value} />
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => onOpen(event.short_ref)}
-                      className="hidden min-w-0 items-baseline gap-2 text-left min-[820px]:flex"
-                    >
-                      <span className="font-mono text-[11px] tabular-nums text-muted">
-                        {event.number !== null ? `#${event.number}` : event.short_ref}
-                      </span>
-                      <span className="truncate text-ink-2 hover:text-ink hover:underline">
-                        {event.title || "(deleted)"}
-                      </span>
-                    </button>
-                  </div>
-                ))}
-              </div>
-            ))}
-
-            {feed.data?.next_before_seq !== null && feed.data !== undefined ? (
-              <p className="pt-2 text-center font-mono text-[11px] text-faint">
-                showing the last {events.length} changes · older ones are in the repo's history
-              </p>
-            ) : null}
-          </section>
+            );
+          })}
+          <i className="mark" style={{ left: `${markLeft}%` }}>
+            <b>{travelling ? fmtShort(markDay) : "now"}</b>
+          </i>
         </div>
-      </div>
+
+        <div className="asof">
+          <div className="asof-l">
+            <SectionHeading>
+              Board as of <HeadingNote>{asOfNote}</HeadingNote>
+            </SectionHeading>
+            {summary.isError ? (
+              <ErrorBox error={summary.error} title="Could not read the history" onRetry={() => void summary.refetch()} />
+            ) : null}
+            {summary.data ? (
+              <>
+                {travelling ? (
+                  <CompareRow label={cutoffDay ? fmtShort(cutoffDay) : `≤${seq}`} counts={summary.data.at_cutoff} />
+                ) : null}
+                <CompareRow label="now" counts={summary.data.now} />
+              </>
+            ) : summary.isPending ? (
+              <Loading label="Reading history…" />
+            ) : null}
+            <div className="ctl">
+              <label className="mono" htmlFor="tl-asof" style={{ fontSize: 11, color: "var(--muted)" }}>
+                as of
+              </label>
+              <input
+                id="tl-asof"
+                type="date"
+                value={cutoffDay ?? ""}
+                max={today}
+                min={oldestLoadedDay ?? undefined}
+                onChange={(e) => (e.target.value ? seekDay(e.target.value) : onSeek(null))}
+              />
+              <select
+                aria-label="as of a release"
+                value={pickedRelease}
+                onChange={(e) => {
+                  const release = shipped.find((r) => r.version === e.target.value);
+                  if (release?.target) seekDay(release.target);
+                }}
+              >
+                <option value="">— or a release —</option>
+                {shipped.map((release) => {
+                  const day = release.target ?? "";
+                  const reachable = day >= today || (oldestLoadedDay !== null && day >= oldestLoadedDay);
+                  return (
+                    <option key={release.version} value={release.version} disabled={!reachable} title={reachable ? undefined : "older than the loaded feed — load older first"}>
+                      {release.version} · {day}
+                    </option>
+                  );
+                })}
+              </select>
+              {travelling ? (
+                <Btn onClick={() => onSeek(null)}>
+                  <X className="i" aria-hidden />
+                  Back to now
+                </Btn>
+              ) : null}
+              <HeadingNote className="text-[11px]">
+                resolved to a <span className="mono">seq</span>, computed from field_events — nothing is rebuilt
+              </HeadingNote>
+            </div>
+          </div>
+
+          <div className="asof-r">
+            <SectionHeading>
+              {sinceLabel} <HeadingNote>semantic diff · what changed, not which bytes</HeadingNote>
+            </SectionHeading>
+            <div className="sdiff">
+              {(
+                [
+                  [summary.data?.since.finished, "→ done", "done"],
+                  [summary.data?.since.created, "new", "doing"],
+                  [summary.data?.since.touched, "touched", ""],
+                  [summary.data?.since.reprioritized, "reprioritized", ""],
+                  [commentsInWindow, "comments", ""],
+                ] as ReadonlyArray<[number | undefined, string, string]>
+              ).map(([n, label, tone]) => (
+                <span key={label} className={cn("sd", tone)}>
+                  <b>{n ?? "…"}</b>
+                  {label}
+                </span>
+              ))}
+            </div>
+            {travelling ? (
+              <p className="dql" style={{ margin: "8px 0 0" }}>
+                Compare: {cutoffDay ? fmtShort(cutoffDay) : `seq ${seq}`} → now.
+              </p>
+            ) : (
+              <p className="dql" style={{ margin: "8px 0 0" }}>
+                Pick a date or a release to time-travel. Dates map to seq via author time (clock skew applies);
+                releases are exact.
+              </p>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <section className="feed">
+        {feed.isPending ? <Loading label="Loading activity…" /> : null}
+        {feed.isError ? (
+          <ErrorBox error={feed.error} title="Could not load the activity feed" onRetry={() => void feed.refetch()} />
+        ) : null}
+        {comments.isError ? (
+          <ErrorBox error={comments.error} title="Could not load comments" tone="warn" onRetry={() => void comments.refetch()} />
+        ) : null}
+
+        {groups.map((group) => (
+          <div key={group.day} className="day">
+            <div className="dayh">
+              <span>{group.day === today ? "Today" : fmtShort(group.day)}</span>
+              <span className="dql">{plural(group.items.length, "event")}</span>
+            </div>
+            {group.items.map((row) => {
+              const Icon = KIND_ICON[row.kind];
+              return (
+                <div key={row.key} className="tle">
+                  <span className={cn("tk", row.kind)}>
+                    <Icon className="i" aria-hidden />
+                  </span>
+                  <span className="tt mono" title={row.ts}>
+                    {row.ts.slice(11, 16)}
+                  </span>
+                  <span className="tw">
+                    <Avatar name={row.author} />
+                    <b>{row.author}</b>
+                  </span>
+                  <span className="tx">{rowText(row)}</span>
+                  <button type="button" className="ti" onClick={() => onOpen(row.issue.short_ref)}>
+                    <IssueHandle shortRef={row.issue.short_ref} number={row.issue.number} />
+                    <span className="lbl">{row.issue.title || "(deleted)"}</span>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        ))}
+
+        {feed.data && groups.length === 0 ? (
+          <p className="empty" style={{ padding: 20 }}>
+            No events in this range with these filters.
+          </p>
+        ) : null}
+
+        {timeline.range === "all" && nextBeforeSeq !== null ? (
+          <div style={{ display: "flex", justifyContent: "center", paddingTop: 8 }}>
+            <Btn
+              disabled={loadingOlder}
+              onClick={() => setCursors((current) => [...current, nextBeforeSeq])}
+              title={`${events.length} events loaded · older ones are still in the repo's history`}
+            >
+              {loadingOlder ? "Loading…" : "Load older"}
+            </Btn>
+          </div>
+        ) : null}
+      </section>
     </div>
   );
 }
-
-export { dayLabel, groupByDay };
