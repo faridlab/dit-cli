@@ -134,6 +134,27 @@ pub fn looks_like_issue_body(rel: &str, layout: DataLayout) -> bool {
     false
 }
 
+/// The directory every release plan lives under (DESIGN.md §15.2). Always
+/// under `.dit/` whatever the layout: releases are machinery-adjacent plan
+/// files, not a content root.
+pub const RELEASES_DIR: &str = ".dit/releases";
+
+/// The plan file inside a release folder.
+pub const RELEASE_FILE: &str = "release.md";
+
+/// `.dit/releases/<version>/release.md` — and nothing else. The version
+/// segment comes back so the indexer can key the row without parsing first.
+pub fn release_version_from_path(rel: &str) -> Option<&str> {
+    let rest = rel.strip_prefix(RELEASES_DIR)?.strip_prefix('/')?;
+    let (version, file) = rest.split_once('/')?;
+    (file == RELEASE_FILE && !version.is_empty()).then_some(version)
+}
+
+/// True for exactly the release plan files.
+pub fn is_release_file(rel: &str) -> bool {
+    release_version_from_path(rel).is_some()
+}
+
 /// `<issue folder>/comments/<file>` — the per-comment files the merge driver
 /// owns (`**/comments/*.md merge=dit-md`).
 pub fn is_comment(rel: &str, layout: DataLayout) -> bool {
@@ -178,6 +199,24 @@ fn month_shaped(year: &str, month: &str) -> bool {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_files_are_classified_by_shape_under_dit() {
+        assert_eq!(
+            release_version_from_path(".dit/releases/v0.2.0/release.md"),
+            Some("v0.2.0")
+        );
+        assert!(is_release_file(".dit/releases/2026.09/release.md"));
+        // Deployments, comments, and anything not under `.dit/releases/`
+        // are not the plan file.
+        assert!(!is_release_file(
+            ".dit/releases/v0.2.0/deployments/01K4A1-uat-budi.md"
+        ));
+        assert!(!is_release_file(".dit/releases/v0.2.0/comments/x.md"));
+        assert!(!is_release_file(".dit/releases/release.md"));
+        assert!(!is_release_file("releases/v0.2.0/release.md"));
+        assert!(!is_release_file("issues/2026/08/x/README.md"));
+    }
 
     #[test]
     fn root_layout_classifies_the_issue_body() {

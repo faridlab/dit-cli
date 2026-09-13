@@ -20,6 +20,7 @@ mod events;
 mod ids;
 mod issue;
 mod layout;
+mod release;
 mod status;
 mod time;
 mod workflow;
@@ -31,8 +32,12 @@ pub use events::{ChangeSummary, DayCount, EventSource, FieldEvent, StoredFieldEv
 pub use ids::{IdError, IssueId, Seq, ShortRef, Slug};
 pub use issue::{ClearableField, FieldPatch, Issue, IssueDraft, IssueKind, Priority};
 pub use layout::{
-    generated_index_paths, is_comment, is_generated_index, is_issue_body, looks_like_issue_body,
-    DataLayout, CONTENT_ROOTS, GENERATED_INDEX_MARKER, ISSUE_BODY_FILE, LEGACY_ISSUE_BODY_FILE,
+    generated_index_paths, is_comment, is_generated_index, is_issue_body, is_release_file,
+    looks_like_issue_body, release_version_from_path, DataLayout, CONTENT_ROOTS,
+    GENERATED_INDEX_MARKER, ISSUE_BODY_FILE, LEGACY_ISSUE_BODY_FILE, RELEASES_DIR, RELEASE_FILE,
+};
+pub use release::{
+    validate_release_version, Release, ReleasePatch, ReleaseStatus, ReleaseVersionError,
 };
 pub use status::{Status, StatusCategory};
 pub use time::{format_rfc3339, parse_rfc3339, validate_date, TimeError};

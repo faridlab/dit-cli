@@ -9,7 +9,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use dit_model::{DataLayout, IssueId, Slug, ISSUE_BODY_FILE, LEGACY_ISSUE_BODY_FILE};
+use dit_model::{
+    validate_release_version, DataLayout, IssueId, Slug, ISSUE_BODY_FILE, LEGACY_ISSUE_BODY_FILE,
+    RELEASES_DIR, RELEASE_FILE,
+};
 use time::OffsetDateTime;
 
 use crate::store::StoreError;
@@ -153,6 +156,25 @@ impl Layout {
             DataLayout::Root => self.root.join(".gitattributes"),
             DataLayout::DotDir => self.dit_dir().join(".gitattributes"),
         }
+    }
+
+    /// `.dit/releases/` — release plans (DESIGN.md §15.2). Always under
+    /// `.dit/` whatever the layout: a plan file is machinery-adjacent, not a
+    /// content root, and `dit-model` spells the path once for every crate.
+    pub fn releases_dir(&self) -> PathBuf {
+        self.root.join(RELEASES_DIR)
+    }
+
+    /// The folder of one release. The version is validated as a directory
+    /// name first, so no caller can assemble a path out of raw user text.
+    pub fn release_dir(&self, version: &str) -> Result<PathBuf, StoreError> {
+        validate_release_version(version).map_err(|e| StoreError::BadVersion(e.to_string()))?;
+        Ok(self.releases_dir().join(version))
+    }
+
+    /// `.dit/releases/<version>/release.md`.
+    pub fn release_md(&self, version: &str) -> Result<PathBuf, StoreError> {
+        Ok(self.release_dir(version)?.join(RELEASE_FILE))
     }
 
     pub fn cache_dir(&self) -> PathBuf {

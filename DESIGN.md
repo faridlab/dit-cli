@@ -2128,11 +2128,14 @@ version: v0.2.0
 status: in_uat              # planned | in_dev | in_uat | released | rolled_back
 target_ref: release/0.2.0
 repo: api                   # important in a polyrepo (§5.0)
+target: 2026-10-01          # optional — the planned date the roadmap draws the milestone at
 includes:                   # may be manual, may be filled from a query
   - 01K3M9ZXQ2R7VN8P4TDBCEFGHJ
   - 01K3M5QQQQ0000000000ZZZZ
 ---
 ```
+
+`target` is a plan, not a record: it is the one date a human edits (`YYYY-MM-DD`, validated like an issue's `due`), and the deployment files below carry what actually happened.
 
 `deployments/01K4A1-uat-budi.md`:
 
@@ -2187,6 +2190,8 @@ The reason for placing it in v0.9 rather than earlier:
 | Tested polyrepo (releases often span repos) | v0.7 |
 
 Building it before that means building on foundations that are still shifting.
+
+What ships now, ahead of v0.9, is only the part that needs none of those prerequisites: the **read model** (`release.md` parsed, indexed, listed at `GET /api/releases`), the roadmap lanes that draw each release at its `target` date, and the two edits a roadmap needs (`status` and `target`, through `PATCH /api/releases/{version}` — one commit each, like an issue patch). Everything that has to *prove* something — `dit release verify`, `dit release diff`, `dit release plan`, the deployment files — still waits for v0.9, because it rests on the trailer linkage and the polyrepo work above. ADR 0014 records the split.
 
 And one warning that has to be written down now so it is not forgotten: **keep the scope narrow to what git can prove.** Approval gates, deploy schedules, environment matrices, and notifications are a bottomless pit — that is where "rebuild Jira, but worse" usually happens. DIT records *what was actually deployed* and *whether the claims match*. Running the deployment itself is not DIT's job.
 

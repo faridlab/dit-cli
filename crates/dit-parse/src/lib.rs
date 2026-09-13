@@ -18,6 +18,7 @@ pub mod frontmatter;
 pub mod html;
 pub mod issue;
 pub mod prosemirror;
+pub mod release;
 pub mod schema;
 pub mod yaml;
 
@@ -28,5 +29,9 @@ pub use issue::{
     apply_patch, issue_from_document, parse_issue, serialize_new_issue, IssueParseError,
 };
 pub use prosemirror::{doc_to_markdown, markdown_to_doc, ProseMirrorError};
+pub use release::{
+    apply_release_patch, parse_release, release_from_document, serialize_new_release,
+    ReleaseParseError,
+};
 pub use schema::{parse_config, parse_workflow, write_config, write_workflow, SchemaError};
 pub use yaml::{parse as parse_yaml, Yaml, YamlError};
