@@ -4,4 +4,9 @@
  * The change request. Absent fields are untouched — the same contract as
  * the issue patch.
  */
-export type SetSettingsDto = { layout?: string, numbering?: string, };
+export type SetSettingsDto = { layout?: string, numbering?: string, 
+/**
+ * The alias later writes are attributed to. Saved in the clone's git
+ * config (never committed); lowercase letters, digits and dashes.
+ */
+me?: string, };

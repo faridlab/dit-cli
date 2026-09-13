@@ -3,7 +3,8 @@ import type { FieldPatchDto } from "./FieldPatchDto";
 
 /**
  * The patch request: `{ "set": { ...fields } }`. Absent fields are
- * untouched; there is no way to clear a field in v0.1 — that is a
- * deliberate limit of the write surface, not an oversight.
+ * untouched. The optional fields (`priority`, `epic`, `estimate`, `sprint`,
+ * `due`, `start`) can also be cleared: send `null`, or `""` for the string
+ * ones, and the key is removed from the file.
  */
 export type SetIssueDto = { set: FieldPatchDto, };

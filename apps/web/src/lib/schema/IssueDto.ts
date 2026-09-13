@@ -11,4 +11,9 @@ number: number | null, title: string, type: string, status: string, priority: st
  * issues — the plan views infer a bar from `due` and the estimate
  * rather than writing one back.
  */
-start: string | null, created: string, updated: string, body: string, body_html: string, };
+start: string | null, 
+/**
+ * Ids of the issues this one waits on, in the file's order. Empty when
+ * nothing blocks it — always present so the client never has to guess.
+ */
+blocked_by: Array<string>, created: string, updated: string, body: string, body_html: string, };

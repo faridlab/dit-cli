@@ -18,4 +18,9 @@ numbering: string,
 /**
  * Template names creation can seed a body from.
  */
-templates: Array<string>, };
+templates: Array<string>, 
+/**
+ * The alias writes are attributed to — the same value `/api/status`
+ * shows. Absent when the server knows nobody.
+ */
+me: string | null, };
