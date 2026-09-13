@@ -1,133 +1,205 @@
-// The Issues sidebar section: the list's filters. Each toggle composes the exact
-// DQL a power user would type (the same language the search box speaks) and
-// puts it in the URL, so a filtered list is a shareable, reloadable thing
-// rather than private view state. The pane re-parses its own canonical
-// output, so chips and URL can never drift apart.
+// The Issues sidebar section, shared with Search: the client-side filters
+// (mine, context, type) the header's Filter menu also drives, with counts
+// taken from the open pool, and the saved views. A saved view is a name
+// over a DQL string and lives only in this browser's localStorage — the
+// repo never learns what one person likes to look at.
 
-import { useMemo } from "react";
-import { useIssues, useStatus } from "../../lib/queries";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Plus, Copy, Trash2, X, Zap } from "lucide-react";
+import { toast } from "sonner";
+import { openQuery } from "../../lib/dql";
 import { contextOf } from "../../lib/format";
-import { cn } from "../../lib/cn";
-import { CheckSquare, SectionHeading } from "../chrome";
+import { ISSUE_TYPES, contextsOf, filtersToDql } from "../../lib/lists";
+import { useOpenPool, useSchema, useStatus } from "../../lib/queries";
+import { navigate, routeToHash } from "../../lib/router";
+import { useViewOptions } from "../../lib/viewopts";
+import { TypeBadge } from "../badges";
+import { CheckSquare, ContextMenuFor, IBtn, MenuButton, Row, SectionHeading, Sp, type MenuItem } from "../chrome";
 
-const MINE_FRAGMENT = "assignee = @me";
-const CONTEXT_RE = /label = context:([a-z0-9-]+)/g;
+export const SAVED_VIEWS_KEY = "dit.views";
 
-function composeQuery(mine: boolean, contexts: ReadonlySet<string>): string | null {
-  const parts: string[] = [];
-  if (mine) parts.push(MINE_FRAGMENT);
-  for (const context of [...contexts].sort()) parts.push(`label = context:${context}`);
-  return parts.length > 0 ? parts.join(" AND ") : null;
+type SavedView = [name: string, dql: string];
+
+function loadSavedViews(): SavedView[] {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(SAVED_VIEWS_KEY) ?? "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (entry): entry is SavedView =>
+        Array.isArray(entry) && entry.length === 2 && typeof entry[0] === "string" && typeof entry[1] === "string",
+    );
+  } catch {
+    // A blocked, full or corrupt storage just means no saved views.
+    return [];
+  }
 }
 
-function FilterRow({
-  label,
-  on,
-  onClick,
-  title,
-}: {
-  label: string;
-  on: boolean;
-  onClick: () => void;
-  title?: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={title}
-      className={cn(
-        "flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left font-mono text-xs transition-colors hover:bg-card",
-        on ? "bg-hover text-ink" : "text-ink-2",
-      )}
-    >
-      <CheckSquare on={on} />
-      <span className="truncate">{label}</span>
-    </button>
-  );
+function useSavedViews(): [SavedView[], (next: SavedView[]) => void] {
+  const [views, setViews] = useState<SavedView[]>(loadSavedViews);
+  const save = useCallback((next: SavedView[]) => {
+    setViews(next);
+    try {
+      window.localStorage.setItem(SAVED_VIEWS_KEY, JSON.stringify(next));
+    } catch {
+      // The views stay for this session; losing them is not worth an error.
+    }
+  }, []);
+  // Another tab saving a view should show up here too.
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === null || event.key === SAVED_VIEWS_KEY) setViews(loadSavedViews());
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+  return [views, save];
+}
+
+async function copyText(text: string, label: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(`${label} — ${text}`);
+  } catch {
+    toast(`${label}: ${text}`);
+  }
 }
 
 export function IssuesPane({
-  q,
-  onFilter,
+  q: _q,
+  onFilter: _onFilter,
 }: {
+  /** Legacy: the filters no longer travel in the URL. Kept so the shell's
+   *  call site keeps compiling; the pane reads the shared view options. */
   q: string | null;
   onFilter: (q: string | null) => void;
 }) {
   const status = useStatus();
   const me = status.data?.me ?? null;
+  const schema = useSchema();
+  const statuses = schema.data?.workflow.statuses;
+  const pool = useOpenPool();
+  const issues = pool.data?.items ?? [];
+  const { filters, toggleMine, toggleContext, toggleType, clearFilters } = useViewOptions();
+  const [views, saveViews] = useSavedViews();
 
-  const mine = q !== null && q.includes(MINE_FRAGMENT);
-  const contexts = useMemo(
-    () =>
-      new Set(
-        [...(q ?? "").matchAll(CONTEXT_RE)].map((match) => match[1] ?? ""),
-      ),
-    [q],
-  );
+  const contexts = useMemo(() => contextsOf(issues), [issues]);
+  const contextCount = (context: string) => issues.filter((issue) => contextOf(issue.labels) === context).length;
+  const typeCount = (type: string) => issues.filter((issue) => issue.type === type).length;
 
-  // Contexts come from the labels present in the workspace, not from the
-  // filtered list, so picking one filter never hides the others.
-  const unfiltered = useIssues({ limit: 500 });
-  const availableContexts = useMemo(() => {
-    const set = new Set<string>();
-    for (const issue of unfiltered.data?.items ?? []) {
-      const context = contextOf(issue.labels);
-      if (context !== null) set.add(context);
-    }
-    return [...set].sort();
-  }, [unfiltered.data]);
+  // The view to save: the open pool narrowed by the current filters, as the
+  // DQL a person would type. Lowercase "and" because that is how the chips
+  // read; the parser does not care.
+  const composed = [openQuery(statuses) ?? "status != done", ...filtersToDql(filters)].join(" and ");
+  const saveItems: MenuItem[] = [
+    { kind: "head", label: "Save as view" },
+    { kind: "text", node: <span className="mono">{composed}</span> },
+    {
+      kind: "input",
+      placeholder: "View name",
+      button: "Save",
+      run: (name) => {
+        if (name.length === 0) return;
+        saveViews([...views, [name, composed]]);
+        toast(`Saved view “${name}” · kept in this browser`);
+      },
+    },
+  ];
 
-  const toggleMine = () => onFilter(composeQuery(!mine, contexts));
-  const toggleContext = (context: string) => {
-    const next = new Set(contexts);
-    if (next.has(context)) next.delete(context);
-    else next.add(context);
-    onFilter(composeQuery(mine, next));
-  };
+  const viewItems = (index: number, [name, dql]: SavedView): MenuItem[] => [
+    { kind: "head", label: name },
+    { label: "Run", icon: <Zap className="i" aria-hidden />, run: () => navigate({ name: "search", q: dql }) },
+    { label: "Copy DQL", icon: <Copy className="i" aria-hidden />, run: () => void copyText(dql, "DQL copied") },
+    {
+      label: "Delete view",
+      icon: <Trash2 className="i" aria-hidden />,
+      danger: true,
+      run: () => {
+        saveViews(views.filter((_, k) => k !== index));
+        toast("View deleted");
+      },
+    },
+  ];
 
   return (
-    <div className="flex flex-col gap-4 p-3">
-      <section>
-        <div className="flex items-center gap-2 px-1 pb-2">
-          <SectionHeading size="sm">Filters</SectionHeading>
-          {q !== null ? (
-            <button
-              type="button"
-              onClick={() => onFilter(null)}
-              className="ml-auto text-[11px] text-muted transition-colors hover:text-ink"
-            >
-              Clear all
-            </button>
-          ) : null}
-        </div>
-        <FilterRow
-          label="@me"
-          on={mine && me !== null}
+    <>
+      <SectionHeading size="sm">
+        Filters
+        <Sp />
+        <IBtn title="Clear all filters" aria-label="Clear all filters" onClick={clearFilters}>
+          <X className="i" aria-hidden />
+        </IBtn>
+      </SectionHeading>
+      <div className="sb-body">
+        <Row
+          on={filters.mine}
           onClick={toggleMine}
-          title={me === null ? "No git identity configured for @me" : MINE_FRAGMENT}
-        />
-        {availableContexts.map((context) => (
-          <FilterRow
+          disabled={me === null}
+          className={me === null ? "opacity-50" : undefined}
+          title={me === null ? "No alias yet — set one in Settings so @me means someone" : "assignee = @me"}
+        >
+          <CheckSquare on={filters.mine} />
+          <span className="lbl">Assigned to me</span>
+          <span className="cnt mono">@me</span>
+        </Row>
+
+        <SectionHeading size="sm" className="mt-2">
+          Context
+        </SectionHeading>
+        {contexts.map((context) => (
+          <Row
             key={context}
-            label={context}
-            on={contexts.has(context)}
+            on={filters.contexts.has(context)}
             onClick={() => toggleContext(context)}
             title={`label = context:${context}`}
-          />
+          >
+            <CheckSquare on={filters.contexts.has(context)} />
+            <span className="lbl">@{context}</span>
+            <span className="cnt">{contextCount(context)}</span>
+          </Row>
         ))}
-      </section>
+        {pool.data && contexts.length === 0 ? (
+          <p className="empty" style={{ padding: "4px 8px" }}>
+            No @context labels on open issues yet.
+          </p>
+        ) : null}
 
-      {/* The live query, verbatim: what the list shows is always
-          inspectable, never a private filter language. */}
-      {q !== null ? (
-        <p
-          className="rounded-md border border-edge bg-card px-2.5 py-2 font-mono text-[10.5px] leading-relaxed text-muted"
-          title="The exact query the list runs"
-        >
-          {q}
-        </p>
-      ) : null}
-    </div>
+        <SectionHeading size="sm" className="mt-2">
+          Type
+        </SectionHeading>
+        {ISSUE_TYPES.map((type) => (
+          <Row key={type} on={filters.types.has(type)} onClick={() => toggleType(type)} title={`type = ${type}`}>
+            <CheckSquare on={filters.types.has(type)} />
+            <TypeBadge type={type} />
+            <span className="lbl">{type}</span>
+            <span className="cnt">{typeCount(type)}</span>
+          </Row>
+        ))}
+
+        <SectionHeading size="sm" className="mt-2">
+          Saved views
+          <Sp />
+          <MenuButton items={saveItems}>
+            <IBtn
+              title="Save the current filters as a view — kept in this browser"
+              aria-label="Save the current filters as a view"
+            >
+              <Plus className="i" aria-hidden />
+            </IBtn>
+          </MenuButton>
+        </SectionHeading>
+        {views.map((view, index) => (
+          <ContextMenuFor key={`${view[0]}:${index}`} items={viewItems(index, view)}>
+            <a
+              className="row sview"
+              href={routeToHash({ name: "search", q: view[1] })}
+              title={`${view[1]} — right-click to run, copy or delete`}
+            >
+              <Zap className="i" aria-hidden />
+              <span className="lbl">{view[0]}</span>
+            </a>
+          </ContextMenuFor>
+        ))}
+      </div>
+    </>
   );
 }
