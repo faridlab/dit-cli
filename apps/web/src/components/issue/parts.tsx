@@ -692,8 +692,8 @@ function ChangeValue({
 }
 
 /** Comments and field changes as one stream — what happened to this issue,
- *  in the order it happened. Both come out of git; neither is stored as an
- *  activity log (invariant 5). The segment is owned by the surface so the
+ *  newest first, down to the line that says it was created. Both come out of
+ *  git; neither is stored as an activity log (invariant 5). The segment is owned by the surface so the
  *  blame menus and the page's History rail can switch it. */
 export function IssueActivity({
   issue,
@@ -726,15 +726,23 @@ export function IssueActivity({
   type Shown =
     | { kind: "cm"; id: string; author: string; ts: string; html: string }
     | { kind: "chg"; seq: number; author: string; ts: string; event: FieldEventDto };
+  // Newest first: the panel is opened to see what just happened, so the
+  // stream runs backwards from now down to the issue's creation, which is
+  // the last line. The merge itself is untouched — this walks it in reverse
+  // rather than re-sorting, so field events keep their `seq` order
+  // (invariant 9). Within one commit the events stay as given: they happened
+  // in one act and share one timestamp, so reversing them says nothing true.
   const shown: Shown[] = [];
-  for (const entry of entries) {
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const entry = entries[i];
+    if (entry === undefined) continue;
     if (entry.kind === "comment") {
       if (filter !== "changes") {
         shown.push({ kind: "cm", id: entry.id, author: entry.author, ts: entry.ts, html: entry.bodyHtml });
       }
       continue;
     }
-    // The birth of the issue is the first line of the stream, not a burst
+    // The birth of the issue is the last line of the stream, not a burst
     // of "changed" rows.
     if (entry.creation || filter === "comments") continue;
     for (const event of entry.events) {
@@ -788,19 +796,6 @@ export function IssueActivity({
         </div>
       </div>
       <div className="tl" ref={listRef}>
-        <div className="ev sys">
-          <span className="dotc">
-            <i />
-          </span>
-          <div>
-            <div className="who">
-              <b>{issue.reporter ?? history[0]?.author ?? "unknown"}</b> created this issue
-              <span className="ts" title={fullTimestamp(issue.created)}>
-                {relativeTime(issue.created)}
-              </span>
-            </div>
-          </div>
-        </div>
         {shown.map((entry) =>
           entry.kind === "cm" ? (
             <div className="ev" key={entry.id}>
@@ -838,6 +833,20 @@ export function IssueActivity({
             </div>
           ),
         )}
+        {/* The oldest line there can be, so it closes a newest-first stream. */}
+        <div className="ev sys">
+          <span className="dotc">
+            <i />
+          </span>
+          <div>
+            <div className="who">
+              <b>{issue.reporter ?? history[0]?.author ?? "unknown"}</b> created this issue
+              <span className="ts" title={fullTimestamp(issue.created)}>
+                {relativeTime(issue.created)}
+              </span>
+            </div>
+          </div>
+        </div>
         {shown.length === 0 && !comments.isPending ? <p className="empty">Nothing here yet.</p> : null}
         {comments.isError ? (
           <p className="empty" style={{ color: "var(--crit)" }}>
