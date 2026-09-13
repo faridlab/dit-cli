@@ -1229,3 +1229,291 @@ fn a_start_date_is_stored_queried_and_read_back() {
     // The tree is clean: one commit wrote both fields.
     assert!(!dit.status().dirty);
 }
+
+#[test]
+fn recent_comments_span_issues_newest_first() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+
+    let mut tx = dit.transaction("farid").unwrap();
+    let a = tx.create_issue(draft("Login timeout")).unwrap();
+    let b = tx
+        .create_issue(draft("Merge driver drops changes"))
+        .unwrap();
+    tx.commit("create 2 issues").unwrap();
+
+    // Nothing yet: an empty feed, not an error.
+    assert!(dit.recent_comments(10).unwrap().is_empty());
+
+    let mut tx = dit.transaction("farid").unwrap();
+    tx.comment(&a, "farid", "first on a").unwrap();
+    tx.commit("comment").unwrap();
+    let mut tx = dit.transaction("budi").unwrap();
+    tx.comment(&b, "budi", "then on b").unwrap();
+    tx.commit("comment").unwrap();
+
+    let feed = dit.recent_comments(10).unwrap();
+    assert_eq!(feed.len(), 2, "{feed:?}");
+    // Newest first, each row naming the issue it belongs to.
+    assert_eq!(feed[0].issue_id, b);
+    assert_eq!(feed[0].title, "Merge driver drops changes");
+    assert_eq!(feed[0].comment.author, "budi");
+    assert_eq!(feed[1].issue_id, a);
+    assert_eq!(feed[1].comment.body.trim(), "first on a");
+    assert_eq!(dit.recent_comments(1).unwrap().len(), 1);
+}
+
+const RELEASE_FILE: &str = "---\nversion: v0.2.0\nstatus: in_uat\ntarget_ref: release/0.2.0\nrepo: api\ntarget: 2026-10-01\nincludes:\n  - 01K3M9ZXQ2R7VN8P4TDBCEFGHJ\napproved_by: qa-lead\n---\n\nShips the login flow.\n";
+
+/// Commit a release plan the way `dit release plan` (v0.9) eventually will —
+/// by hand, through git, because the read model ships before the writer.
+fn commit_release(root: &Path, version: &str, text: &str) {
+    let dir = root.join(".dit/releases").join(version);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("release.md"), text).unwrap();
+    let repo = Repo::open(root).unwrap();
+    repo.add(".dit/releases").unwrap();
+    repo.commit(&format!("plan {version}")).unwrap();
+}
+
+#[test]
+fn a_workspace_without_releases_answers_with_an_empty_list() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    assert!(dit.releases().unwrap().is_empty());
+    assert!(dit.release("v0.2.0").unwrap().is_none());
+    // A full rebuild over a tree with no `.dit/releases/` is fine too.
+    dit.reindex(ReindexMode::All).unwrap();
+    assert!(dit.releases().unwrap().is_empty());
+    // And patching a plan that does not exist is NotFound, not a crash.
+    let mut tx = dit.transaction("farid").unwrap();
+    let err = tx
+        .set_release(
+            "v0.2.0",
+            dit_model::ReleasePatch {
+                status: Some(dit_model::ReleaseStatus::Released),
+                target: None,
+            },
+        )
+        .unwrap_err();
+    assert!(matches!(err, DitError::NotFound(_)), "{err}");
+}
+
+#[test]
+fn releases_are_indexed_from_git_and_patched_in_one_commit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    commit_release(tmp.path(), "v0.2.0", RELEASE_FILE);
+    commit_release(
+        tmp.path(),
+        "v0.1.0",
+        "---\nversion: v0.1.0\nstatus: released\ntarget: 2026-09-01\n---\n",
+    );
+    commit_release(
+        tmp.path(),
+        "v1.0.0",
+        "---\nversion: v1.0.0\nstatus: planned\n---\n",
+    );
+
+    // Hand-made commits are not absorbed by a transaction; a rebuild is.
+    dit.reindex(ReindexMode::All).unwrap();
+    let versions: Vec<String> = dit
+        .releases()
+        .unwrap()
+        .into_iter()
+        .map(|r| r.release.version)
+        .collect();
+    assert_eq!(
+        versions,
+        ["v0.1.0", "v0.2.0", "v1.0.0"],
+        "dated first, then by version"
+    );
+    let plan = dit.release("v0.2.0").unwrap().expect("indexed");
+    assert_eq!(plan.release.status, dit_model::ReleaseStatus::InUat);
+    assert_eq!(plan.release.target.as_deref(), Some("2026-10-01"));
+    assert_eq!(plan.release.includes.len(), 1);
+    assert_eq!(plan.path, ".dit/releases/v0.2.0/release.md");
+
+    // One patch, one commit, attributed to the person who acted.
+    let head_before = Repo::open(tmp.path()).unwrap().head().unwrap();
+    let mut tx = dit.transaction("farid").unwrap();
+    tx.set_release(
+        "v0.2.0",
+        dit_model::ReleasePatch {
+            status: Some(dit_model::ReleaseStatus::Released),
+            target: Some("2026-10-03".into()),
+        },
+    )
+    .unwrap();
+    let sha = tx.commit("release v0.2.0: released").unwrap().unwrap();
+    assert_ne!(sha, head_before);
+    let repo = Repo::open(tmp.path()).unwrap();
+    let message = repo.git(&["log", "-1", "--format=%B", &sha]).unwrap();
+    assert!(message.contains("Dit-Author: farid"), "{message}");
+    assert!(
+        repo.is_clean().unwrap(),
+        "the write is committed, not left dirty"
+    );
+
+    // The index absorbed the commit; the file kept what it did not touch.
+    let plan = dit.release("v0.2.0").unwrap().expect("still indexed");
+    assert_eq!(plan.release.status, dit_model::ReleaseStatus::Released);
+    assert_eq!(plan.release.target.as_deref(), Some("2026-10-03"));
+    assert_eq!(plan.release.target_ref.as_deref(), Some("release/0.2.0"));
+    let on_disk =
+        std::fs::read_to_string(tmp.path().join(".dit/releases/v0.2.0/release.md")).unwrap();
+    assert!(on_disk.contains("approved_by: qa-lead"), "{on_disk}");
+    assert!(on_disk.contains("Ships the login flow."), "{on_disk}");
+
+    // Release files never masquerade as issues or events.
+    assert!(dit.query("", None).unwrap().is_empty());
+    assert!(dit.activity(None, 100).unwrap().is_empty());
+
+    // The date is validated at the write boundary — nothing lands.
+    let mut tx = dit.transaction("farid").unwrap();
+    assert!(tx
+        .set_release(
+            "v0.2.0",
+            dit_model::ReleasePatch {
+                status: None,
+                target: Some("soon".into()),
+            },
+        )
+        .is_err());
+}
+
+#[test]
+fn the_alias_is_persisted_per_clone_and_validated() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dit = workspace(tmp.path());
+    assert_eq!(dit.me(), None, "nothing configured yet");
+
+    dit.set_me("farid").unwrap();
+    assert_eq!(dit.me().as_deref(), Some("farid"));
+    // Survives a reopen: it is the clone's setting, not the process's.
+    assert_eq!(
+        Dit::open(tmp.path()).unwrap().me().as_deref(),
+        Some("farid")
+    );
+    // The surrounding whitespace is not part of the alias.
+    dit.set_me("  budi ").unwrap();
+    assert_eq!(dit.me().as_deref(), Some("budi"));
+
+    // An alias that could not name a comment file is refused, so a later
+    // comment never fails on it.
+    for bad in ["", "   ", "Farid", "far id", "../x"] {
+        let err = dit.set_me(bad).unwrap_err();
+        assert!(matches!(err, DitError::Refuse(_)), "{bad:?}: {err}");
+    }
+    assert_eq!(
+        dit.me().as_deref(),
+        Some("budi"),
+        "a refusal changes nothing"
+    );
+    // The setting is not workspace data: the tree stays clean.
+    assert!(Repo::open(tmp.path()).unwrap().is_clean().unwrap());
+}
+
+#[test]
+fn clearing_a_field_removes_it_from_the_file_and_the_index() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    let mut tx = dit.transaction("farid").unwrap();
+    let id = tx.create_issue(draft("Has a due date")).unwrap();
+    tx.commit("create").unwrap();
+
+    let mut tx = dit.transaction("farid").unwrap();
+    tx.set_fields(
+        &id,
+        FieldPatch {
+            due: Some("2026-09-01".into()),
+            ..FieldPatch::default()
+        },
+    )
+    .unwrap();
+    tx.commit("set due").unwrap();
+    let path = tmp.path().join(dit.get(id.as_str()).unwrap().unwrap().path);
+    assert!(std::fs::read_to_string(&path)
+        .unwrap()
+        .contains("due: 2026-09-01"));
+
+    let mut tx = dit.transaction("farid").unwrap();
+    tx.set_fields(
+        &id,
+        FieldPatch {
+            clear: vec![
+                dit_model::ClearableField::Due,
+                dit_model::ClearableField::Priority,
+            ],
+            ..FieldPatch::default()
+        },
+    )
+    .unwrap();
+    tx.commit("clear due").unwrap();
+
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(!text.contains("due:"), "{text}");
+    assert!(!text.contains("priority:"), "{text}");
+    let stored = dit.get(id.as_str()).unwrap().unwrap().issue;
+    assert_eq!(stored.due, None);
+    assert_eq!(stored.priority, None);
+    // History records the removal as a change to nothing.
+    let events = dit.history(&id, Some("due")).unwrap();
+    let last = events.last().unwrap();
+    assert_eq!(last.old_value.as_deref(), Some("2026-09-01"));
+    assert_eq!(last.new_value, None);
+}
+
+#[test]
+fn deleting_an_issue_removes_its_files_but_keeps_its_history() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    let mut tx = dit.transaction("farid").unwrap();
+    let doomed = tx.create_issue(draft("Doomed")).unwrap();
+    let survivor = tx.create_issue(draft("Survivor")).unwrap();
+    tx.comment(&doomed, "farid", "last words").unwrap();
+    tx.commit("create").unwrap();
+    let folder = tmp
+        .path()
+        .join(dit.get(doomed.as_str()).unwrap().unwrap().path)
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    assert!(folder.join("comments").is_dir());
+    let events_before = dit.history(&doomed, None).unwrap().len();
+    assert!(events_before > 0);
+
+    let mut tx = dit.transaction("farid").unwrap();
+    tx.delete_issue(&doomed).unwrap();
+    let sha = tx.commit("delete doomed").unwrap().expect("one commit");
+    let repo = Repo::open(tmp.path()).unwrap();
+    assert!(repo.is_clean().unwrap(), "the deletion is committed");
+    assert!(repo
+        .git(&["log", "-1", "--format=%B", &sha])
+        .unwrap()
+        .contains("Dit-Author: farid"));
+
+    // Files and folder gone; the other issue untouched.
+    assert!(!folder.exists(), "{}", folder.display());
+    assert!(dit.get(survivor.as_str()).unwrap().is_some());
+    // The index dropped the row and its comments…
+    assert!(dit.get(doomed.as_str()).unwrap().is_none());
+    assert!(dit.comments(&doomed).unwrap().is_empty());
+    assert_eq!(dit.query("", None).unwrap().len(), 1);
+    assert!(dit.recent_comments(10).unwrap().is_empty());
+    // …but history outlives its subject, and the deletion is itself an event.
+    let events = dit.history(&doomed, Some("status")).unwrap();
+    assert!(events.len() > 1, "{events:?}");
+    assert_eq!(events.last().unwrap().new_value, None, "removed → nothing");
+
+    // Deleting what is not there is NotFound; a full rebuild agrees.
+    let mut tx = dit.transaction("farid").unwrap();
+    assert!(matches!(
+        tx.delete_issue(&doomed),
+        Err(DitError::NotFound(_))
+    ));
+    drop(tx);
+    dit.reindex(ReindexMode::All).unwrap();
+    assert!(dit.get(doomed.as_str()).unwrap().is_none());
+    assert_eq!(dit.query("", None).unwrap().len(), 1);
+}

@@ -31,10 +31,11 @@ pub use error::DitError;
 // Types from below the facade that appear in its signatures. Callers
 // construct arguments out of these, so they must be reachable without a
 // second dependency — the facade is the only crate delivery names.
-pub use dit_index::IndexedIssue;
+pub use dit_index::{IndexedIssue, IndexedRelease, WorkspaceComment};
 pub use dit_model::{
-    ChangeSummary, Comment, Config, DataLayout, DayCount, DerivedSignal, DocEntry, DocPath,
-    DocPathError, FieldPatch, Issue, IssueDraft, IssueId, IssueKind, Numbering, Priority,
+    validate_date, validate_release_version, ChangeSummary, ClearableField, Comment, Config,
+    DataLayout, DayCount, DerivedSignal, DocEntry, DocPath, DocPathError, FieldPatch, Issue,
+    IssueDraft, IssueId, IssueKind, Numbering, Priority, Release, ReleasePatch, ReleaseStatus,
     StatusCategory, StoredFieldEvent, Workflow, WorkflowStatus, CONTENT_ROOTS, DOC_ROOTS,
     GENERATED_INDEX_MARKER,
 };
@@ -372,6 +373,36 @@ impl Dit {
         std::fs::read_to_string(self.template_path(name)?).ok()
     }
 
+    /// The alias this clone attributes writes to, if one was saved with
+    /// [`Dit::set_me`]. Callers layer their own precedence on top (an
+    /// explicit flag or `DIT_ME` wins; `$USER` is the last guess).
+    pub fn me(&self) -> Option<String> {
+        self.repo.alias()
+    }
+
+    /// Save the alias later writes are attributed to. It lives in the
+    /// clone's git config — the same place as the git identity, and the
+    /// honest one: it is a fact about who sits at this clone, not workspace
+    /// data, so it is never committed and never shared. The shape is the
+    /// comment-file rule (lowercase letters, digits, dashes), refused here so
+    /// no later comment fails on a name that cannot be a file name.
+    pub fn set_me(&self, alias: &str) -> Result<(), DitError> {
+        let alias = alias.trim();
+        if alias.is_empty() {
+            return Err(DitError::Refuse("an alias is required".into()));
+        }
+        if !alias
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            return Err(DitError::Refuse(format!(
+                "`{alias}` cannot be an alias — use lowercase letters, digits and dashes"
+            )));
+        }
+        self.repo.set_alias(alias)?;
+        Ok(())
+    }
+
     /// Branch, head and dirtiness for status displays. Best effort: an
     /// unborn branch (no commits yet) still reports, with an empty head.
     pub fn status(&self) -> RepoStatus {
@@ -569,6 +600,28 @@ impl Dit {
     /// Comments of one issue, oldest first.
     pub fn comments(&self, id: &IssueId) -> Result<Vec<Comment>, DitError> {
         Ok(self.index.comments_for(id)?)
+    }
+
+    /// The most recent comments across the whole workspace, newest first,
+    /// each joined to its issue — what a timeline shows.
+    pub fn recent_comments(&self, limit: usize) -> Result<Vec<WorkspaceComment>, DitError> {
+        Ok(self.index.recent_comments(limit.clamp(1, 500))?)
+    }
+
+    /// Every release plan (DESIGN.md §15.2), dated ones first by target date,
+    /// then the undated by version — the roadmap's lane order. Answers from
+    /// the index like every read.
+    pub fn releases(&self) -> Result<Vec<IndexedRelease>, DitError> {
+        Ok(self.index.releases()?)
+    }
+
+    /// One release plan by version. A version that could not be a folder
+    /// name is simply not there — never an error, never a path.
+    pub fn release(&self, version: &str) -> Result<Option<IndexedRelease>, DitError> {
+        if validate_release_version(version).is_err() {
+            return Ok(None);
+        }
+        Ok(self.index.release(version)?)
     }
 
     /// Every doc page (§13) under the four doc roots, path-sorted.
@@ -887,6 +940,21 @@ impl Dit {
                     }
                 }
             }
+            // Release plans (§15.2) live under `.dit/releases/` in every
+            // layout. A workspace without the directory lists nothing —
+            // `ls-tree` over a missing prefix is empty, not an error.
+            for (path, _) in self.repo.ls_tree(dit_model::RELEASES_DIR)? {
+                if !dit_model::is_release_file(&path) {
+                    continue;
+                }
+                let Some(text) = self.repo.show_text(&format!("HEAD:{path}")) else {
+                    continue;
+                };
+                match dit_parse::parse_release(&text) {
+                    Ok((release, _)) => self.index.upsert_release(&release, &path)?,
+                    Err(_) => report.skipped += 1,
+                }
+            }
         }
         if matches!(mode, ReindexMode::Events | ReindexMode::All) {
             let watermark = self.index.watermark("events")?;
@@ -1019,6 +1087,30 @@ impl<'a> Transaction<'a> {
     /// Replace the markdown body; frontmatter is untouched down to the byte.
     pub fn set_body(&mut self, id: &IssueId, body: &str) -> Result<(), DitError> {
         Ok(self.store_tx.set_body(id, body)?)
+    }
+
+    /// Delete an issue: its body and its comments, in one commit. The index
+    /// drops the row when the commit is absorbed; its `field_events` stay —
+    /// history outlives its subject, and the deletion is itself the last
+    /// event. Nothing here is undoable except through git, which is the
+    /// point: the file is gone from HEAD, not from history.
+    pub fn delete_issue(&mut self, id: &IssueId) -> Result<(), DitError> {
+        match self.store_tx.remove_issue(id) {
+            Ok(()) => Ok(()),
+            Err(dit_store::StoreError::NotFound(name)) => Err(DitError::NotFound(name)),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Patch a release plan's status or target date (DESIGN.md §15.2) —
+    /// surgical, like an issue patch. The plan must already exist:
+    /// creating one is `dit release plan`'s job (v0.9).
+    pub fn set_release(&mut self, version: &str, patch: ReleasePatch) -> Result<(), DitError> {
+        match self.store_tx.set_release(version, &patch) {
+            Ok(()) => Ok(()),
+            Err(dit_store::StoreError::NotFound(name)) => Err(DitError::NotFound(name)),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Write a doc page (§13), formatted by `dit fmt` like every other
@@ -1160,9 +1252,23 @@ impl Dit {
             let Some(new_path) = fields.next_back() else {
                 continue;
             };
-            // Deletions do not originate from this tool's writes; they
-            // arrive through sync, which rebuilds the whole index anyway.
+            // A deletion names a file that is no longer at `head`; its id
+            // is read from the side that still has it. Deletions arriving
+            // through sync rebuild the whole index anyway, so this only has
+            // to be right for this tool's own `delete_issue`.
             if status.starts_with('D') {
+                let Some(old_text) = self.repo.show_text(&format!("{base}:{new_path}")) else {
+                    continue;
+                };
+                if dit_model::looks_like_issue_body(new_path, layout) {
+                    if let Ok((issue, _)) = dit_parse::parse_issue(&old_text) {
+                        self.index.remove_issue(&issue.id)?;
+                    }
+                } else if new_path.contains("/comments/") {
+                    if let Ok(comment) = dit_parse::parse_comment(&old_text) {
+                        self.index.remove_comment(&comment.id)?;
+                    }
+                }
                 continue;
             }
             let Some(text) = self.repo.show_text(&format!("{head}:{new_path}")) else {
@@ -1174,6 +1280,10 @@ impl Dit {
             if dit_model::looks_like_issue_body(new_path, layout) {
                 if let Ok((issue, _)) = dit_parse::parse_issue(&text) {
                     self.index.upsert_issue(&issue, new_path, &blob)?;
+                }
+            } else if dit_model::is_release_file(new_path) {
+                if let Ok((release, _)) = dit_parse::parse_release(&text) {
+                    self.index.upsert_release(&release, new_path)?;
                 }
             } else if new_path.contains("/comments/") {
                 if let Ok(comment) = dit_parse::parse_comment(&text) {

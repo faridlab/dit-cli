@@ -7,4 +7,4 @@ pub mod layout;
 mod store;
 
 pub use layout::Layout;
-pub use store::{Changeset, IssueFile, Store, StoreError, Transaction};
+pub use store::{Changeset, IssueFile, ReleaseFile, Store, StoreError, Transaction};

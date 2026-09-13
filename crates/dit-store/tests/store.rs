@@ -643,3 +643,125 @@ fn move_doc_can_relocate_a_page_created_in_the_same_transaction() {
     );
     assert!(!tmp.path().join("docs/first.md").exists());
 }
+
+const RELEASE: &str =
+    "---\nversion: v0.2.0\nstatus: in_uat\ntarget_ref: release/0.2.0\napproved_by: qa-lead\n---\n";
+
+#[test]
+fn release_paths_live_under_dit_whatever_the_layout() {
+    for kind in [dit_model::DataLayout::Root, dit_model::DataLayout::DotDir] {
+        let layout = Layout::with_kind("/tmp/ws", kind);
+        let path = layout.release_md("v0.2.0").unwrap();
+        let s = path.to_string_lossy().replace('\\', "/");
+        assert_eq!(s, "/tmp/ws/.dit/releases/v0.2.0/release.md", "{kind:?}");
+    }
+    let layout = Layout::with_kind("/tmp/ws", dit_model::DataLayout::Root);
+    // A version is a directory name; anything that could escape is refused
+    // before a path is ever assembled.
+    assert!(layout.release_md("../etc").is_err());
+    assert!(layout.release_md("").is_err());
+}
+
+#[test]
+fn releases_are_listed_read_and_patched_through_the_transaction() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path());
+
+    // No releases directory at all: an empty list, not an error.
+    assert!(store.list_releases().unwrap().is_empty());
+    assert!(matches!(
+        store.read_release("v0.2.0"),
+        Err(dit_store::StoreError::NotFound(_))
+    ));
+
+    let path = store.layout().release_md("v0.2.0").unwrap();
+    atomic::write(&path, RELEASE).unwrap();
+    atomic::write(
+        &store.layout().release_md("v0.1.0").unwrap(),
+        "---\nversion: v0.1.0\nstatus: released\n---\n",
+    )
+    .unwrap();
+    // A stray folder without a plan file is skipped, never fatal.
+    fs::create_dir_all(tmp.path().join(".dit/releases/junk")).unwrap();
+
+    let listed = store.list_releases().unwrap();
+    let versions: Vec<&str> = listed.iter().map(|r| r.release.version.as_str()).collect();
+    assert_eq!(versions, ["v0.1.0", "v0.2.0"]);
+    let read = store.read_release("v0.2.0").unwrap();
+    assert_eq!(read.release.status, dit_model::ReleaseStatus::InUat);
+    assert_eq!(read.path, path);
+
+    // The patch goes through the transaction like every other write.
+    let mut tx = store.transaction(now(), "farid");
+    tx.set_release(
+        "v0.2.0",
+        &dit_model::ReleasePatch {
+            status: Some(dit_model::ReleaseStatus::Released),
+            target: Some("2026-10-03".into()),
+        },
+    )
+    .unwrap();
+    // Nothing on disk until finish.
+    assert_eq!(fs::read_to_string(&path).unwrap(), RELEASE);
+    let changeset = tx.finish().unwrap();
+    assert_eq!(changeset.paths().collect::<Vec<_>>(), vec![path.as_path()]);
+    let after = fs::read_to_string(&path).unwrap();
+    assert!(after.contains("status: released"), "{after}");
+    assert!(after.contains("target: 2026-10-03"), "{after}");
+    assert!(
+        after.contains("approved_by: qa-lead"),
+        "unknown fields survive"
+    );
+
+    // A missing release is NotFound; a bad date never reaches the disk.
+    let mut tx = store.transaction(now(), "farid");
+    assert!(matches!(
+        tx.set_release("v9.9.9", &dit_model::ReleasePatch::default()),
+        Err(dit_store::StoreError::NotFound(_))
+    ));
+    assert!(tx
+        .set_release(
+            "v0.2.0",
+            &dit_model::ReleasePatch {
+                status: None,
+                target: Some("soon".into()),
+            },
+        )
+        .is_err());
+}
+
+#[test]
+fn removing_an_issue_stages_its_body_and_comments_and_prunes_the_folder() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path());
+    let mut tx = store.transaction(now(), "farid");
+    let id = tx.create_issue(draft("Doomed")).unwrap();
+    tx.add_comment(&id, "farid", "one").unwrap();
+    tx.add_comment(&id, "budi", "two").unwrap();
+    tx.finish().unwrap();
+    let body = store.layout().issue_body(&id).unwrap();
+    let folder = body.parent().unwrap().to_path_buf();
+    assert_eq!(fs::read_dir(folder.join("comments")).unwrap().count(), 2);
+
+    let mut tx = store.transaction(now(), "farid");
+    tx.remove_issue(&id).unwrap();
+    // Nothing happens until finish.
+    assert!(body.is_file());
+    let changeset = tx.finish().unwrap();
+    // Every removed file is in the changeset so git can stage the deletion.
+    let removed: Vec<_> = changeset.paths().collect();
+    assert_eq!(removed.len(), 3, "{removed:?}");
+    assert!(removed.contains(&body.as_path()));
+    assert!(!folder.exists(), "the empty folder is pruned");
+    assert!(
+        store.layout().issues_dir().is_dir(),
+        "pruning stops at the issues root"
+    );
+
+    // Gone means gone: a second removal is NotFound.
+    let mut tx = store.transaction(now(), "farid");
+    assert!(matches!(
+        tx.remove_issue(&id),
+        Err(dit_store::StoreError::NotFound(_))
+    ));
+}

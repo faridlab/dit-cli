@@ -1,7 +1,7 @@
 //! Shared state: one workspace behind a mutex, one token, one broadcast
 //! channel for live updates.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use dit_core::Dit;
 use tokio::sync::broadcast;
@@ -15,8 +15,10 @@ pub struct AppState {
     /// and reads queue behind it rather than racing it.
     pub dit: Arc<Mutex<Dit>>,
     /// The alias writes are attributed to. One server process is one
-    /// person at one machine — that is the whole v0.1 model.
-    pub me: String,
+    /// person at one machine — that is the whole v0.1 model. Behind a lock
+    /// because the settings panel can change it while the server runs; read
+    /// it through [`AppState::me`].
+    me: RwLock<String>,
     /// The bearer token every `/api` request must carry.
     pub token: String,
     /// Hostnames the `Host` header may name. The bind address is in the
@@ -32,7 +34,7 @@ impl std::fmt::Debug for AppState {
         // The token never appears in logs, not even masked — a masked
         // token in a debug dump is a hint about length and format.
         f.debug_struct("AppState")
-            .field("me", &self.me)
+            .field("me", &self.me())
             .field("allowed_hosts", &self.allowed_hosts)
             .finish_non_exhaustive()
     }
@@ -43,7 +45,7 @@ impl AppState {
         let (events, _) = broadcast::channel(16);
         Arc::new(AppState {
             dit: Arc::new(Mutex::new(dit)),
-            me: me.to_owned(),
+            me: RwLock::new(me.to_owned()),
             token: token.to_owned(),
             allowed_hosts: local_host_names(),
             events,
@@ -62,11 +64,30 @@ impl AppState {
         }
         Arc::new(AppState {
             dit: Arc::new(Mutex::new(dit)),
-            me: me.to_owned(),
+            me: RwLock::new(me.to_owned()),
             token: token.to_owned(),
             allowed_hosts: allowed,
             events,
         })
+    }
+
+    /// The alias writes are attributed to right now. Empty when the server
+    /// knows nobody. A poisoned lock (a panic mid-write of a `String`) is not
+    /// a state worth failing a request over — the old value is still a name.
+    pub fn me(&self) -> String {
+        match self.me.read() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// Point later writes at a new alias. The caller has already persisted
+    /// it through the facade; this only updates what the handlers read.
+    pub fn set_me(&self, alias: &str) {
+        match self.me.write() {
+            Ok(mut guard) => *guard = alias.to_owned(),
+            Err(poisoned) => *poisoned.into_inner() = alias.to_owned(),
+        }
     }
 
     /// Tell every connected client the index moved. Failures are drops

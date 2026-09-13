@@ -24,7 +24,8 @@ use dit_core::{
     about = "Project management where Markdown files in git are the source of truth"
 )]
 struct Cli {
-    /// The alias your commits are attributed to (default: $DIT_ME, then $USER).
+    /// The alias your commits are attributed to (default: $DIT_ME, then the
+    /// alias saved in this clone by `dit ui`'s settings panel, then $USER).
     #[arg(long, global = true)]
     me: Option<String>,
 
@@ -263,7 +264,7 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<ExitCode, DitError> {
-    let me = alias(&cli);
+    let explicit = alias(&cli);
     match cli.command {
         Command::Init { layout } => {
             let cwd = std::env::current_dir()?;
@@ -293,9 +294,10 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
             );
             Ok(ExitCode::SUCCESS)
         }
-        Command::Issue { cmd } => issue(cmd, &me),
+        Command::Issue { cmd } => issue(cmd, explicit.as_deref()),
         Command::List { query } => {
             let dit = open()?;
+            let me = me_for(&dit, explicit.as_deref());
             let hits = dit.query(&query.join(" "), Some(&me))?;
             print_list(&hits);
             println!(
@@ -406,6 +408,7 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
             // The same token file the standalone server reads, so `dit ui`
             // and `dit-server` hand the same URL shape for one workspace.
             let token = dit_server::config::load_or_create_token(&dit.root().join(".dit-cache"))?;
+            let me = me_for(&dit, explicit.as_deref());
             let state = dit_server::AppState::with_bind_host(dit, &me, &token, &host);
             let app = dit_server::app(state);
             let display_host = if host == "0.0.0.0" {
@@ -521,7 +524,7 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
     }
 }
 
-fn issue(cmd: Issue, me: &str) -> Result<ExitCode, DitError> {
+fn issue(cmd: Issue, explicit: Option<&str>) -> Result<ExitCode, DitError> {
     match cmd {
         Issue::New {
             title,
@@ -540,7 +543,8 @@ fn issue(cmd: Issue, me: &str) -> Result<ExitCode, DitError> {
                 return Ok(ExitCode::from(2));
             }
             let mut dit = open()?;
-            let mut tx = dit.transaction(me)?;
+            let me = me_for(&dit, explicit);
+            let mut tx = dit.transaction(&me)?;
             let draft = IssueDraft {
                 title: title.clone(),
                 kind: kind.into(),
@@ -626,7 +630,8 @@ fn issue(cmd: Issue, me: &str) -> Result<ExitCode, DitError> {
             }
             let mut dit = open()?;
             let id = resolve(&dit, &reference)?;
-            let mut tx = dit.transaction(me)?;
+            let me = me_for(&dit, explicit);
+            let mut tx = dit.transaction(&me)?;
             tx.set_fields(&id, patch)?;
             tx.commit(&format!("update {reference}"))?;
             println!("updated {}", id.short_ref().as_str());
@@ -640,8 +645,9 @@ fn issue(cmd: Issue, me: &str) -> Result<ExitCode, DitError> {
             }
             let mut dit = open()?;
             let id = resolve(&dit, &reference)?;
-            let mut tx = dit.transaction(me)?;
-            tx.comment(&id, me, &body)?;
+            let me = me_for(&dit, explicit);
+            let mut tx = dit.transaction(&me)?;
+            tx.comment(&id, &me, &body)?;
             tx.commit(&format!("comment on {reference}"))?;
             println!("commented on {}", id.short_ref().as_str());
             Ok(ExitCode::SUCCESS)
@@ -706,6 +712,21 @@ fn parse_patch(fields: &[String]) -> Result<FieldPatch, String> {
         let (key, value) = f
             .split_once('=')
             .ok_or_else(|| format!("`{f}` is not field=value"))?;
+        // `due=` with nothing after it clears an optional field — the same
+        // three states the API offers, spelled the shell's way.
+        if value.is_empty() {
+            let field = match key {
+                "priority" => dit_core::ClearableField::Priority,
+                "epic" => dit_core::ClearableField::Epic,
+                "estimate" => dit_core::ClearableField::Estimate,
+                "sprint" => dit_core::ClearableField::Sprint,
+                "due" => dit_core::ClearableField::Due,
+                "start" => dit_core::ClearableField::Start,
+                other => return Err(format!("`{other}` cannot be cleared — give it a value")),
+            };
+            patch.clear.push(field);
+            continue;
+        }
         match key {
             "title" => patch.title = Some(value.to_owned()),
             "type" | "kind" => {
@@ -730,6 +751,12 @@ fn parse_patch(fields: &[String]) -> Result<FieldPatch, String> {
                 });
             }
             "reporter" => patch.reporter = Some(value.to_owned()),
+            "epic" => {
+                patch.epic = Some(
+                    IssueId::parse(value)
+                        .map_err(|e| format!("`{value}` is not an issue id: {e}"))?,
+                );
+            }
             "assignees" => patch.assignees = Some(split_list(value)),
             "labels" => patch.labels = Some(split_list(value)),
             "sprint" => patch.sprint = Some(value.to_owned()),
@@ -790,10 +817,18 @@ fn open() -> Result<Dit, DitError> {
     Dit::open(&cwd)
 }
 
-fn alias(cli: &Cli) -> String {
-    cli.me
-        .clone()
-        .or_else(|| std::env::var("DIT_ME").ok())
+/// The alias the user named explicitly — the flag, then `$DIT_ME`. `None`
+/// means "ask the workspace", which needs an open `Dit` (see [`me_for`]).
+fn alias(cli: &Cli) -> Option<String> {
+    cli.me.clone().or_else(|| std::env::var("DIT_ME").ok())
+}
+
+/// The alias writes are attributed to: what the user said, else what this
+/// clone saved (the settings panel's `me`), else the machine's `$USER`.
+fn me_for(dit: &Dit, explicit: Option<&str>) -> String {
+    explicit
+        .map(str::to_owned)
+        .or_else(|| dit.me())
         .or_else(|| std::env::var("USER").ok())
         .unwrap_or_else(|| "unknown".to_owned())
 }

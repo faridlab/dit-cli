@@ -22,7 +22,10 @@
 
 use std::path::Path;
 
-use dit_model::{ChangeSummary, Comment, DayCount, FieldEvent, Issue, IssueId, StoredFieldEvent};
+use dit_model::{
+    ChangeSummary, Comment, DayCount, FieldEvent, Issue, IssueId, Release, ReleaseStatus,
+    StoredFieldEvent,
+};
 use dit_query::{compile, Compiled, Query, SqlVal};
 use rusqlite::{params, Connection, OptionalExtension};
 use time::OffsetDateTime;
@@ -42,6 +45,28 @@ pub struct IndexedIssue {
     pub issue: Issue,
     pub path: String,
     pub blob_sha: String,
+}
+
+/// A release plan as stored (DESIGN.md §15.2), plus where its file lives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexedRelease {
+    pub release: Release,
+    pub path: String,
+}
+
+/// One row of the workspace-wide comment feed: the comment plus enough of
+/// its issue to render a feed line without a second lookup per row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceComment {
+    pub comment: Comment,
+    pub issue_id: IssueId,
+    /// `Some(12)` displays as `#12`; `None` until the issue is numbered, or
+    /// when the issue is no longer indexed.
+    pub number: Option<u32>,
+    /// Empty when the issue is gone — a comment outlives its subject in the
+    /// index only until the next state rebuild, but the feed must not die
+    /// on that window.
+    pub title: String,
 }
 
 const SCHEMA: &str = r#"
@@ -77,6 +102,27 @@ CREATE TABLE IF NOT EXISTS issue_labels (
   pos      INTEGER NOT NULL,
   label    TEXT NOT NULL,
   PRIMARY KEY (issue_id, label)
+);
+CREATE TABLE IF NOT EXISTS issue_blocked_by (
+  issue_id      TEXT NOT NULL,
+  pos           INTEGER NOT NULL,
+  blocked_by_id TEXT NOT NULL,
+  PRIMARY KEY (issue_id, blocked_by_id)
+);
+
+CREATE TABLE IF NOT EXISTS releases (
+  version    TEXT PRIMARY KEY,
+  path       TEXT NOT NULL,
+  status     TEXT NOT NULL,
+  target_ref TEXT,
+  repo       TEXT,
+  target     TEXT
+);
+CREATE TABLE IF NOT EXISTS release_includes (
+  version  TEXT NOT NULL,
+  pos      INTEGER NOT NULL,
+  issue_id TEXT NOT NULL,
+  PRIMARY KEY (version, issue_id)
 );
 
 CREATE TABLE IF NOT EXISTS comments (
@@ -129,7 +175,7 @@ END;
 /// Bumped whenever the schema below changes shape. The index is disposable —
 /// an on-disk file stamped with an older version is dropped and rebuilt from
 /// git rather than migrated in place (§6: SQLite is only an index).
-const INDEX_VERSION: i64 = 3;
+const INDEX_VERSION: i64 = 4;
 
 /// The default row cap when a query names no limit. A cap exists because the
 /// API serves people, not exports; a workspace that genuinely holds more
@@ -193,6 +239,9 @@ impl Index {
                 "DROP TABLE IF EXISTS issues_fts;
                  DROP TABLE IF EXISTS issue_assignees;
                  DROP TABLE IF EXISTS issue_labels;
+                 DROP TABLE IF EXISTS issue_blocked_by;
+                 DROP TABLE IF EXISTS releases;
+                 DROP TABLE IF EXISTS release_includes;
                  DROP TABLE IF EXISTS comments;
                  DROP TABLE IF EXISTS field_events;
                  DROP TABLE IF EXISTS state;
@@ -263,6 +312,18 @@ impl Index {
             issue.id.as_str(),
             &issue.labels,
         )?;
+        let blockers: Vec<String> = issue
+            .blocked_by
+            .iter()
+            .map(|b| b.as_str().to_owned())
+            .collect();
+        replace_set(
+            &tx,
+            "issue_blocked_by",
+            "blocked_by_id",
+            issue.id.as_str(),
+            &blockers,
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -277,6 +338,10 @@ impl Index {
         )?;
         tx.execute(
             "DELETE FROM issue_labels WHERE issue_id = ?1",
+            params![id.as_str()],
+        )?;
+        tx.execute(
+            "DELETE FROM issue_blocked_by WHERE issue_id = ?1",
             params![id.as_str()],
         )?;
         tx.execute(
@@ -303,6 +368,54 @@ impl Index {
                 comment.body
             ],
         )?;
+        Ok(())
+    }
+
+    /// Insert or replace one release plan, keeping `release_includes` in
+    /// step. Like issues: only called after the file exists in a commit.
+    pub fn upsert_release(&mut self, release: &Release, path: &str) -> Result<(), IndexError> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "DELETE FROM releases WHERE version = ?1",
+            params![release.version],
+        )?;
+        tx.execute(
+            "INSERT INTO releases (version, path, status, target_ref, repo, target) \
+             VALUES (?1,?2,?3,?4,?5,?6)",
+            params![
+                release.version,
+                path,
+                release.status.as_str(),
+                release.target_ref,
+                release.repo,
+                release.target,
+            ],
+        )?;
+        tx.execute(
+            "DELETE FROM release_includes WHERE version = ?1",
+            params![release.version],
+        )?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR IGNORE INTO release_includes (version, pos, issue_id) VALUES (?1, ?2, ?3)",
+            )?;
+            for (pos, id) in release.includes.iter().enumerate() {
+                stmt.execute(params![release.version, pos as i64, id.as_str()])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Drop a release entirely — the plan file is gone from the repo.
+    pub fn remove_release(&mut self, version: &str) -> Result<(), IndexError> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM releases WHERE version = ?1", params![version])?;
+        tx.execute(
+            "DELETE FROM release_includes WHERE version = ?1",
+            params![version],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -363,6 +476,9 @@ impl Index {
             "issues",
             "issue_assignees",
             "issue_labels",
+            "issue_blocked_by",
+            "releases",
+            "release_includes",
             "comments",
             "field_events",
             "state",
@@ -379,7 +495,15 @@ impl Index {
     /// half and has nothing to gain from being redone.
     pub fn wipe_state(&mut self) -> Result<(), IndexError> {
         let tx = self.conn.transaction()?;
-        for table in ["issues", "issue_assignees", "issue_labels", "comments"] {
+        for table in [
+            "issues",
+            "issue_assignees",
+            "issue_labels",
+            "issue_blocked_by",
+            "releases",
+            "release_includes",
+            "comments",
+        ] {
             tx.execute(&format!("DELETE FROM {table}"), [])?;
         }
         tx.commit()?;
@@ -404,7 +528,8 @@ impl Index {
         };
         let assignees = self.set_for("issue_assignees", "alias", id)?;
         let labels = self.set_for("issue_labels", "label", id)?;
-        Ok(Some(hydrate(id, cols, assignees, labels)?))
+        let blocked_by = self.set_for("issue_blocked_by", "blocked_by_id", id)?;
+        Ok(Some(hydrate(id, cols, assignees, labels, blocked_by)?))
     }
 
     /// Every issue matching a compiled DQL query. Reads never touch the
@@ -441,7 +566,8 @@ impl Index {
                 .map_err(|e| IndexError::Corrupt(format!("issue id `{id_str}`: {e}")))?;
             let assignees = self.set_for("issue_assignees", "alias", &id)?;
             let labels = self.set_for("issue_labels", "label", &id)?;
-            found.push(hydrate(&id, cols, assignees, labels)?);
+            let blocked_by = self.set_for("issue_blocked_by", "blocked_by_id", &id)?;
+            found.push(hydrate(&id, cols, assignees, labels, blocked_by)?);
         }
         Ok(found)
     }
@@ -555,6 +681,112 @@ impl Index {
                 author,
                 created: at,
                 body,
+            });
+        }
+        Ok(out)
+    }
+
+    /// One release plan by version.
+    pub fn release(&self, version: &str) -> Result<Option<IndexedRelease>, IndexError> {
+        let Some(cols) = self
+            .conn
+            .query_row(
+                "SELECT version, path, status, target_ref, repo, target FROM releases \
+                 WHERE version = ?1",
+                params![version],
+                release_columns,
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(self.hydrate_release(cols)?))
+    }
+
+    /// Every release plan: dated ones first, soonest first, then the undated
+    /// ones by version — the order a roadmap draws them in.
+    pub fn releases(&self) -> Result<Vec<IndexedRelease>, IndexError> {
+        let rows: Vec<ReleaseCols> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT version, path, status, target_ref, repo, target FROM releases \
+                 ORDER BY target IS NULL, target, version",
+            )?;
+            let rows = stmt.query_map([], release_columns)?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        rows.into_iter()
+            .map(|cols| self.hydrate_release(cols))
+            .collect()
+    }
+
+    fn hydrate_release(&self, cols: ReleaseCols) -> Result<IndexedRelease, IndexError> {
+        let status = ReleaseStatus::parse(&cols.status).ok_or_else(|| {
+            IndexError::Corrupt(format!("field `status` holds `{}`", cols.status))
+        })?;
+        let includes = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT issue_id FROM release_includes WHERE version = ?1 ORDER BY pos")?;
+            let ids = stmt
+                .query_map(params![cols.version], |r| r.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            ids.iter()
+                .map(|id| {
+                    IssueId::parse(id)
+                        .map_err(|e| IndexError::Corrupt(format!("field `includes`: {e}")))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        Ok(IndexedRelease {
+            release: Release {
+                version: cols.version,
+                status,
+                target_ref: cols.target_ref,
+                repo: cols.repo,
+                target: cols.target,
+                includes,
+            },
+            path: cols.path,
+        })
+    }
+
+    /// The most recent comments across every issue, newest first by their
+    /// `created` stamp (comment order is a wall-clock question by definition —
+    /// comments are append-only files with no `seq`). The issue is joined in
+    /// so a feed line renders without a lookup per row; a comment whose issue
+    /// is not indexed still appears, with an empty title.
+    pub fn recent_comments(&self, limit: usize) -> Result<Vec<WorkspaceComment>, IndexError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT c.id, c.issue_id, c.author, c.at, c.body, i.number, i.title \
+             FROM comments c LEFT JOIN issues i ON i.id = c.issue_id \
+             ORDER BY c.at DESC, c.id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, Option<i64>>(5)?,
+                r.get::<_, Option<String>>(6)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, issue_id, author, at, body, number, title) = row?;
+            out.push(WorkspaceComment {
+                comment: Comment {
+                    id: IssueId::parse(&id)
+                        .map_err(|e| IndexError::Corrupt(format!("comment id `{id}`: {e}")))?,
+                    author,
+                    created: at,
+                    body,
+                },
+                issue_id: IssueId::parse(&issue_id)
+                    .map_err(|e| IndexError::Corrupt(format!("issue id `{issue_id}`: {e}")))?,
+                number: number.map(|n| n as u32),
+                title: title.unwrap_or_default(),
             });
         }
         Ok(out)
@@ -859,6 +1091,27 @@ fn bindable(params: &[SqlVal]) -> Vec<rusqlite::types::Value> {
         .collect()
 }
 
+/// The `releases` row, before the includes are joined in.
+struct ReleaseCols {
+    version: String,
+    path: String,
+    status: String,
+    target_ref: Option<String>,
+    repo: Option<String>,
+    target: Option<String>,
+}
+
+fn release_columns(r: &rusqlite::Row<'_>) -> rusqlite::Result<ReleaseCols> {
+    Ok(ReleaseCols {
+        version: r.get(0)?,
+        path: r.get(1)?,
+        status: r.get(2)?,
+        target_ref: r.get(3)?,
+        repo: r.get(4)?,
+        target: r.get(5)?,
+    })
+}
+
 /// Column bundle shared by the two read shapes.
 struct IssueCols {
     path: String,
@@ -941,9 +1194,16 @@ fn hydrate(
     cols: IssueCols,
     assignees: Vec<String>,
     labels: Vec<String>,
+    blocked_by: Vec<String>,
 ) -> Result<IndexedIssue, IndexError> {
     let corrupt =
         |field: &str, raw: &str| IndexError::Corrupt(format!("field `{field}` holds `{raw}`"));
+    let blocked_by = blocked_by
+        .iter()
+        .map(|b| {
+            IssueId::parse(b).map_err(|e| IndexError::Corrupt(format!("field `blocked_by`: {e}")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(IndexedIssue {
         issue: Issue {
             id: *id,
@@ -974,7 +1234,7 @@ fn hydrate(
             updated: cols.updated,
             due: cols.due,
             start: cols.start,
-            blocked_by: Vec::new(),
+            blocked_by,
             body: cols.body,
         },
         path: cols.path,
@@ -986,7 +1246,7 @@ fn hydrate(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use dit_model::{EventSource, IssueKind, Priority};
+    use dit_model::{EventSource, IssueKind, Priority, Release, ReleaseStatus};
 
     fn sample_issue(id: &str, status: &str) -> Issue {
         Issue {
@@ -1051,6 +1311,152 @@ mod tests {
         assert_eq!(got.path, ".dit/issues/2026/08/xxx-issue/issue.md");
         assert_eq!(got.blob_sha, "ab12");
         assert_eq!(got.issue.id.short_ref().as_str(), "R7VN8P4");
+    }
+
+    #[test]
+    fn blocked_by_round_trips_in_file_order() {
+        let mut idx = Index::in_memory().unwrap();
+        let mut issue = sample_issue(ID, "todo");
+        let a = IssueId::parse(OTHER).unwrap();
+        let b = IssueId::parse("01K3M9ZXQ2YYYYYYYYYYYYYYYY").unwrap();
+        issue.blocked_by = vec![b, a];
+        idx.upsert_issue(&issue, "p", "s1").unwrap();
+
+        let got = idx.get_issue(&issue.id).unwrap().unwrap();
+        assert_eq!(
+            got.issue.blocked_by,
+            vec![b, a],
+            "order is the file's order"
+        );
+        assert_eq!(got.issue, issue);
+
+        // The list read shape sees the same blockers.
+        let listed = idx
+            .search(&dql(""), None, OffsetDateTime::UNIX_EPOCH)
+            .unwrap();
+        assert_eq!(listed[0].issue.blocked_by, vec![b, a]);
+
+        // Clearing the list clears the side table too.
+        issue.blocked_by = vec![];
+        idx.upsert_issue(&issue, "p", "s2").unwrap();
+        let got = idx.get_issue(&issue.id).unwrap().unwrap();
+        assert!(got.issue.blocked_by.is_empty());
+    }
+
+    #[test]
+    fn recent_comments_are_newest_first_and_carry_their_issue() {
+        let mut idx = Index::in_memory().unwrap();
+        let issue = sample_issue(ID, "todo");
+        idx.upsert_issue(&issue, "p", "s").unwrap();
+        let comment = |id: &str, at: &str| Comment {
+            id: IssueId::parse(id).unwrap(),
+            author: "budi".into(),
+            created: at.into(),
+            body: "note".into(),
+        };
+        idx.upsert_comment(
+            &issue.id,
+            &comment("01K3MA1F7XQW8N2V5RTGBCDEF0", "2026-08-16T10:00:00Z"),
+        )
+        .unwrap();
+        idx.upsert_comment(
+            &issue.id,
+            &comment("01K3MA1F7XQW8N2V5RTGBCDEF1", "2026-08-17T10:00:00Z"),
+        )
+        .unwrap();
+        // A comment whose issue was never indexed still shows up — with the
+        // handle derived from its id and no title, like the activity feed.
+        let orphan_issue = IssueId::parse(OTHER).unwrap();
+        idx.upsert_comment(
+            &orphan_issue,
+            &comment("01K3MA1F7XQW8N2V5RTGBCDEF2", "2026-08-18T10:00:00Z"),
+        )
+        .unwrap();
+
+        let feed = idx.recent_comments(10).unwrap();
+        assert_eq!(feed.len(), 3);
+        assert_eq!(feed[0].comment.created, "2026-08-18T10:00:00Z");
+        assert_eq!(feed[0].issue_id, orphan_issue);
+        assert_eq!(feed[0].title, "");
+        assert_eq!(feed[0].number, None);
+        assert_eq!(feed[1].comment.created, "2026-08-17T10:00:00Z");
+        assert_eq!(feed[1].issue_id, issue.id);
+        assert_eq!(feed[1].title, "Login timeout");
+        assert_eq!(feed[2].comment.id.as_str(), "01K3MA1F7XQW8N2V5RTGBCDEF0");
+
+        // The limit is honoured.
+        assert_eq!(idx.recent_comments(1).unwrap().len(), 1);
+    }
+
+    fn sample_release(version: &str, target: Option<&str>) -> Release {
+        Release {
+            version: version.into(),
+            status: ReleaseStatus::Planned,
+            target_ref: Some(format!("release/{version}")),
+            repo: Some("api".into()),
+            target: target.map(str::to_owned),
+            includes: vec![],
+        }
+    }
+
+    #[test]
+    fn releases_round_trip_and_order_by_target_then_version() {
+        let mut idx = Index::in_memory().unwrap();
+        // Nothing indexed: an empty list, not an error.
+        assert!(idx.releases().unwrap().is_empty());
+        assert!(idx.release("v0.2.0").unwrap().is_none());
+
+        let mut dated = sample_release("v0.2.0", Some("2026-10-01"));
+        let a = IssueId::parse(ID).unwrap();
+        let b = IssueId::parse(OTHER).unwrap();
+        dated.includes = vec![b, a];
+        idx.upsert_release(&dated, ".dit/releases/v0.2.0/release.md")
+            .unwrap();
+        idx.upsert_release(
+            &sample_release("v0.1.0", Some("2026-09-01")),
+            ".dit/releases/v0.1.0/release.md",
+        )
+        .unwrap();
+        idx.upsert_release(
+            &sample_release("v0.9.0", None),
+            ".dit/releases/v0.9.0/release.md",
+        )
+        .unwrap();
+        idx.upsert_release(
+            &sample_release("v0.3.0", None),
+            ".dit/releases/v0.3.0/release.md",
+        )
+        .unwrap();
+
+        let got = idx.release("v0.2.0").unwrap().unwrap();
+        assert_eq!(got.release, dated, "includes keep the file's order");
+        assert_eq!(got.path, ".dit/releases/v0.2.0/release.md");
+
+        // Dated releases first, soonest first; undated ones after, by version.
+        let versions: Vec<String> = idx
+            .releases()
+            .unwrap()
+            .into_iter()
+            .map(|r| r.release.version)
+            .collect();
+        assert_eq!(versions, ["v0.1.0", "v0.2.0", "v0.3.0", "v0.9.0"]);
+
+        // Re-upserting replaces the includes rather than appending.
+        dated.includes = vec![a];
+        dated.status = ReleaseStatus::Released;
+        idx.upsert_release(&dated, ".dit/releases/v0.2.0/release.md")
+            .unwrap();
+        let got = idx.release("v0.2.0").unwrap().unwrap();
+        assert_eq!(got.release.includes, vec![a]);
+        assert_eq!(got.release.status, ReleaseStatus::Released);
+
+        idx.remove_release("v0.2.0").unwrap();
+        assert!(idx.release("v0.2.0").unwrap().is_none());
+        assert_eq!(idx.releases().unwrap().len(), 3);
+
+        // A state wipe clears releases with the issues.
+        idx.wipe_state().unwrap();
+        assert!(idx.releases().unwrap().is_empty());
     }
 
     #[test]

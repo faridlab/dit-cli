@@ -26,7 +26,8 @@ struct Args {
     host: String,
     #[arg(long, default_value_t = 7700)]
     port: u16,
-    /// The alias writes are attributed to. Default: $DIT_ME, then $USER.
+    /// The alias writes are attributed to. Default: $DIT_ME, then the alias
+    /// saved in this clone (`dit.me`, set from the settings panel), then $USER.
     #[arg(long)]
     me: Option<String>,
     /// Use this token instead of the one stored in the workspace cache.
@@ -69,6 +70,7 @@ fn run(args: Args, workspace: PathBuf) -> Result<(), String> {
     let me = args
         .me
         .or_else(|| std::env::var("DIT_ME").ok())
+        .or_else(|| dit.me())
         .or_else(|| std::env::var("USER").ok())
         .unwrap_or_default();
 

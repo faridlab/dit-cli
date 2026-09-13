@@ -13,7 +13,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use dit_model::{
-    format_rfc3339, Comment, DocPath, FieldPatch, Issue, IssueDraft, IssueId, ISSUE_BODY_FILE,
+    format_rfc3339, Comment, DocPath, FieldPatch, Issue, IssueDraft, IssueId, Release,
+    ReleasePatch, ISSUE_BODY_FILE, RELEASE_FILE,
 };
 use dit_parse::Document;
 use time::OffsetDateTime;
@@ -29,6 +30,10 @@ pub enum StoreError {
     Parse(#[from] dit_parse::IssueParseError),
     #[error(transparent)]
     Comment(#[from] dit_parse::CommentError),
+    #[error(transparent)]
+    Release(#[from] dit_parse::ReleaseParseError),
+    #[error("{0}")]
+    BadVersion(String),
     #[error(transparent)]
     Frontmatter(#[from] dit_parse::FrontmatterError),
     #[error(transparent)]
@@ -54,6 +59,14 @@ pub enum StoreError {
 pub struct IssueFile {
     pub path: PathBuf,
     pub issue: Issue,
+    pub doc: Document,
+}
+
+/// A single release's plan file, opened for editing or reading.
+#[derive(Debug)]
+pub struct ReleaseFile {
+    pub path: PathBuf,
+    pub release: Release,
     pub doc: Document,
 }
 
@@ -144,6 +157,45 @@ impl Store {
             // it is user-visible data someone wrote by hand.
             out.push(dit_parse::parse_comment(&text)?);
         }
+        Ok(out)
+    }
+
+    /// Read one release's plan file from disk (write path / bootstrap only).
+    pub fn read_release(&self, version: &str) -> Result<ReleaseFile, StoreError> {
+        let path = self.layout.release_md(version)?;
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(StoreError::NotFound(version.to_owned()))
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let (release, doc) = dit_parse::parse_release(&text)?;
+        Ok(ReleaseFile { path, release, doc })
+    }
+
+    /// Every release plan on disk, by version. Folders without a plan file
+    /// and files that do not parse are skipped — this walk is discovery, and
+    /// one broken plan must not hide every other. A workspace with no
+    /// `.dit/releases/` at all simply has none.
+    pub fn list_releases(&self) -> Result<Vec<ReleaseFile>, StoreError> {
+        let entries = match fs::read_dir(self.layout.releases_dir()) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut out = Vec::new();
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path().join(RELEASE_FILE);
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            if let Ok((release, doc)) = dit_parse::parse_release(&text) {
+                out.push(ReleaseFile { path, release, doc });
+            }
+        }
+        out.sort_by(|a, b| a.release.version.cmp(&b.release.version));
         Ok(out)
     }
 
@@ -366,6 +418,37 @@ impl Transaction {
         Ok(())
     }
 
+    /// Stage the removal of an issue: its body file and every comment file
+    /// in its folder. The folder itself goes when `finish` prunes what the
+    /// removals left empty. Issues created earlier in this transaction are
+    /// not removable — they are not on disk yet, and a create-then-delete
+    /// in one write is a bug in the caller, not a workflow.
+    pub fn remove_issue(&mut self, id: &IssueId) -> Result<(), StoreError> {
+        let dir = self
+            .store
+            .layout
+            .issue_dir_for(id)?
+            .ok_or_else(|| StoreError::NotFound(id.as_str().to_owned()))?;
+        let body = Layout::body_file_in(&dir)
+            .filter(|p| p.is_file())
+            .ok_or_else(|| StoreError::NotFound(id.as_str().to_owned()))?;
+        let mut files = vec![body];
+        match fs::read_dir(dir.join("comments")) {
+            Ok(entries) => files.extend(
+                entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().is_some_and(|x| x == "md")),
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        for file in files {
+            self.push_staged(file, StagedWrite::Remove);
+        }
+        Ok(())
+    }
+
     /// Replace the markdown body (formatted canonically), leaving frontmatter
     /// untouched down to the byte.
     pub fn set_body(&mut self, id: &IssueId, body: &str) -> Result<(), StoreError> {
@@ -381,6 +464,21 @@ impl Transaction {
             format!("\n{body}")
         };
         doc.set_body(body);
+        self.push_staged(path, StagedWrite::Write(doc.to_string()));
+        Ok(())
+    }
+
+    /// Patch a release plan (status, target date) surgically. The file must
+    /// exist — creating plans is `dit release plan`'s job (§15.3, v0.9).
+    pub fn set_release(&mut self, version: &str, patch: &ReleasePatch) -> Result<(), StoreError> {
+        let path = self.store.layout.release_md(version)?;
+        let staged_here = self.staged.iter().any(|s| s.path == path);
+        if !staged_here && !path.is_file() {
+            return Err(StoreError::NotFound(version.to_owned()));
+        }
+        let current = self.current_bytes(&path)?;
+        let mut doc = Document::parse(&current)?;
+        dit_parse::apply_release_patch(&mut doc, patch)?;
         self.push_staged(path, StagedWrite::Write(doc.to_string()));
         Ok(())
     }
@@ -474,6 +572,7 @@ impl Transaction {
     /// the already-applied prefix is rolled back before the error returns.
     pub fn finish(self) -> Result<Changeset, StoreError> {
         let mut applied: Vec<Applied> = Vec::new();
+        let issues_root = self.store.layout.issues_dir();
         for s in &self.staged {
             let previous = fs::read(&s.path).ok();
             let outcome = match &s.write {
@@ -483,7 +582,14 @@ impl Transaction {
                     // transaction's end state true — record it as applied so
                     // a rollback still knows there is nothing to restore.
                     None => Ok(()),
-                    Some(_) => atomic::remove_file(&s.path),
+                    Some(_) => atomic::remove_file(&s.path).map(|_| {
+                        // A removed issue must not leave its empty folder
+                        // behind; the walk stops at the issues root and is a
+                        // no-op for paths outside it (doc pages).
+                        if let Some(parent) = s.path.parent() {
+                            atomic::prune_empty_dirs_up_to(parent, &issues_root);
+                        }
+                    }),
                 },
             };
             match outcome {
@@ -492,7 +598,6 @@ impl Transaction {
                     previous,
                 }),
                 Err(e) => {
-                    let issues_root = self.store.layout.issues_dir();
                     Changeset {
                         author: self.author,
                         applied,
@@ -506,7 +611,7 @@ impl Transaction {
         Ok(Changeset {
             author: self.author,
             applied,
-            issues_root: self.store.layout.issues_dir(),
+            issues_root,
         })
     }
 }

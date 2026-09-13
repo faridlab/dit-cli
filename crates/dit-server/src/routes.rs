@@ -19,8 +19,8 @@ use tokio::sync::broadcast;
 
 use crate::dto::{
     self, ActivityPageDto, ActivitySummaryDto, BoardColumnDto, BoardDto, BoardIssueDto, CommentDto,
-    DocBodyDto, DocEntryDto, FieldEventDto, IssueDto, IssueListDto, RenderInputDto,
-    RenderOutputDto, SchemaDto, SettingsDto, StatusInfo,
+    DocBodyDto, DocEntryDto, FieldEventDto, IssueDto, IssueListDto, ReleaseDto, RenderInputDto,
+    RenderOutputDto, SchemaDto, SettingsDto, StatusInfo, WorkspaceCommentDto,
 };
 use crate::state::AppState;
 
@@ -36,13 +36,22 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/api/status", get(get_status))
         .route("/api/schema", get(get_schema))
         .route("/api/issues", get(list_issues).post(create_issue))
-        .route("/api/issues/{id}", get(get_issue).patch(patch_issue))
+        .route(
+            "/api/issues/{id}",
+            get(get_issue).patch(patch_issue).delete(delete_issue),
+        )
         .route("/api/issues/{id}/body", put(put_body))
         .route(
             "/api/issues/{id}/comments",
             get(list_comments).post(post_comment),
         )
         .route("/api/issues/{id}/history", get(get_history))
+        .route("/api/comments", get(list_recent_comments))
+        .route("/api/releases", get(list_releases))
+        .route(
+            "/api/releases/{version}",
+            axum::routing::patch(patch_release),
+        )
         .route("/api/board", get(get_board))
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/docs", get(list_docs))
@@ -216,7 +225,7 @@ where
 // -- handlers -----------------------------------------------------------------
 
 async fn get_status(State(state): State<Arc<AppState>>) -> Result<Json<StatusInfo>, ApiError> {
-    let me = state.me.clone();
+    let me = state.me();
     let info = read_dit(&state, move |dit| {
         let repo = dit.status();
         Ok(StatusInfo {
@@ -253,7 +262,7 @@ async fn list_issues(
     let q = params.q.unwrap_or_default();
     let limit = params.limit.unwrap_or(100).clamp(1, 500);
     let offset = params.offset.unwrap_or(0);
-    let me = state.me.clone();
+    let me = state.me();
     let list = read_dit(&state, move |dit| {
         dit.query(&q, (!me.is_empty()).then_some(me.as_str()))
             .map_err(ServerError::Dit)
@@ -308,7 +317,7 @@ async fn create_issue(
         ),
         None => None,
     };
-    let me = state.me.clone();
+    let me = state.me();
     let title = input.title.clone();
     let issue = write_dit(&state, move |dit| {
         let draft = dit_core::IssueDraft {
@@ -351,7 +360,7 @@ async fn patch_issue(
     Json(input): Json<dto::SetIssueDto>,
 ) -> Result<Json<IssueDto>, ApiError> {
     let patch = dto::to_field_patch(input.set).map_err(ServerError::BadRequest)?;
-    let me = state.me.clone();
+    let me = state.me();
     let needle = id;
     let issue = write_dit(&state, move |dit| {
         let target = resolve(dit, &needle)?;
@@ -368,12 +377,35 @@ async fn patch_issue(
     Ok(Json(issue))
 }
 
+/// Delete an issue and its comments in one commit. 204 with no body; the
+/// issue's history stays readable through the activity feed, which already
+/// tolerates a subject that no longer exists.
+async fn delete_issue(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let me = state.me();
+    let needle = id;
+    write_dit(&state, move |dit| {
+        let target = resolve(dit, &needle)?;
+        let id = target.issue.id;
+        let short = id.short_ref().as_str().to_owned();
+        let mut tx = dit.transaction(&me).map_err(ServerError::Dit)?;
+        tx.delete_issue(&id).map_err(ServerError::Dit)?;
+        tx.commit(&format!("delete {short}: {}", target.issue.title))
+            .map_err(ServerError::Dit)?;
+        Ok(())
+    })
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn put_body(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(input): Json<dto::BodyDto>,
 ) -> Result<Json<IssueDto>, ApiError> {
-    let me = state.me.clone();
+    let me = state.me();
     let needle = id;
     let issue = write_dit(&state, move |dit| {
         let target = resolve(dit, &needle)?;
@@ -421,7 +453,7 @@ async fn put_doc(
     Path(path): Path<String>,
     Json(input): Json<dto::BodyDto>,
 ) -> Result<Json<DocBodyDto>, ApiError> {
-    let me = state.me.clone();
+    let me = state.me();
     let saved = write_dit(&state, move |dit| {
         let mut tx = dit.transaction(&me).map_err(ServerError::Dit)?;
         tx.write_doc(&path, &input.body).map_err(ServerError::Dit)?;
@@ -439,7 +471,7 @@ async fn delete_doc(
     State(state): State<Arc<AppState>>,
     Path(path): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let me = state.me.clone();
+    let me = state.me();
     write_dit(&state, move |dit| {
         let mut tx = dit.transaction(&me).map_err(ServerError::Dit)?;
         tx.delete_doc(&path).map_err(ServerError::Dit)?;
@@ -460,7 +492,7 @@ async fn move_doc(
     State(state): State<Arc<AppState>>,
     Json(input): Json<dto::MoveDocDto>,
 ) -> Result<StatusCode, ApiError> {
-    let me = state.me.clone();
+    let me = state.me();
     write_dit(&state, move |dit| {
         let mut tx = dit.transaction(&me).map_err(ServerError::Dit)?;
         tx.move_doc(&input.from, &input.to)
@@ -497,7 +529,7 @@ async fn post_comment(
     Path(id): Path<String>,
     Json(input): Json<dto::CommentInputDto>,
 ) -> Result<(StatusCode, Json<CommentDto>), ApiError> {
-    let me = state.me.clone();
+    let me = state.me();
     let needle = id;
     let comment = write_dit(&state, move |dit| {
         let target = resolve(dit, &needle)?;
@@ -519,6 +551,25 @@ async fn post_comment(
     })
     .await?;
     Ok((StatusCode::CREATED, Json(comment)))
+}
+
+#[derive(Deserialize)]
+struct RecentCommentsParams {
+    limit: Option<usize>,
+}
+
+/// The newest comments across every issue — the timeline's other half.
+async fn list_recent_comments(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<RecentCommentsParams>,
+) -> Result<Json<Vec<WorkspaceCommentDto>>, ApiError> {
+    let limit = params.limit.unwrap_or(100).clamp(1, 500);
+    let rows = read_dit(&state, move |dit| {
+        let list = dit.recent_comments(limit).map_err(ServerError::Dit)?;
+        Ok(list.iter().map(dto::workspace_comment_dto).collect())
+    })
+    .await?;
+    Ok(Json(rows))
 }
 
 #[derive(Deserialize)]
@@ -648,22 +699,87 @@ async fn get_board(State(state): State<Arc<AppState>>) -> Result<Json<BoardDto>,
     Ok(Json(board))
 }
 
+// -- releases (DESIGN.md §15.2, ADR 0014) --------------------------------------
+
+/// Every release plan, in roadmap order: dated ones first by target date,
+/// then the undated by version.
+async fn list_releases(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<ReleaseDto>>, ApiError> {
+    let list = read_dit(&state, move |dit| {
+        let hits = dit.releases().map_err(ServerError::Dit)?;
+        Ok(hits.iter().map(dto::release_dto).collect())
+    })
+    .await?;
+    Ok(Json(list))
+}
+
+/// Change a plan's status and/or target date. One commit, attributed to
+/// the person who clicked — the same shape as an issue patch. There is no
+/// create route: a plan is written by `dit release plan` (v0.9) or by hand.
+async fn patch_release(
+    State(state): State<Arc<AppState>>,
+    Path(version): Path<String>,
+    Json(input): Json<dto::ReleasePatchDto>,
+) -> Result<Json<ReleaseDto>, ApiError> {
+    // A version that could not be a folder name is a malformed request,
+    // not a lookup — refused before the workspace is ever asked.
+    dit_core::validate_release_version(&version)
+        .map_err(|e| ServerError::BadRequest(e.to_string()))?;
+    let patch = dto::to_release_patch(input).map_err(ServerError::BadRequest)?;
+    let me = state.me();
+    let release = write_dit(&state, move |dit| {
+        let mut tx = dit.transaction(&me).map_err(ServerError::Dit)?;
+        tx.set_release(&version, patch).map_err(ServerError::Dit)?;
+        tx.commit(&format!("release {version}: update plan"))
+            .map_err(ServerError::Dit)?;
+        let stored = dit
+            .release(&version)
+            .map_err(ServerError::Dit)?
+            .ok_or_else(|| ServerError::Internal("release vanished after commit".to_owned()))?;
+        Ok(dto::release_dto(&stored))
+    })
+    .await?;
+    Ok(Json(release))
+}
+
 // -- settings ------------------------------------------------------------------
 
 async fn get_settings(State(state): State<Arc<AppState>>) -> Result<Json<SettingsDto>, ApiError> {
-    let settings = read_dit(&state, |dit| Ok(dto::settings_dto(dit))).await?;
+    let me = state.me();
+    let settings = read_dit(&state, move |dit| Ok(dto::settings_dto(dit, &me))).await?;
     Ok(Json(settings))
 }
 
-/// Change layout and/or numbering. Both values are validated before anything
-/// is written; numbering applies first (a config-only commit), then the
+/// Change the alias, layout and/or numbering. Every value is validated
+/// before anything is written; the alias applies first (a clone-local git
+/// config write, no commit), then numbering (a config-only commit), then the
 /// layout migration — which moves files and rebuilds the index, and may
-/// refuse (dirty tree) after the numbering change already landed. The panel
+/// refuse (dirty tree) after the earlier changes already landed. The panel
 /// sends one field at a time, and a refusal carries its own way out.
 async fn put_settings(
     State(state): State<Arc<AppState>>,
     Json(input): Json<dto::SetSettingsDto>,
 ) -> Result<Json<SettingsDto>, ApiError> {
+    let me = match &input.me {
+        Some(text) => {
+            let alias = text.trim();
+            if alias.is_empty() {
+                return Err(ServerError::BadRequest("an alias is required".into()).into());
+            }
+            if !alias
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+            {
+                return Err(ServerError::BadRequest(format!(
+                    "`{alias}` cannot be an alias — use lowercase letters, digits and dashes"
+                ))
+                .into());
+            }
+            Some(alias.to_owned())
+        }
+        None => None,
+    };
     let layout = match &input.layout {
         Some(text) => Some(
             dto::parse_layout(text)
@@ -680,14 +796,27 @@ async fn put_settings(
         ),
         None => None,
     };
+    let announce_state = state.clone();
+    let current_me = state.me();
     let settings = write_dit(&state, move |dit| {
+        let me = match me {
+            Some(alias) => {
+                // Persist first, then switch what the handlers read: a
+                // failed persist must not leave the process attributing
+                // writes to a name the clone never saved.
+                dit.set_me(&alias)?;
+                announce_state.set_me(&alias);
+                alias
+            }
+            None => current_me,
+        };
         if let Some(n) = numbering {
             dit.set_numbering(n)?;
         }
         if let Some(l) = layout {
             dit.migrate_layout(l)?;
         }
-        Ok(dto::settings_dto(dit))
+        Ok(dto::settings_dto(dit, &me))
     })
     .await?;
     Ok(Json(settings))

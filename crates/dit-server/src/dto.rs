@@ -5,11 +5,24 @@
 //! a wire change and a docs change never happen in separate universes.
 
 use dit_core::{
-    render_markdown, ActivitySummary, Comment, DataLayout, DocEntry, FieldPatch, IndexedIssue,
-    Issue, IssueKind, Numbering, Priority, StoredFieldEvent, Workflow, WorkflowStatus,
+    render_markdown, ActivitySummary, ClearableField, Comment, DataLayout, DocEntry, FieldPatch,
+    IndexedIssue, IndexedRelease, Issue, IssueKind, Numbering, Priority, ReleasePatch,
+    ReleaseStatus, StoredFieldEvent, Workflow, WorkflowStatus, WorkspaceComment,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use ts_rs::TS;
+
+/// Three states for a clearable field: the key absent from the JSON means
+/// "untouched" (`None`), an explicit `null` means "clear" (`Some(None)`), a
+/// value means "set". Serde's default `Option` treats absent and `null` the
+/// same, so the outer layer is reconstructed here.
+fn double_option<'de, T, D>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    Option::<T>::deserialize(de).map(Some)
+}
 
 // Every DTO derives TS and exports a .ts file into the web app (the target
 // directory is pinned in the repo's .cargo/config.toml). The generated
@@ -100,6 +113,9 @@ pub struct IssueDto {
     /// issues — the plan views infer a bar from `due` and the estimate
     /// rather than writing one back.
     pub start: Option<String>,
+    /// Ids of the issues this one waits on, in the file's order. Empty when
+    /// nothing blocks it — always present so the client never has to guess.
+    pub blocked_by: Vec<String>,
     pub created: String,
     pub updated: String,
     pub body: String,
@@ -111,6 +127,25 @@ pub struct IssueDto {
 pub struct CommentDto {
     pub id: String,
     pub issue_id: String,
+    pub author: String,
+    pub created: String,
+    pub body: String,
+    pub body_html: String,
+}
+
+/// One row of the workspace comment feed: a comment plus enough of its
+/// issue to render it without a second request per row.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct WorkspaceCommentDto {
+    pub id: String,
+    pub issue_id: String,
+    /// The issue's permanent handle, for opening it from the feed.
+    pub short_ref: String,
+    /// `Some(12)` displays as `#12`; absent until the issue is numbered.
+    pub number: Option<u32>,
+    /// Empty when the issue is no longer indexed.
+    pub title: String,
     pub author: String,
     pub created: String,
     pub body: String,
@@ -265,14 +300,19 @@ pub struct NewIssueDto {
 }
 
 /// The patch request: `{ "set": { ...fields } }`. Absent fields are
-/// untouched; there is no way to clear a field in v0.1 — that is a
-/// deliberate limit of the write surface, not an oversight.
+/// untouched. The optional fields (`priority`, `epic`, `estimate`, `sprint`,
+/// `due`, `start`) can also be cleared: send `null`, or `""` for the string
+/// ones, and the key is removed from the file.
 #[derive(Debug, Deserialize, TS)]
 #[ts(export)]
 pub struct SetIssueDto {
     pub set: FieldPatchDto,
 }
 
+/// One issue patch. Three states per optional field: key absent — untouched;
+/// `null` (or `""` for strings) — cleared, the key leaves the file; a value —
+/// set. Required fields (`title`, `type`, `status`) only take values, and the
+/// list fields clear by being set to `[]`.
 #[derive(Debug, Deserialize, Default, TS)]
 #[ts(export)]
 pub struct FieldPatchDto {
@@ -285,9 +325,10 @@ pub struct FieldPatchDto {
     #[serde(default)]
     #[ts(optional)]
     pub status: Option<String>,
-    #[serde(default)]
+    /// `p0`..`p4`; `null` or `""` clears.
+    #[serde(default, deserialize_with = "double_option")]
     #[ts(optional)]
-    pub priority: Option<String>,
+    pub priority: Option<Option<String>>,
     #[serde(default)]
     #[ts(optional)]
     pub assignees: Option<Vec<String>>,
@@ -297,18 +338,31 @@ pub struct FieldPatchDto {
     #[serde(default)]
     #[ts(optional)]
     pub reporter: Option<String>,
+    /// The full 26-character id of the parent epic; `null` or `""` clears.
+    #[serde(default, deserialize_with = "double_option")]
+    #[ts(optional)]
+    pub epic: Option<Option<String>>,
+    /// `null` clears.
+    #[serde(default, deserialize_with = "double_option")]
+    #[ts(optional)]
+    pub estimate: Option<Option<u32>>,
+    /// `null` or `""` clears.
+    #[serde(default, deserialize_with = "double_option")]
+    #[ts(optional)]
+    pub sprint: Option<Option<String>>,
+    /// `YYYY-MM-DD`; `null` or `""` clears.
+    #[serde(default, deserialize_with = "double_option")]
+    #[ts(optional)]
+    pub due: Option<Option<String>>,
+    /// `YYYY-MM-DD`; `null` or `""` clears.
+    #[serde(default, deserialize_with = "double_option")]
+    #[ts(optional)]
+    pub start: Option<Option<String>>,
+    /// Replaces the whole list, like `assignees` and `labels`. Each entry is
+    /// a full 26-character issue id.
     #[serde(default)]
     #[ts(optional)]
-    pub estimate: Option<u32>,
-    #[serde(default)]
-    #[ts(optional)]
-    pub sprint: Option<String>,
-    #[serde(default)]
-    #[ts(optional)]
-    pub due: Option<String>,
-    #[serde(default)]
-    #[ts(optional)]
-    pub start: Option<String>,
+    pub blocked_by: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, TS)]
@@ -369,6 +423,9 @@ pub struct SettingsDto {
     pub numbering: String,
     /// Template names creation can seed a body from.
     pub templates: Vec<String>,
+    /// The alias writes are attributed to — the same value `/api/status`
+    /// shows. Absent when the server knows nobody.
+    pub me: Option<String>,
 }
 
 /// The change request. Absent fields are untouched — the same contract as
@@ -382,12 +439,50 @@ pub struct SetSettingsDto {
     #[serde(default)]
     #[ts(optional)]
     pub numbering: Option<String>,
+    /// The alias later writes are attributed to. Saved in the clone's git
+    /// config (never committed); lowercase letters, digits and dashes.
+    #[serde(default)]
+    #[ts(optional)]
+    pub me: Option<String>,
 }
 
 #[derive(Debug, Serialize, TS)]
 #[ts(export)]
 pub struct RenderOutputDto {
     pub html: String,
+}
+
+/// A release plan (DESIGN.md §15.2, ADR 0014) as the roadmap reads it. Every
+/// field is what the file says — `includes` is the release's *claim*, not a
+/// verified fact; nothing here has asked git.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct ReleaseDto {
+    pub version: String,
+    /// `planned | in_dev | in_uat | released | rolled_back`.
+    pub status: String,
+    pub target_ref: Option<String>,
+    pub repo: Option<String>,
+    /// The planned date, `YYYY-MM-DD` — where the roadmap draws the milestone.
+    pub target: Option<String>,
+    /// Full ids of the issues the plan claims, in the file's order.
+    pub includes: Vec<String>,
+    /// Repo-relative path of the plan file, for opening it.
+    pub path: String,
+}
+
+/// The release patch: `{ status?, target? }`. Absent fields are untouched.
+/// Only these two are editable here — the scope (`includes`) is filled by
+/// `dit release plan` (v0.9), and the version is the file's identity.
+#[derive(Debug, Deserialize, Default, TS)]
+#[ts(export)]
+pub struct ReleasePatchDto {
+    #[serde(default)]
+    #[ts(optional)]
+    pub status: Option<String>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub target: Option<String>,
 }
 
 // -- mapping -----------------------------------------------------------------
@@ -432,11 +527,14 @@ pub fn parse_numbering(text: &str) -> Option<Numbering> {
 }
 
 /// The settings projection: read straight off the facade, no interpretation.
-pub fn settings_dto(dit: &dit_core::Dit) -> SettingsDto {
+/// `me` is the server's current alias, passed in because it is process state
+/// (the facade only knows what the clone saved).
+pub fn settings_dto(dit: &dit_core::Dit, me: &str) -> SettingsDto {
     SettingsDto {
         layout: dit.layout().as_str().to_owned(),
         numbering: dit.config().numbering.as_str().to_owned(),
         templates: dit.templates(),
+        me: (!me.is_empty()).then(|| me.to_owned()),
     }
 }
 
@@ -457,6 +555,11 @@ pub fn issue_dto(issue: &Issue) -> IssueDto {
         sprint: issue.sprint.clone(),
         due: issue.due.clone(),
         start: issue.start.clone(),
+        blocked_by: issue
+            .blocked_by
+            .iter()
+            .map(|b| b.as_str().to_owned())
+            .collect(),
         created: issue.created.clone(),
         updated: issue.updated.clone(),
         body: issue.body.clone(),
@@ -484,6 +587,58 @@ pub fn comment_dto(issue_id: &dit_core::IssueId, comment: &Comment) -> CommentDt
         created: comment.created.clone(),
         body: comment.body.clone(),
         body_html: render_markdown(&comment.body),
+    }
+}
+
+pub fn release_dto(hit: &IndexedRelease) -> ReleaseDto {
+    ReleaseDto {
+        version: hit.release.version.clone(),
+        status: hit.release.status.as_str().to_owned(),
+        target_ref: hit.release.target_ref.clone(),
+        repo: hit.release.repo.clone(),
+        target: hit.release.target.clone(),
+        includes: hit
+            .release
+            .includes
+            .iter()
+            .map(|i| i.as_str().to_owned())
+            .collect(),
+        path: hit.path.clone(),
+    }
+}
+
+/// Wire patch → domain patch. Both values are validated here so the error a
+/// user sees names the field, and nothing reaches the transaction that the
+/// parser would refuse.
+pub fn to_release_patch(dto: ReleasePatchDto) -> Result<ReleasePatch, String> {
+    let status = match &dto.status {
+        Some(text) => Some(ReleaseStatus::parse(text).ok_or_else(|| {
+            format!(
+                "`{text}` is not a release status (planned, in_dev, in_uat, released, rolled_back)"
+            )
+        })?),
+        None => None,
+    };
+    if let Some(date) = &dto.target {
+        dit_core::validate_date(date).map_err(|e| e.to_string())?;
+    }
+    Ok(ReleasePatch {
+        status,
+        target: dto.target,
+    })
+}
+
+pub fn workspace_comment_dto(row: &WorkspaceComment) -> WorkspaceCommentDto {
+    WorkspaceCommentDto {
+        id: row.comment.id.as_str().to_owned(),
+        issue_id: row.issue_id.as_str().to_owned(),
+        short_ref: row.issue_id.short_ref().as_str().to_owned(),
+        number: row.number,
+        title: row.title.clone(),
+        author: row.comment.author.clone(),
+        created: row.comment.created.clone(),
+        body: row.comment.body.clone(),
+        body_html: render_markdown(&row.comment.body),
     }
 }
 
@@ -583,6 +738,29 @@ pub fn schema_dto(workflow: &Workflow) -> SchemaDto {
     }
 }
 
+/// Fold the wire's three states into the domain's two: a value to set, or a
+/// note in `clear`. `""` counts as clear for string fields so a form that
+/// empties a text box does the obvious thing.
+fn tri_state<'a, T>(
+    field: ClearableField,
+    value: &'a Option<Option<T>>,
+    is_blank: impl Fn(&T) -> bool,
+    clear: &mut Vec<ClearableField>,
+) -> Option<&'a T> {
+    match value {
+        None => None,
+        Some(None) => {
+            clear.push(field);
+            None
+        }
+        Some(Some(v)) if is_blank(v) => {
+            clear.push(field);
+            None
+        }
+        Some(Some(v)) => Some(v),
+    }
+}
+
 /// Wire patch → domain patch. Enum names are validated here so the error a
 /// user sees names the field, not a parser stack.
 pub fn to_field_patch(dto: FieldPatchDto) -> Result<FieldPatch, String> {
@@ -590,10 +768,35 @@ pub fn to_field_patch(dto: FieldPatchDto) -> Result<FieldPatch, String> {
         Some(text) => Some(parse_kind(text).ok_or_else(|| format!("`{text}` is not a type"))?),
         None => None,
     };
-    let priority = match &dto.priority {
+    let mut clear = Vec::new();
+    let blank = |s: &String| s.trim().is_empty();
+    let never = |_: &u32| false;
+    let priority = match tri_state(ClearableField::Priority, &dto.priority, blank, &mut clear) {
         Some(text) => {
             Some(parse_priority(text).ok_or_else(|| format!("`{text}` is not a priority"))?)
         }
+        None => None,
+    };
+    let epic = match tri_state(ClearableField::Epic, &dto.epic, blank, &mut clear) {
+        Some(text) => Some(
+            dit_core::IssueId::parse(text)
+                .map_err(|e| format!("`{text}` is not an issue id: {e}"))?,
+        ),
+        None => None,
+    };
+    let estimate = tri_state(ClearableField::Estimate, &dto.estimate, never, &mut clear).copied();
+    let sprint = tri_state(ClearableField::Sprint, &dto.sprint, blank, &mut clear).cloned();
+    let due = tri_state(ClearableField::Due, &dto.due, blank, &mut clear).cloned();
+    let start = tri_state(ClearableField::Start, &dto.start, blank, &mut clear).cloned();
+    let blocked_by = match &dto.blocked_by {
+        Some(ids) => Some(
+            ids.iter()
+                .map(|text| {
+                    dit_core::IssueId::parse(text)
+                        .map_err(|e| format!("`{text}` is not an issue id: {e}"))
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
         None => None,
     };
     Ok(FieldPatch {
@@ -607,11 +810,12 @@ pub fn to_field_patch(dto: FieldPatchDto) -> Result<FieldPatch, String> {
         assignees: dto.assignees,
         labels: dto.labels,
         reporter: dto.reporter,
-        epic: None,
-        estimate: dto.estimate,
-        sprint: dto.sprint,
-        due: dto.due,
-        start: dto.start,
-        blocked_by: None,
+        epic,
+        estimate,
+        sprint,
+        due,
+        start,
+        blocked_by,
+        clear,
     })
 }

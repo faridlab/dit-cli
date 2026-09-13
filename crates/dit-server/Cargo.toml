@@ -28,7 +28,10 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 rust-embed = { workspace = true, optional = true }
-ts-rs = "=12.0.1"
+# `no-serde-warnings`: ts-rs ignores serde attributes it does not model
+# (`deserialize_with` on the tri-state patch fields) and would otherwise emit
+# a compile warning per field, which `-D warnings` turns red.
+ts-rs = { version = "=12.0.1", features = ["no-serde-warnings"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
