@@ -42,10 +42,20 @@ export function openQuery(statuses: readonly StatusDto[] | undefined): string | 
 // palette offers a full-text search, which is what the words wanted anyway.
 const COMPARISON = /(^|\s)[\w.]+\s*(=|!=|<=|>=|<|>|~)\s*\S/;
 const CONNECTIVE = /(^|\s)(and|or)(\s|$)/i;
+// `label IN (auth, api)` has no comparison operator at all, so set
+// membership needs its own test or it reads as words to search for.
+const MEMBERSHIP = /(^|\s)(not\s+)?in\s*\(/i;
+// A leading `~` is full text spelled as a query — "~ \"merge driver\"".
+const BARE_MATCH = /^~\s*\S/;
 
 /** Does this text read as a query to run rather than words to search for? */
 export function looksLikeDql(text: string): boolean {
   const trimmed = text.trim();
   if (trimmed.length === 0) return false;
-  return COMPARISON.test(trimmed) || CONNECTIVE.test(trimmed);
+  return (
+    COMPARISON.test(trimmed) ||
+    CONNECTIVE.test(trimmed) ||
+    MEMBERSHIP.test(trimmed) ||
+    BARE_MATCH.test(trimmed)
+  );
 }

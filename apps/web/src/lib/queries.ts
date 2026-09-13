@@ -11,7 +11,9 @@ import {
 } from "@tanstack/react-query";
 import { toast } from "sonner";
 import * as api from "./api";
-import type { BoardDto, FieldPatch, NewIssueInput, SetSettingsInput } from "./types";
+import { openQuery } from "./dql";
+import { POOL_LIMIT } from "./lists";
+import type { BoardDto, FieldPatch, NewIssueInput, ReleasePatchInput, SetSettingsInput } from "./types";
 
 export const queryKeys = {
   status: ["status"] as const,
@@ -30,6 +32,8 @@ export const queryKeys = {
   activitySummary: (params: { seq?: number | null; days?: number }) =>
     ["activity-summary", params.seq ?? null, params.days ?? null] as const,
   markdownPreview: (text: string) => ["markdown-preview", text] as const,
+  workspaceComments: (limit: number) => ["workspace-comments", limit] as const,
+  releases: ["releases"] as const,
 };
 
 /** Mark everything a commit can change as stale. The schema is deliberately
@@ -37,6 +41,8 @@ export const queryKeys = {
  *  restart, neither of which a commit notification says anything about. */
 export function invalidateWorkspaceData(client: QueryClient) {
   for (const prefix of [
+    ["workspace-comments"] as const,
+    queryKeys.releases,
     queryKeys.status,
     ["issues"],
     queryKeys.board,
@@ -167,6 +173,15 @@ export function useIssues(
   });
 }
 
+/** The open pool every derived list reads (Inbox, Next actions, filters,
+ *  the sidebar counts): one bounded query, one cache entry, so the sidebar
+ *  and the view it describes can never disagree. */
+export function useOpenPool() {
+  const schema = useSchema();
+  const open = openQuery(schema.data?.workflow.statuses);
+  return useIssues(open ? { q: open, limit: POOL_LIMIT } : { limit: POOL_LIMIT });
+}
+
 export function useIssue(id: string) {
   return useQuery({
     queryKey: queryKeys.issue(id),
@@ -205,6 +220,36 @@ export function useActivitySummary(params: { seq?: number | null; days?: number 
   });
 }
 
+/** Recent comments across the workspace, for the Timeline. */
+export function useWorkspaceComments(limit = 200) {
+  return useQuery({
+    queryKey: queryKeys.workspaceComments(limit),
+    queryFn: () => api.listWorkspaceComments(limit),
+    staleTime: STALE_TIME_MS,
+    placeholderData: (previous) => previous,
+  });
+}
+
+export function useReleases() {
+  return useQuery({
+    queryKey: queryKeys.releases,
+    queryFn: api.listReleases,
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+export function usePatchRelease() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ version, patch }: { version: string; patch: ReleasePatchInput }) =>
+      api.patchRelease(version, patch),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: queryKeys.releases });
+    },
+    onError: reportError("Could not update the release"),
+  });
+}
+
 export function useFieldEvents(id: string, field?: string) {
   return useQuery({
     queryKey: queryKeys.history(id, field),
@@ -236,21 +281,22 @@ function reportError(prefix: string): (error: unknown) => void {
 
 /** Every issue mutation invalidates the issue plus every view that could be
  *  showing it. Cheap (they refetch only if mounted) and never stale. */
-function useIssueInvalidator(id: string | null) {
+function useIssueInvalidator() {
   const client = useQueryClient();
   return () => {
     void client.invalidateQueries({ queryKey: ["issues"] });
     void client.invalidateQueries({ queryKey: queryKeys.board });
-    if (id) {
-      void client.invalidateQueries({ queryKey: queryKeys.issue(id) });
-      void client.invalidateQueries({ queryKey: queryKeys.comments(id) });
-      void client.invalidateQueries({ queryKey: ["history", id] });
-    }
+    // An issue is reachable by its id and by its short ref, and the views
+    // use whichever the route carries — so refresh the whole prefix rather
+    // than the one spelling this mutation happened to know.
+    void client.invalidateQueries({ queryKey: ["issue"] });
+    void client.invalidateQueries({ queryKey: ["comments"] });
+    void client.invalidateQueries({ queryKey: ["history"] });
   };
 }
 
 export function usePatchIssue(id: string) {
-  const invalidate = useIssueInvalidator(id);
+  const invalidate = useIssueInvalidator();
   return useMutation({
     mutationFn: (set: FieldPatch) => api.patchIssue(id, set),
     onSuccess: invalidate,
@@ -279,7 +325,7 @@ export function useBulkPatchIssue() {
 }
 
 export function usePutIssueBody(id: string) {
-  const invalidate = useIssueInvalidator(id);
+  const invalidate = useIssueInvalidator();
   return useMutation({
     mutationFn: (body: string) => api.putIssueBody(id, body),
     onSuccess: invalidate,
@@ -288,7 +334,7 @@ export function usePutIssueBody(id: string) {
 }
 
 export function useAddComment(id: string) {
-  const invalidate = useIssueInvalidator(id);
+  const invalidate = useIssueInvalidator();
   return useMutation({
     mutationFn: (body: string) => api.addComment(id, body),
     onSuccess: invalidate,

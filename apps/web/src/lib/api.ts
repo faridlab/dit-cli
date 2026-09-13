@@ -19,6 +19,9 @@ import type {
   SetSettingsInput,
   SettingsDto,
   StatusInfo,
+  ReleaseDto,
+  ReleasePatchInput,
+  WorkspaceCommentDto,
 } from "./types";
 
 export class ApiError extends Error {
@@ -209,6 +212,23 @@ export function getActivitySummary(
   if (params.days !== undefined) qs.set("days", String(params.days));
   const suffix = qs.size > 0 ? `?${qs.toString()}` : "";
   return request<ActivitySummaryDto>(`/api/activity/summary${suffix}`);
+}
+
+/** The most recent comments across the workspace, newest first. */
+export function listWorkspaceComments(limit = 200): Promise<WorkspaceCommentDto[]> {
+  return request<WorkspaceCommentDto[]>(`/api/comments?limit=${limit}`);
+}
+
+export function listReleases(): Promise<ReleaseDto[]> {
+  return request<ReleaseDto[]>("/api/releases");
+}
+
+/** Move a release's target date or status — one commit to its release.md. */
+export function patchRelease(version: string, patch: ReleasePatchInput): Promise<ReleaseDto> {
+  return request<ReleaseDto>(`/api/releases/${encodeURIComponent(version)}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
 }
 
 export function getFieldEvents(id: string, field?: string): Promise<FieldEventDto[]> {

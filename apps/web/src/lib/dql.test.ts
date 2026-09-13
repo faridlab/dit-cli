@@ -69,3 +69,19 @@ describe("open and mine queries", () => {
     expect(mineQuery(undefined)).toBe("assignee = @me ORDER BY priority ASC");
   });
 });
+
+describe("looksLikeDql — set membership and bare match", () => {
+  it("reads IN and NOT IN as queries, not as words", () => {
+    expect(looksLikeDql('id IN ("01K3M", "01K3N")')).toBe(true);
+    expect(looksLikeDql("label NOT IN (auth, api)")).toBe(true);
+  });
+
+  it("reads a leading ~ as full text spelled as a query", () => {
+    expect(looksLikeDql('~ "merge driver"')).toBe(true);
+  });
+
+  it("still reads ordinary words as words", () => {
+    expect(looksLikeDql("merge driver")).toBe(false);
+    expect(looksLikeDql("what goes in a release")).toBe(false);
+  });
+});

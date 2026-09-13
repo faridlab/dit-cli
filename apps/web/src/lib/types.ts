@@ -35,6 +35,9 @@ import type { SettingsDto as WireSettingsDto } from "./schema/SettingsDto";
 import type { StatusDto as WireStatusDto } from "./schema/StatusDto";
 import type { StatusInfo as WireStatusInfo } from "./schema/StatusInfo";
 import type { TransitionDto } from "./schema/TransitionDto";
+import type { ReleaseDto as WireReleaseDto } from "./schema/ReleaseDto";
+import type { ReleasePatchDto } from "./schema/ReleasePatchDto";
+import type { WorkspaceCommentDto as WireWorkspaceCommentDto } from "./schema/WorkspaceCommentDto";
 
 // The unions above narrow the generated `string` fields for consumers; the
 // generated base still pins every field name and shape, so a wire change
@@ -109,3 +112,18 @@ export type ActivitySummaryDto = WireActivitySummaryDto;
 export type CategoryCountsDto = WireCategoryCountsDto;
 export type ChangeSummaryDto = WireChangeSummaryDto;
 export type DayCountDto = WireDayCountDto;
+
+// A comment with enough of its issue to render in the workspace Timeline
+// without a second request per row.
+export type WorkspaceCommentDto = WireWorkspaceCommentDto;
+
+// Releases (DESIGN.md §15.2): one folder per version under `.dit/releases/`.
+// `target` is the planned date the roadmap draws the milestone at; whether
+// the work actually shipped is a question git answers, never a field.
+export type ReleaseStatus = "planned" | "in_dev" | "in_uat" | "released" | "rolled_back";
+
+export interface ReleaseDto extends WireReleaseDto {
+  status: ReleaseStatus;
+}
+
+export type ReleasePatchInput = ReleasePatchDto;
