@@ -25,9 +25,12 @@ import type {
   Layout,
   NumberingPolicy,
   Priority,
+  ReleaseDto,
+  ReleaseStatus,
   SchemaDto,
   SettingsDto,
   StatusInfo,
+  WorkspaceCommentDto,
 } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -256,6 +259,11 @@ class Parser {
       return inner;
     }
     const name = this.next();
+    // A bare `~ "text"` is full text over title and body — the same as
+    // `body ~ "text"` in the server grammar.
+    if (name?.t === "op" && name.v === "~") {
+      return { k: "cmp", field: "body", op: "~", value: this.value() };
+    }
     if (name?.t !== "ident") throw new Error("expected a comparison like `status = todo`");
     if (!KNOWN_FIELDS.has(name.v)) throw new Error(`unknown field \`${name.v}\` — the available fields are ${FIELDS}`);
     // NOT only introduces NOT IN, as in the server grammar.
@@ -317,7 +325,7 @@ class Parser {
 // DQL — evaluation over IssueDto
 // ---------------------------------------------------------------------------
 
-const ME = "farid";
+let ME = "farid";
 
 /** Scalar or set projection of a field for filtering and ordering. Set
  *  fields (assignee, label) come back as arrays — the only two. */
@@ -387,13 +395,11 @@ function evalCmp(issue: IssueDto, cmp: Extract<Expr, { k: "cmp" }>): boolean {
     throw new Error(`\`${cmp.field} ${cmp.op}\` does not compare a list — use =, != or IN`);
   }
 
-  // ~ is text match over the field's text; only title and body have text.
+  // ~ is full text over title and body regardless of the field named, as
+  // the server's FTS index is: searching "login" should find it anywhere.
   if (cmp.op === "~") {
-    if (cmp.field !== "title" && cmp.field !== "body") {
-      throw new Error("`~` matches text — e.g. `title ~ \"login\"` or `body ~ timeout`");
-    }
     const needle = valueString(cmp.value).toLowerCase();
-    return String(raw ?? "").toLowerCase().includes(needle);
+    return `${issue.title}\n${issue.body}`.toLowerCase().includes(needle);
   }
 
   if (cmp.op === "IN" || cmp.op === "NOT IN") {
@@ -554,6 +560,7 @@ const ISSUES: IssueDto[] = Array.from({ length: 36 }, (_, index) => {
     // Enough scheduled work for the plan views to have something to draw,
     // and enough unscheduled work for the tray to be worth having.
     start: n % 3 === 0 ? isoDate((n % 17) - 4) : null,
+    blocked_by: [],
     created,
     updated,
     body,
@@ -580,6 +587,7 @@ for (const [i, epic] of EPICS.entries()) {
     sprint: null,
     due: null,
     start: null,
+    blocked_by: [],
     created: new Date(Date.now() - 24 * 24 * 3600_000).toISOString(),
     updated: new Date(Date.now() - 6 * 3600_000).toISOString(),
     body: "",
@@ -591,7 +599,7 @@ for (const [i, epic] of EPICS.entries()) {
 // context, an inbox to triage, someday parking, and blocked work waiting
 // on someone else. Done after the seeded pass so the deterministic noise
 // stays comparable reload to reload.
-const CONTEXTS = ["context:@computer", "context:@home", "context:@errands"];
+const CONTEXTS = ["context:computer", "context:home", "context:errands"];
 const ENERGIES = ["energy:deep", "energy:quick"];
 for (const n of [2, 5, 8, 13, 21]) {
   const issue = ISSUES[n - 1];
@@ -620,6 +628,22 @@ for (const n of [7, 12, 26]) {
   issue.assignees = issue.assignees.filter((person) => person !== ME).slice(0, 1);
   if (issue.assignees.length === 0) issue.assignees = ["jane"];
 }
+
+// Dependencies among scheduled issues so the Gantt has arrows to draw, one
+// of them pointing at a blocker that ends after the blocked one starts.
+for (const [n, blocker] of [[6, 3], [12, 9], [21, 18], [30, 27]] as const) {
+  const issue = ISSUES[n - 1];
+  const other = ISSUES[blocker - 1];
+  if (issue && other) issue.blocked_by = [other.id];
+}
+
+// Releases (DESIGN.md §15.2): two shipped, one in flight, one planned.
+const RELEASES: ReleaseDto[] = [
+  { version: "v0.1.10", status: "released", target_ref: "main", repo: null, target: isoDate(-16), includes: [ISSUES[23]!.id, ISSUES[3]!.id], path: ".dit/releases/v0.1.10/release.md" },
+  { version: "v0.1.11", status: "released", target_ref: "main", repo: null, target: isoDate(-3), includes: [ISSUES[16]!.id], path: ".dit/releases/v0.1.11/release.md" },
+  { version: "v0.2.0", status: "in_dev", target_ref: "release/0.2.0", repo: null, target: isoDate(34), includes: [EPICS[0]!.id, EPICS[2]!.id, ISSUES[1]!.id, ISSUES[4]!.id], path: ".dit/releases/v0.2.0/release.md" },
+  { version: "v0.3.0", status: "planned", target_ref: null, repo: null, target: isoDate(83), includes: [EPICS[1]!.id, ISSUES[7]!.id], path: ".dit/releases/v0.3.0/release.md" },
+];
 
 const COMMENTS = new Map<string, CommentDto[]>(
   ISSUES.slice(0, 6).map((issue) => [
@@ -728,6 +752,7 @@ const settings: SettingsDto = {
   layout: "root",
   numbering: "local",
   templates: ["default", "bug", "story", "spike"],
+  me: ME,
 };
 
 // §13 pages — a few per root so the docs rail, the editor and delete can
@@ -954,7 +979,8 @@ export function installMockApi(): void {
         estimate: null,
         sprint: null,
         due: null,
-    start: null,
+        start: null,
+        blocked_by: [],
         created: now,
         updated: now,
         body: (body.body as string) ?? "",
@@ -1033,6 +1059,44 @@ export function installMockApi(): void {
       }
     }
 
+    if (path === "/api/comments" && method === "GET") {
+      const limit = Number(url.searchParams.get("limit") ?? 200);
+      const feed: WorkspaceCommentDto[] = [];
+      for (const [issueId, list] of COMMENTS) {
+        const issue = ISSUES.find((candidate) => candidate.id === issueId);
+        for (const comment of list) {
+          feed.push({
+            id: comment.id,
+            issue_id: issueId,
+            short_ref: issue?.short_ref ?? issueId,
+            number: issue?.number ?? null,
+            title: issue?.title ?? "",
+            author: comment.author,
+            created: comment.created,
+            body: comment.body,
+            body_html: comment.body_html,
+          });
+        }
+      }
+      feed.sort((a, b) => b.created.localeCompare(a.created));
+      return jsonResponse(feed.slice(0, limit));
+    }
+
+    if (path === "/api/releases" && method === "GET") {
+      return jsonResponse(
+        [...RELEASES].sort((a, b) => (a.target ?? "9").localeCompare(b.target ?? "9") || a.version.localeCompare(b.version)),
+      );
+    }
+    const releaseMatch = path.match(/^\/api\/releases\/([^/]+)$/);
+    if (releaseMatch && method === "PATCH") {
+      const version = decodeURIComponent(releaseMatch[1] ?? "");
+      const release = RELEASES.find((candidate) => candidate.version === version);
+      if (!release) return notFound();
+      if (typeof body.target === "string") release.target = body.target;
+      if (typeof body.status === "string") release.status = body.status as ReleaseStatus;
+      return jsonResponse(release);
+    }
+
     if (path === "/api/settings" && method === "GET") {
       return jsonResponse(settings);
     }
@@ -1042,6 +1106,11 @@ export function installMockApi(): void {
       // without moving anything.
       if (typeof body.layout === "string") settings.layout = body.layout as Layout;
       if (typeof body.numbering === "string") settings.numbering = body.numbering as NumberingPolicy;
+      if (typeof body.me === "string") {
+        if (body.me.trim().length === 0) return jsonResponse({ error: "alias must not be empty" }, 400);
+        settings.me = body.me.trim();
+        ME = settings.me;
+      }
       return jsonResponse(settings);
     }
 
@@ -1051,6 +1120,27 @@ export function installMockApi(): void {
 
     if (path === "/api/docs" && method === "GET") {
       return jsonResponse(DOC_ENTRIES);
+    }
+
+    // A move is one transaction in the real store: a byte-identical write at
+    // the target and a remove at the source, so git records a rename.
+    if (path === "/api/docs/move" && method === "POST") {
+      const from = String(body.from ?? "");
+      const to = String(body.to ?? "");
+      const problem = mockDocPathError(to);
+      if (problem) return jsonResponse({ error: problem }, 400);
+      const text = DOC_BODIES.get(from);
+      if (text === undefined) return jsonResponse({ error: `no page matches \`${from}\`` }, 404);
+      if (DOC_BODIES.has(to)) return jsonResponse({ error: `a page already exists at \`${to}\`` }, 409);
+      DOC_BODIES.delete(from);
+      DOC_BODIES.set(to, text);
+      const entry = DOC_ENTRIES.find((candidate) => candidate.path === from);
+      if (entry) {
+        entry.path = to;
+        entry.updated_ms = Date.now();
+        DOC_ENTRIES.sort((a, b) => (a.path < b.path ? -1 : 1));
+      }
+      return new Response(null, { status: 204 });
     }
 
     const docMatch = path.match(/^\/api\/docs\/(.+)$/);
