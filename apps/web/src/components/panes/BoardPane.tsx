@@ -1,126 +1,100 @@
-// The Board sidebar section plus the column-visibility state it owns. The board
-// (main area) and the pane sit far apart in the tree, so the hidden-column
-// set travels through a context the shell provides above both — visible
-// columns are view state shared by two surfaces, not a property of either.
+// The Board sidebar section: which columns are on screen, what the cards
+// carry, and how the board is grouped. It reads the same column model the
+// board draws from and writes the same view options the header's Display
+// menu writes, so ticking a row here and picking an item there are one
+// action seen from two places.
 
-import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
-import { useBoard } from "../../lib/queries";
-import { cn } from "../../lib/cn";
-import { CheckSquare, SectionHeading } from "../chrome";
-import { ErrorBox, Loading } from "../states";
+import { SlidersVertical } from "lucide-react";
+import { useViewOptions, type BoardGroupBy, type BoardOptions, type CardSort } from "../../lib/viewopts";
+import { useBoardModel } from "../../views/BoardView";
+import { CheckSquare, IBtn, MenuButton, Row, SectionHeading, Sp, type MenuItem } from "../chrome";
 
-interface BoardColumnsValue {
-  hidden: ReadonlySet<string>;
-  toggle: (id: string) => void;
-  showAll: () => void;
-}
-
-const BoardColumnsContext = createContext<BoardColumnsValue | null>(null);
-
-export function BoardColumnsProvider({ children }: { children: ReactNode }) {
-  const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
-  const value = useMemo<BoardColumnsValue>(
-    () => ({
-      hidden,
-      toggle: (id) =>
-        setHidden((previous) => {
-          const next = new Set(previous);
-          if (next.has(id)) next.delete(id);
-          else next.add(id);
-          return next;
-        }),
-      showAll: () => setHidden(new Set()),
-    }),
-    [hidden],
-  );
-  return <BoardColumnsContext.Provider value={value}>{children}</BoardColumnsContext.Provider>;
-}
-
-export function useBoardColumns(): BoardColumnsValue {
-  const value = useContext(BoardColumnsContext);
-  if (value === null) {
-    throw new Error("useBoardColumns must be used inside BoardColumnsProvider");
-  }
-  return value;
-}
+const GROUPS: Array<[BoardGroupBy, string, string | null]> = [
+  ["status", "Status", "workflow"],
+  ["assignee", "Assignee", null],
+  ["epic", "Epic", null],
+  ["context", "Context", "@label"],
+];
+const CARD_OPTIONS: Array<[keyof BoardOptions["cards"], string]> = [
+  ["labels", "Show labels"],
+  ["due", "Show due dates"],
+  ["epic", "Show epic on cards"],
+];
+const CARD_SORTS: Array<[CardSort, string]> = [
+  ["priority", "Priority"],
+  ["updated", "Recently updated"],
+  ["due", "Due date"],
+];
 
 export function BoardPane() {
-  const board = useBoard();
-  const { hidden, toggle, showAll } = useBoardColumns();
+  const { board, setGroupBy, toggleCardOption, setColSort, toggleColumn } = useViewOptions();
+  const { columns } = useBoardModel();
 
-  if (board.isPending) {
-    return <Loading label="Loading board…" className="p-4" />;
-  }
-  if (board.isError) {
-    return (
-      <div className="p-2">
-        <ErrorBox
-          error={board.error}
-          onRetry={() => void board.refetch()}
-          title="Could not load the board"
-        />
-      </div>
-    );
-  }
-
-  const columns = board.data.columns;
-  const total = columns.reduce((sum, column) => sum + column.issues.length, 0);
+  // The same Display menu the header opens, so the gear in this heading and
+  // the button up there never disagree about what can be set.
+  const display: MenuItem[] = [
+    { kind: "head", label: "Group by" },
+    ...GROUPS.map(([key, label]): MenuItem => ({ label, on: board.groupBy === key, run: () => setGroupBy(key) })),
+    { kind: "head", label: "Cards" },
+    ...CARD_OPTIONS.map(([key, label]): MenuItem => ({
+      label,
+      check: board.cards[key],
+      run: () => toggleCardOption(key),
+    })),
+    { kind: "head", label: "Order cards by" },
+    ...CARD_SORTS.map(([key, label]): MenuItem => ({ label, on: board.colSort === key, run: () => setColSort(key) })),
+  ];
 
   return (
-    <div className="flex flex-col gap-4 p-3">
-      <section>
-        <div className="flex items-center gap-2 px-1 pb-2">
-          <SectionHeading size="sm">Columns</SectionHeading>
-          {hidden.size > 0 ? (
-            <button
-              type="button"
-              onClick={showAll}
-              className="ml-auto text-[11px] text-muted transition-colors hover:text-ink"
-            >
-              Show all
-            </button>
-          ) : null}
-        </div>
+    <>
+      <SectionHeading size="sm">
+        Columns · by {board.groupBy}
+        <Sp />
+        <MenuButton items={display} align="end">
+          <IBtn title="Display options">
+            <SlidersVertical className="i" aria-hidden />
+          </IBtn>
+        </MenuButton>
+      </SectionHeading>
+      <div className="sb-body">
         {columns.map((column) => {
-          const on = !hidden.has(column.id);
-          const count = column.issues.length;
-          const limit = column.wip_limit;
-          const overLimit = limit !== null && count > limit;
+          const on = !board.hidden.has(column.key);
           return (
-            <button
-              key={column.id}
-              type="button"
-              onClick={() => toggle(column.id)}
+            <Row
+              key={column.key}
+              onClick={() => toggleColumn(column.key)}
               title={on ? `Hide ${column.label}` : `Show ${column.label}`}
-              className={cn(
-                "flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-card",
-                !on && "opacity-45",
-              )}
             >
               <CheckSquare on={on} />
-              <span className="truncate text-xs uppercase tracking-[0.05em] text-ink-2">
-                {column.label}
-              </span>
-              <span
-                className={cn(
-                  "ml-auto shrink-0 rounded px-1.5 py-px font-mono text-[10.5px] tabular-nums",
-                  overLimit ? "bg-warn-bg text-warn-text" : "bg-edge text-muted",
-                )}
-                title={
-                  overLimit ? `WIP limit ${limit} exceeded` : limit !== null ? `WIP limit ${limit}` : undefined
-                }
-              >
-                {count}
-                {limit !== null ? `/${limit}` : ""}
-              </span>
-            </button>
+              <span className="lbl">{column.label}</span>
+              <span className="cnt">{column.all.length}</span>
+            </Row>
           );
         })}
-      </section>
 
-      <p className="px-1 font-mono text-[10.5px] text-faint">
-        {total} issues · {columns.length - hidden.size} of {columns.length} columns shown
-      </p>
-    </div>
+        <SectionHeading size="sm" className="mt-[10px]">
+          Cards
+        </SectionHeading>
+        {CARD_OPTIONS.map(([key, label]) => (
+          <Row key={key} onClick={() => toggleCardOption(key)}>
+            <CheckSquare on={board.cards[key]} />
+            <span className="lbl">{label}</span>
+          </Row>
+        ))}
+
+        <SectionHeading size="sm" className="mt-[10px]">
+          Group by
+        </SectionHeading>
+        {GROUPS.map(([key, label, hint]) => (
+          <Row key={key} on={board.groupBy === key} onClick={() => setGroupBy(key)}>
+            <CheckSquare on={board.groupBy === key} radio />
+            <span className="lbl">
+              {label}
+              {hint !== null ? <span style={{ color: "var(--muted)" }}> ({hint})</span> : null}
+            </span>
+          </Row>
+        ))}
+      </div>
+    </>
   );
 }
