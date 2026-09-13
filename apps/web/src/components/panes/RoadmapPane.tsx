@@ -1,18 +1,24 @@
 // The Roadmap sidebar section and the options it owns: how far ahead to
-// look, and what a lane stands for. View state shared between the sidebar
-// and the chart, so it lives in a context above both — and nowhere near the
-// repo, because "I am looking at six months" is not a fact about the plan.
+// look, what a lane stands for, and the list of releases the milestones
+// come from. View state shared between the sidebar and the chart, so it
+// lives in a context above both — and nowhere near the repo, because "I am
+// looking at six months" is not a fact about the plan.
 
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
-import { CheckSquare, SectionHeading } from "../chrome";
-import { cn } from "../../lib/cn";
+import { Btn, CheckSquare, HeadingNote, Row, SectionHeading, Sp } from "../chrome";
+import { StatusPill } from "../badges";
+import { useReleases } from "../../lib/queries";
+import type { RoadmapHorizon } from "../../lib/schedule";
+import type { ReleaseStatus } from "../../lib/types";
 
-export type RoadmapHorizon = "quarter" | "half" | "year";
-export type RoadmapLanes = "epic" | "assignee";
+export type { RoadmapHorizon } from "../../lib/schedule";
+export type RoadmapLanes = "epic" | "release" | "assignee";
 
 export interface RoadmapOptions {
   horizon: RoadmapHorizon;
   lanes: RoadmapLanes;
+  /** Release targets as diamonds on the axis. */
+  milestones: boolean;
   progress: boolean;
 }
 
@@ -20,7 +26,7 @@ interface RoadmapOptionsValue extends RoadmapOptions {
   set: <K extends keyof RoadmapOptions>(key: K, value: RoadmapOptions[K]) => void;
 }
 
-const DEFAULTS: RoadmapOptions = { horizon: "half", lanes: "epic", progress: true };
+const DEFAULTS: RoadmapOptions = { horizon: "half", lanes: "epic", milestones: true, progress: true };
 
 const RoadmapOptionsContext = createContext<RoadmapOptionsValue | null>(null);
 
@@ -45,84 +51,101 @@ export function useRoadmapOptions(): RoadmapOptionsValue {
   return value;
 }
 
-const HORIZONS: Array<{ value: RoadmapHorizon; label: string }> = [
-  { value: "quarter", label: "Quarter" },
-  { value: "half", label: "6 months" },
-  { value: "year", label: "Year" },
+const HORIZONS: Array<[RoadmapHorizon, string]> = [
+  ["quarter", "Quarter"],
+  ["half", "6 months"],
+  ["year", "Year"],
 ];
 
-const LANES: Array<{ value: RoadmapLanes; label: string; hint: string }> = [
-  { value: "epic", label: "Epics", hint: "one lane per epic, spanning the work inside it" },
-  { value: "assignee", label: "People", hint: "one lane per person, spanning their scheduled work" },
+const LANES: Array<[RoadmapLanes, string]> = [
+  ["epic", "Epics"],
+  ["release", "Releases"],
+  ["assignee", "People"],
 ];
+
+const SHOW: Array<[keyof Pick<RoadmapOptions, "milestones" | "progress">, string]> = [
+  ["milestones", "Release targets"],
+  ["progress", "Progress %"],
+];
+
+/** The pill tone for a release: shipped is done, planned is to do, and every
+ *  state in between is in flight. */
+export function releaseCategory(status: ReleaseStatus): "todo" | "doing" | "done" {
+  if (status === "released") return "done";
+  if (status === "planned") return "todo";
+  return "doing";
+}
 
 export function RoadmapPane() {
   const options = useRoadmapOptions();
+  const releases = useReleases();
+  const list = releases.data ?? [];
 
   return (
-    <div className="flex flex-col gap-4 p-3">
-      <section>
-        <SectionHeading size="sm" className="px-1 pb-2">
-          Horizon
-        </SectionHeading>
-        <div className="flex gap-1 px-1">
-          {HORIZONS.map((horizon) => (
-            <button
-              key={horizon.value}
-              type="button"
-              onClick={() => options.set("horizon", horizon.value)}
-              className={cn(
-                "flex-1 rounded-md border px-2 py-1 text-[12px] transition-colors",
-                options.horizon === horizon.value
-                  ? "border-accent bg-accent text-on-accent"
-                  : "border-edge text-ink-2 hover:border-ctl hover:text-ink",
-              )}
+    <>
+      <SectionHeading size="sm">Horizon</SectionHeading>
+      <div className="sb-body">
+        <div style={{ display: "flex", gap: 4, padding: "2px 8px 6px" }}>
+          {HORIZONS.map(([horizon, label]) => (
+            <Btn
+              key={horizon}
+              primary={options.horizon === horizon}
+              onClick={() => options.set("horizon", horizon)}
+              style={{ flex: 1, justifyContent: "center" }}
             >
-              {horizon.label}
-            </button>
+              {label}
+            </Btn>
           ))}
         </div>
-      </section>
 
-      <section>
-        <SectionHeading size="sm" className="px-1 pb-2">
-          Lanes
-        </SectionHeading>
-        {LANES.map((lane) => (
-          <button
-            key={lane.value}
-            type="button"
-            title={lane.hint}
-            onClick={() => options.set("lanes", lane.value)}
-            className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-hover"
-          >
-            <span className="[&>span]:rounded-full">
-              <CheckSquare on={options.lanes === lane.value} />
-            </span>
-            <span className="text-[12.5px] text-ink-2">{lane.label}</span>
-          </button>
+        <SectionHeading size="sm">Lanes</SectionHeading>
+        {LANES.map(([key, label]) => (
+          <Row key={key} on={options.lanes === key} onClick={() => options.set("lanes", key)}>
+            <CheckSquare on={options.lanes === key} radio />
+            <span className="lbl">{label}</span>
+          </Row>
         ))}
-      </section>
 
-      <section>
-        <SectionHeading size="sm" className="px-1 pb-2">
+        <SectionHeading size="sm" className="mt-2">
           Show
         </SectionHeading>
-        <button
-          type="button"
-          onClick={() => options.set("progress", !options.progress)}
-          className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-hover"
-        >
-          <CheckSquare on={options.progress} />
-          <span className="text-[12.5px] text-ink-2">Progress %</span>
-        </button>
-      </section>
+        {SHOW.map(([key, label]) => (
+          <Row key={key} onClick={() => options.set(key, !options[key])}>
+            <CheckSquare on={options[key]} />
+            <span className="lbl">{label}</span>
+          </Row>
+        ))}
 
-      <p className="px-1 text-[11.5px] leading-relaxed text-muted">
-        An epic's bar is its own <span className="font-mono">start</span> and{" "}
-        <span className="font-mono">due</span> when it has them, otherwise the span of the issues
-        inside it. Progress is counted from those issues on every read — neither is stored.
-      </p>
-    </div>
+        <SectionHeading size="sm" className="mt-2">
+          Releases
+          <Sp />
+          {/* The heading is uppercase; a path is not. */}
+          <HeadingNote className="font-mono text-[10.5px] font-normal normal-case tracking-normal text-faint">
+            .dit/releases/
+          </HeadingNote>
+        </SectionHeading>
+        {list.length === 0 ? (
+          <p className="empty" style={{ padding: "4px 8px" }}>
+            No releases yet — add .dit/releases/&lt;version&gt;/release.md
+          </p>
+        ) : (
+          list.map((release) => (
+            <Row
+              key={release.version}
+              title={`${release.includes.length} issues · target ${release.target ?? "unset"}`}
+              onClick={() => options.set("lanes", "release")}
+            >
+              <StatusPill
+                category={releaseCategory(release.status)}
+                label={release.status.replace("_", " ")}
+                className="h-4 px-[5px] text-[10.5px]"
+              />
+              <span className="lbl mono">{release.version}</span>
+              <span className="cnt">{release.target ? release.target.slice(5) : "—"}</span>
+            </Row>
+          ))
+        )}
+      </div>
+    </>
   );
 }

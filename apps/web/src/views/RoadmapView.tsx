@@ -1,331 +1,427 @@
-// Epics across quarters: the altitude above the Gantt, where the unit is an
-// outcome rather than a task.
+// Epics, releases and people across quarters: the altitude above the Gantt,
+// where the unit is an outcome rather than a task.
 //
 // An epic's bar is its own `start` and `due` when it has them, and otherwise
 // the span of the issues inside it — derived on read, never written back, so
 // a roadmap can never drift from the work underneath it. Progress is the
 // same: counted from the children's statuses every time the screen renders.
+// A release lane runs from the previous target to its own; the diamond on the
+// axis is the `target` field in its release.md, and moving it is a commit.
 //
-// Release lanes belong here too, and they wait for the release model in
-// DESIGN.md §15 — a roadmap that claimed a version shipped without git
-// proving it would be exactly the kind of record-keeping DIT exists to
-// replace.
+// The markup follows the approved design's class recipes (styles.css,
+// "Workbench recipes": `.road`, `.rhead`, `.rlane`, `.rbar`, `.rfoot`).
 
-import { useMemo } from "react";
-import { useIssues, useSchema } from "../lib/queries";
+import { useMemo, type ReactNode } from "react";
+import { Copy, List, Plus, Tag, User } from "lucide-react";
+import { toast } from "sonner";
+import { useIssues, usePatchRelease, useReleases, useSchema } from "../lib/queries";
 import { useRegisterPeekList } from "../lib/peeklist";
+import { navigate } from "../lib/router";
+import { doneIds, isDone } from "../lib/lists";
 import {
   coveringSpan,
   DAY_MS,
   dayStart,
   epicSpan,
-  isLate,
+  monthSegments,
+  MONTHS,
+  roadmapRange,
+  shortDate,
   spanOf,
-  type Span,
 } from "../lib/schedule";
-import type { IssueDto } from "../lib/types";
-import { AssigneeCircles, IssueHandle } from "../components/badges";
-import { Empty, ErrorBox, Loading } from "../components/states";
+import type { IssueDto, ReleaseDto, StatusCategory } from "../lib/types";
+import { AssigneeCircles, TypeBadge } from "../components/badges";
+import { ErrorBox, Loading } from "../components/states";
+import { Btn, MenuButton, Sp, type MenuItem } from "../components/chrome";
 import { cn } from "../lib/cn";
 import { useRoadmapOptions } from "../components/panes/RoadmapPane";
+import { useTip } from "./GanttView";
 
 const PAGE_SIZE = 500;
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** A first release with nothing before it gets a six-week run-up. */
+const FIRST_RELEASE_RUNUP_DAYS = 42;
+/** Milestones a month either side of the window still get a diamond. */
+const MILESTONE_SLACK_DAYS = 30;
 
-const HORIZON_MONTHS = { quarter: 3, half: 6, year: 12 } as const;
-const HORIZON_BEFORE = { quarter: 0, half: 2, year: 3 } as const;
+/** Milestone tone by release status. */
+const RELEASE_TONE: Record<ReleaseDto["status"], StatusCategory> = {
+  released: "done",
+  in_uat: "doing",
+  in_dev: "doing",
+  planned: "todo",
+  rolled_back: "todo",
+};
 
 interface Lane {
   key: string;
   label: string;
-  issues: IssueDto[];
-  span: Span;
+  items: IssueDto[];
+  /** Left edge and exclusive right edge of the bar. */
+  span: { start: number; end: number };
+  /** The last day the bar stands for, as the tooltip reads it. */
+  lastDay: number;
   derived: boolean;
-  owners: string[];
-  done: number;
-  doing: number;
+  meta: string;
+  /** Category the lateness rule reads: done lanes are never late. */
+  category: StatusCategory;
+  owners?: string[];
   epic?: IssueDto;
+  release?: ReleaseDto;
+  /** The release an epic ships in, for the chip. */
+  shipsIn?: ReleaseDto;
+  /** A people lane names the person, for the search it opens. */
+  person?: string;
 }
 
 export function RoadmapView({ onOpen }: { onOpen: (id: string) => void }) {
   const issues = useIssues({ limit: PAGE_SIZE });
   const schema = useSchema();
+  const releases = useReleases();
+  const patchRelease = usePatchRelease();
   const options = useRoadmapOptions();
+  const tip = useTip();
 
   const statuses = schema.data?.workflow.statuses ?? [];
+  const done = useMemo(() => doneIds(statuses), [statuses]);
   const categoryOf = useMemo(() => {
     const map = new Map(statuses.map((status) => [status.id, status.category]));
-    return (id: string) => map.get(id) ?? "todo";
+    return (id: string): StatusCategory => map.get(id) ?? "todo";
   }, [statuses]);
 
   const all = issues.data?.items ?? [];
+  const releaseList = useMemo(
+    () =>
+      [...(releases.data ?? [])].sort(
+        (a, b) => (a.target ?? "9").localeCompare(b.target ?? "9") || a.version.localeCompare(b.version),
+      ),
+    [releases.data],
+  );
+
   const today = dayStart(new Date().toISOString());
+  const range = roadmapRange(options.horizon, today);
+  const pct = (ms: number) => Math.max(0, Math.min(100, ((ms - range.start) / (range.end - range.start)) * 100));
 
-  // The window: whole months, so quarter boundaries land on real edges.
-  const window = useMemo(() => {
-    const now = new Date(today);
-    const first = Date.UTC(
-      now.getUTCFullYear(),
-      now.getUTCMonth() - HORIZON_BEFORE[options.horizon],
-      1,
-    );
-    const last = Date.UTC(
-      new Date(first).getUTCFullYear(),
-      new Date(first).getUTCMonth() + HORIZON_MONTHS[options.horizon],
-      1,
-    );
-    return { from: first, to: last };
-  }, [options.horizon, today]);
+  const months = monthSegments(range.start, range.end).map((month) => ({
+    ...month,
+    left: pct(month.start),
+    width: pct(month.end) - pct(month.start),
+    short: MONTHS[month.month] ?? "",
+    quarter: `Q${Math.floor(month.month / 3) + 1} ${month.year}`,
+  }));
+  const quarters: Array<{ key: string; left: number; width: number }> = [];
+  for (const month of months) {
+    const open = quarters.find((quarter) => quarter.key === month.quarter);
+    if (open) open.width += month.width;
+    else quarters.push({ key: month.quarter, left: month.left, width: month.width });
+  }
 
-  const pct = (ms: number) =>
-    Math.max(0, Math.min(100, ((ms - window.from) / (window.to - window.from)) * 100));
+  const milestones = releaseList.filter((release) => {
+    if (!release.target) return false;
+    const at = dayStart(release.target);
+    return at >= range.start - MILESTONE_SLACK_DAYS * DAY_MS && at <= range.end + MILESTONE_SLACK_DAYS * DAY_MS;
+  });
 
-  const months = useMemo(() => {
-    const out: Array<{ left: number; width: number; label: string; quarter: string }> = [];
-    let cursor = window.from;
-    while (cursor < window.to) {
-      const date = new Date(cursor);
-      const next = Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1);
-      out.push({
-        left: pct(cursor),
-        width: pct(Math.min(next, window.to)) - pct(cursor),
-        label: MONTHS[date.getUTCMonth()] ?? "",
-        quarter: `Q${Math.floor(date.getUTCMonth() / 3) + 1} ${date.getUTCFullYear()}`,
+  const lanes = useMemo<Lane[]>(() => {
+    const count = (items: IssueDto[]) => `${items.filter((issue) => isDone(issue, done)).length}/${items.length} done`;
+
+    if (options.lanes === "release") {
+      return releaseList.flatMap((release, index): Lane[] => {
+        if (!release.target) return [];
+        const items = all.filter((issue) => release.includes.includes(issue.id));
+        const previous = releaseList[index - 1];
+        const end = dayStart(release.target);
+        const start = previous?.target ? dayStart(previous.target) : end - FIRST_RELEASE_RUNUP_DAYS * DAY_MS;
+        return [
+          {
+            key: release.version,
+            label: release.version,
+            items,
+            span: { start, end },
+            lastDay: end,
+            derived: false,
+            meta: count(items),
+            category: RELEASE_TONE[release.status],
+            release,
+          },
+        ];
       });
-      cursor = next;
     }
-    return out;
-  }, [window]);
-
-  const quarters = useMemo(() => {
-    const out: Array<{ left: number; width: number; label: string }> = [];
-    for (const month of months) {
-      const open = out[out.length - 1];
-      if (open && open.label === month.quarter) open.width += month.width;
-      else out.push({ left: month.left, width: month.width, label: month.quarter });
-    }
-    return out;
-  }, [months]);
-
-  const lanes = useMemo<Lane[]>((): Lane[] => {
-    const counted = (group: IssueDto[]) => ({
-      done: group.filter((issue) => categoryOf(issue.status) === "done").length,
-      doing: group.filter((issue) => categoryOf(issue.status) === "doing").length,
-    });
 
     if (options.lanes === "assignee") {
       const people = [...new Set(all.flatMap((issue) => issue.assignees))].sort();
-      return people
-        .map((person): Lane | null => {
-          const group = all.filter(
-            (issue) => issue.assignees.includes(person) && issue.type !== "story",
-          );
-          const span = coveringSpan(group.map(spanOf));
-          if (!span) return null;
-          return {
+      return people.flatMap((person): Lane[] => {
+        const items = all.filter(
+          (issue) => issue.assignees.includes(person) && issue.type !== "story" && spanOf(issue) !== null,
+        );
+        const span = coveringSpan(items.map(spanOf));
+        if (!span) return [];
+        return [
+          {
             key: person,
             label: person,
-            issues: group,
+            items,
             span,
+            lastDay: span.end - DAY_MS,
             derived: true,
+            meta: count(items),
+            category: "doing",
             owners: [person],
-            ...counted(group),
-          };
-        })
-        .filter((lane): lane is Lane => lane !== null);
+            person,
+          },
+        ];
+      });
     }
 
-    // Epic lanes: a top-level story, with the issues that name it.
     return all
-      .filter((issue) => issue.type === "story")
-      .map((epic): Lane | null => {
-        const children = all.filter((issue) => issue.epic === epic.id);
-        const resolved = epicSpan(epic, children);
-        if (!resolved) return null;
-        return {
-          key: epic.id,
-          label: epic.title,
-          issues: children,
-          span: resolved.span,
-          derived: resolved.derived,
-          owners: epic.assignees,
-          epic,
-          ...counted(children),
-        };
-      })
-      .filter((lane): lane is Lane => lane !== null)
-      .sort((a, b) => a.span.start - b.span.start);
-  }, [all, categoryOf, options.lanes]);
+      .filter((issue) => issue.type === "story" && !issue.epic)
+      .flatMap((epic): Lane[] => {
+        const kids = all.filter((issue) => issue.epic === epic.id);
+        const resolved = epicSpan(epic, kids);
+        if (!resolved) return [];
+        return [
+          {
+            key: epic.id,
+            label: epic.title,
+            items: kids,
+            span: resolved.span,
+            lastDay: resolved.span.end - DAY_MS,
+            derived: resolved.derived,
+            meta: count(kids),
+            category: categoryOf(epic.status),
+            owners: epic.assignees,
+            epic,
+            shipsIn: releaseList.find((release) => release.includes.includes(epic.id)),
+          },
+        ];
+      });
+  }, [all, categoryOf, done, options.lanes, releaseList]);
 
   useRegisterPeekList(
-    useMemo(
-      () => lanes.map((lane) => lane.epic?.short_ref).filter((ref): ref is string => !!ref),
-      [lanes],
-    ),
+    useMemo(() => lanes.flatMap((lane) => (lane.epic ? [lane.epic.short_ref] : [])), [lanes]),
   );
 
   if (issues.isPending) return <Loading label="Loading roadmap…" className="flex-1" />;
   if (issues.isError) {
     return (
-      <ErrorBox
-        error={issues.error}
-        title="Could not load the roadmap"
-        onRetry={() => void issues.refetch()}
-      />
+      <ErrorBox error={issues.error} title="Could not load the roadmap" onRetry={() => void issues.refetch()} />
     );
   }
 
+  /** The milestone menu: what the release is, where its issues are, and
+   *  the one field a person moves from here. */
+  const releaseMenu = (release: ReleaseDto): MenuItem[] => [
+    { kind: "head", label: `${release.version} · ${release.status.replace("_", " ")}` },
+    {
+      kind: "text",
+      node: (
+        <>
+          Target <span className="mono">{release.target ?? "unset"}</span>
+          {release.target_ref ? (
+            <>
+              {" · "}
+              <span className="mono">{release.target_ref}</span>
+            </>
+          ) : null}
+          <br />
+          {release.includes.length} issues in scope
+        </>
+      ),
+    },
+    {
+      label: "Show issues in this release",
+      icon: <List className="i" aria-hidden />,
+      disabled: release.includes.length === 0,
+      // Ids are ULIDs and may start with a digit, which DQL reads as a
+      // number — quoting keeps them strings. The Issues list runs its query
+      // as DQL as written; Search first guesses whether text is DQL, and a
+      // bare `IN (…)` does not pass that guess yet.
+      run: () =>
+        navigate({ name: "search", q: `id IN (${release.includes.map((id) => `"${id}"`).join(", ")})` }),
+    },
+    {
+      label: "Copy release path",
+      icon: <Copy className="i" aria-hidden />,
+      run: () => {
+        (navigator.clipboard?.writeText(release.path) ?? Promise.reject(new Error("no clipboard"))).then(
+          () => toast(`Copied — ${release.path}`),
+          () => toast(`Copy: ${release.path}`),
+        );
+      },
+    },
+    { kind: "sep" },
+    {
+      kind: "input",
+      placeholder: "Move target date",
+      type: "date",
+      value: release.target ?? "",
+      button: "Set",
+      run: (value) => {
+        if (!value || value === release.target) return;
+        patchRelease.mutate(
+          { version: release.version, patch: { target: value } },
+          { onSuccess: () => toast(`Committed ${release.path} · target ${value}`) },
+        );
+      },
+    },
+  ];
+
+  /** What a click on a lane does: an epic opens, a release shows its menu,
+   *  a person opens the search for their work. */
+  const laneAction = (lane: Lane, child: ReactNode, className: string, style?: React.CSSProperties, extra?: object) => {
+    if (lane.release) {
+      return (
+        <MenuButton items={releaseMenu(lane.release)}>
+          <button type="button" className={className} style={style} {...extra}>
+            {child}
+          </button>
+        </MenuButton>
+      );
+    }
+    const onClick = lane.epic
+      ? () => onOpen(lane.epic!.short_ref)
+      : () => navigate({ name: "search", q: `assignee = ${lane.person}` });
+    return (
+      <button type="button" className={className} style={style} onClick={onClick} {...extra}>
+        {child}
+      </button>
+    );
+  };
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex items-center gap-3 border-b border-edge px-5 py-3">
-        <h1 className="shrink-0 text-lg font-semibold text-ink">Roadmap</h1>
-        <span className="font-mono text-[11px] text-dim">
-          {lanes.length} {lanes.length === 1 ? "lane" : "lanes"} · spans without dates are derived
-          from the work inside
-        </span>
-      </header>
-
-      {lanes.length === 0 ? (
-        <Empty
-          title="Nothing on the roadmap yet"
-          hint="Give an epic a start and a target, or schedule one of the issues inside it."
-          className="flex-1 justify-center"
-        />
-      ) : (
-        <div className="min-h-0 flex-1 overflow-auto">
-          {/* The axis. */}
-          <div className="sticky top-0 z-10 flex border-b border-edge bg-app">
-            <div className="w-[260px] shrink-0 min-[1200px]:w-[320px]" />
-            <div className="relative mr-6 h-[52px] flex-1">
-              <div className="relative h-[26px]">
-                {quarters.map((quarter) => (
-                  <span
-                    key={quarter.label}
-                    style={{ left: `${quarter.left}%`, width: `${quarter.width}%` }}
-                    className="absolute top-0 truncate border-l border-ctl pl-2 text-[12px] font-semibold leading-6 text-ink"
-                  >
-                    {quarter.label}
-                  </span>
-                ))}
-              </div>
-              <div className="relative h-[22px]">
-                {months.map((month) => (
-                  <span
-                    key={`${month.quarter}-${month.label}`}
-                    style={{ left: `${month.left}%`, width: `${month.width}%` }}
-                    className="absolute top-0 truncate border-l border-edge pl-2 font-mono text-[11px] leading-5 text-muted"
-                  >
-                    {month.label}
-                  </span>
-                ))}
-                <i
-                  style={{ left: `${pct(today)}%` }}
-                  className="absolute -top-[26px] bottom-0 border-l-2 border-dashed border-accent"
-                  aria-hidden
-                />
-              </div>
+    <>
+      <div className="road">
+        <div className="rhead">
+          <div className="rlbl" />
+          <div className="rax">
+            <div className="rq">
+              {quarters.map((quarter) => (
+                <span key={quarter.key} style={{ left: `${quarter.left}%`, width: `${quarter.width}%` }}>
+                  {quarter.key}
+                </span>
+              ))}
             </div>
+            <div className="rm">
+              {months.map((month) => (
+                <span key={month.label} style={{ left: `${month.left}%`, width: `${month.width}%` }}>
+                  {month.short}
+                </span>
+              ))}
+            </div>
+            {options.milestones ? (
+              <div className="rmil">
+                {milestones.map((release) => (
+                  <MenuButton key={release.version} items={releaseMenu(release)}>
+                    <button
+                      type="button"
+                      className={cn("mil", RELEASE_TONE[release.status])}
+                      style={{ left: `${pct(dayStart(release.target ?? ""))}%` }}
+                      {...tip.handlers(() => ({
+                        head: `${release.version} · ${release.status.replace("_", " ")}`,
+                        body: `target ${release.target} · ${release.includes.length} issues in scope`,
+                      }))}
+                    >
+                      <i />
+                      <span>{release.version}</span>
+                    </button>
+                  </MenuButton>
+                ))}
+              </div>
+            ) : null}
+            <i className="today" style={{ left: `${pct(today)}%` }}>
+              <b>today</b>
+            </i>
           </div>
+        </div>
 
-          {/* The lanes. */}
-          <div className="flex flex-col">
-            {lanes.map((lane) => {
-              const total = lane.issues.length || 1;
-              const donePct = (lane.done / total) * 100;
-              const doingPct = (lane.doing / total) * 100;
+        <div className="rlanes">
+          {lanes.length === 0 ? (
+            <p className="empty" style={{ padding: 20 }}>
+              No lanes in this horizon.
+            </p>
+          ) : (
+            lanes.map((lane) => {
+              const doneCount = lane.items.filter((issue) => isDone(issue, done)).length;
+              const doing = lane.items.filter((issue) => categoryOf(issue.status) === "doing").length;
+              const n = lane.items.length || 1;
               const left = pct(lane.span.start);
-              const width = Math.max(1.2, pct(lane.span.end) - left);
-              const finished = lane.done === lane.issues.length && lane.issues.length > 0;
-              const late = isLate(lane.span, finished, today);
-
+              const width = Math.max(1.5, pct(lane.span.end) - left);
+              const late = lane.category !== "done" && lane.span.end < today;
+              const icon = lane.epic ? <TypeBadge type="story" /> : lane.release ? <Tag className="i" aria-hidden /> : <User className="i" aria-hidden />;
+              const nameTitle = lane.epic ? "Open the epic" : lane.release ? "Release options" : `Search ${lane.label}'s work`;
               return (
-                <div key={lane.key} className="flex min-h-[58px] border-b border-edge hover:bg-hover">
-                  <div className="flex w-[260px] shrink-0 flex-col justify-center gap-1 px-4 min-[1200px]:w-[320px]">
-                    <button
-                      type="button"
-                      disabled={!lane.epic}
-                      onClick={() => lane.epic && onOpen(lane.epic.short_ref)}
-                      className="flex min-w-0 items-center gap-2 text-left text-[13px] font-medium text-ink disabled:cursor-default"
-                    >
-                      {lane.epic ? (
-                        <IssueHandle shortRef={lane.epic.short_ref} number={lane.epic.number} />
-                      ) : null}
-                      <span className={cn("truncate", lane.epic && "hover:underline")}>
-                        {lane.label}
-                      </span>
-                    </button>
-                    <div className="flex items-center gap-2 text-[11px] text-muted">
-                      <AssigneeCircles assignees={lane.owners} />
-                      <span className="font-mono">
-                        {lane.done}/{lane.issues.length} done
-                      </span>
-                      {lane.derived ? (
-                        <span
-                          className="font-mono text-faint"
-                          title="This span is the span of the issues inside — it is not stored anywhere"
-                        >
-                          derived
-                        </span>
-                      ) : null}
-                    </div>
+                <div key={lane.key} className="rlane">
+                  <div className="rlbl">
+                    {laneAction(
+                      lane,
+                      <>
+                        {icon}
+                        <span className="lbl">{lane.label}</span>
+                      </>,
+                      cn("rname", "open"),
+                      undefined,
+                      { title: nameTitle },
+                    )}
+                    <span className="rmeta">
+                      {lane.owners ? <AssigneeCircles assignees={lane.owners} /> : null}
+                      <span className="mono">{lane.meta}</span>
+                      {lane.shipsIn && options.lanes === "epic" ? <span className="chip">{lane.shipsIn.version}</span> : null}
+                    </span>
                   </div>
-
-                  <div className="relative mr-6 flex-1">
+                  <div className="rtrack">
                     {months.map((month) => (
-                      <i
-                        key={`${lane.key}-${month.quarter}-${month.label}`}
-                        style={{ left: `${month.left}%` }}
-                        className="absolute inset-y-0 border-l border-edge"
-                        aria-hidden
-                      />
+                      <i key={month.label} className="rgrid" style={{ left: `${month.left}%` }} />
                     ))}
-                    <i
-                      style={{ left: `${pct(today)}%` }}
-                      className="absolute inset-y-0 border-l border-accent/60"
-                      aria-hidden
-                    />
-                    <button
-                      type="button"
-                      disabled={!lane.epic}
-                      onClick={() => lane.epic && onOpen(lane.epic.short_ref)}
-                      title={`${new Date(lane.span.start).toISOString().slice(0, 10)} → ${new Date(
-                        lane.span.end - DAY_MS,
-                      )
-                        .toISOString()
-                        .slice(0, 10)}${lane.derived ? " · derived from the issues inside" : ""}`}
-                      style={{ left: `${left}%`, width: `${width}%` }}
-                      className={cn(
-                        "absolute top-1/2 flex h-6 -translate-y-1/2 items-center justify-end overflow-hidden rounded-md border px-2 font-mono text-[10.5px] text-ink-2",
-                        lane.derived ? "border-dashed border-ctl" : "border-ctl bg-todo-bg",
-                        late && "border-crit-text",
-                      )}
-                    >
-                      <i
-                        style={{ width: `${donePct}%` }}
-                        className="absolute inset-y-0 left-0 bg-done-text/50"
-                        aria-hidden
-                      />
-                      <i
-                        style={{ left: `${donePct}%`, width: `${doingPct}%` }}
-                        className="absolute inset-y-0 bg-doing-text/45"
-                        aria-hidden
-                      />
-                      {options.progress && lane.issues.length > 0 ? (
-                        <span className="relative">{Math.round(donePct)}%</span>
-                      ) : null}
-                    </button>
+                    <i className="today" style={{ left: `${pct(today)}%` }} />
+                    {laneAction(
+                      lane,
+                      <>
+                        <i className="fill done" style={{ width: `${(doneCount / n) * 100}%` }} />
+                        <i className="fill doing" style={{ left: `${(doneCount / n) * 100}%`, width: `${(doing / n) * 100}%` }} />
+                        <span className="rlabel">{options.progress ? `${Math.round((doneCount / n) * 100)}%` : ""}</span>
+                      </>,
+                      cn("rbar", lane.derived && "derived", late && "late", "open"),
+                      { left: `${left}%`, width: `${width}%` },
+                      tip.handlers(() => ({
+                        head: lane.label,
+                        body: (
+                          <>
+                            {shortDate(lane.span.start)} → {shortDate(lane.lastDay)}
+                            {lane.derived ? " · span derived from children" : ""} · {doneCount} done, {doing} in flight,{" "}
+                            {lane.items.length - doneCount - doing} to do
+                            {late ? (
+                              <>
+                                {" · "}
+                                <b>past target</b>
+                              </>
+                            ) : null}
+                          </>
+                        ),
+                      })),
+                    )}
                   </div>
                 </div>
               );
-            })}
-          </div>
-
-          <p className="px-5 py-4 text-[11.5px] leading-relaxed text-muted">
-            Release lanes — which version each epic lands in, and whether git can prove it
-            shipped — arrive with the release model. Until then this reads the work itself.
-          </p>
+            })
+          )}
         </div>
-      )}
-    </div>
+
+        <div className="rfoot">
+          <span className="legend">
+            <i className="sw done" />
+            done <i className="sw doing" />
+            in flight <i className="sw todo" />
+            to do <i className="sw derived" />
+            span derived from children <i className="sw mil" />
+            release target
+          </span>
+          <Sp />
+          <Btn onClick={() => navigate({ name: "new-issue", type: "story" })}>
+            <Plus className="i" aria-hidden />
+            New epic
+          </Btn>
+        </div>
+      </div>
+      {tip.node}
+    </>
   );
 }

@@ -8,550 +8,679 @@
 //
 // Dependencies come from `blocked_by`, which already exists in the file. The
 // critical path is computed on read; nothing about it is stored.
+//
+// The markup follows the approved design's class recipes (styles.css,
+// "Workbench recipes": `.gantt`, `.gleft`, `.gscroll`, `.gbar`, `.tray`) so
+// the chart is the one that was signed off, not a re-interpretation of it.
 
-import { useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { CalendarPlus } from "lucide-react";
-import { useBulkPatchIssue, useIssues, usePatchIssue, useSchema } from "../lib/queries";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
+import { createPortal } from "react-dom";
+import { Calendar, Layers, X } from "lucide-react";
+import { toast } from "sonner";
+import { useBulkPatchIssue, useIssues, usePatchIssue, useSchema, useStatus } from "../lib/queries";
 import { useRegisterPeekList } from "../lib/peeklist";
+import { useViewOptions } from "../lib/viewopts";
+import { doneIds, filtersToDql, isDone, matchesFilters, POOL_LIMIT } from "../lib/lists";
+import { routeToHash } from "../lib/router";
 import {
   criticalPath,
   DAY_MS,
   dayStart,
   durationDays,
   epicSpan,
+  ganttRange,
   isLate,
+  monthSegments,
+  scheduleSequentially,
+  shortDate,
   spanOf,
   toDay,
+  weekendOffsets,
   type Span,
 } from "../lib/schedule";
-import type { IssueDto, StatusDto } from "../lib/types";
+import type { IssueDto, StatusCategory } from "../lib/types";
 import { AssigneeCircles, IssueHandle, PriorityDot, TypeBadge } from "../components/badges";
-import { Empty, ErrorBox, Loading } from "../components/states";
-import { SectionHeading } from "../components/chrome";
+import { ErrorBox, Loading } from "../components/states";
+import { Btn, HeadingNote, SectionHeading, Sp } from "../components/chrome";
 import { cn } from "../lib/cn";
-import { useGanttOptions, type GanttZoom } from "../components/panes/GanttPane";
+import { useGanttOptions } from "../components/panes/GanttPane";
 
-const PAGE_SIZE = 500;
-const ROW_HEIGHT = 34;
-const GROUP_HEIGHT = 30;
+const ROW = 34;
+const HEAD = 30;
+/** Where today sits after the canvas scrolls into place. */
+const TODAY_OFFSET_PX = 240;
 
-/** Pixels per day at each zoom. Wider than a few pixels or the bars stop
- *  being draggable; narrower than ~40 and a quarter stops fitting. */
-const PIXELS_PER_DAY: Record<GanttZoom, number> = { day: 36, week: 13, month: 5 };
-const WINDOW_DAYS: Record<GanttZoom, { before: number; total: number }> = {
-  day: { before: 7, total: 35 },
-  week: { before: 21, total: 98 },
-  month: { before: 60, total: 260 },
-};
+// ---------------------------------------------------------------------------
+// Tooltip. One element, positioned by the pointer, shared by every bar and
+// milestone on the plan views. It follows the pointer and flips to stay on
+// screen, as the design does.
+// ---------------------------------------------------------------------------
 
-interface Row {
-  kind: "group" | "issue";
+interface TipContent {
+  head: string;
+  body: ReactNode;
+}
+
+export interface Tip {
+  /** Attach to a bar: pointerenter shows, pointermove follows, leave and press hide. */
+  handlers: (content: () => TipContent) => {
+    onPointerEnter: (event: ReactPointerEvent<HTMLElement>) => void;
+    onPointerMove: (event: ReactPointerEvent<HTMLElement>) => void;
+    onPointerLeave: () => void;
+    onPointerDown: () => void;
+  };
+  hide: () => void;
+  node: ReactNode;
+}
+
+export function useTip(): Tip {
+  const [tip, setTip] = useState<(TipContent & { x: number; y: number }) | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+
+  // The flip needs the rendered size, so it happens after layout.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || !tip) return;
+    let x = tip.x + 12;
+    let y = tip.y + 14;
+    if (x + el.offsetWidth > window.innerWidth - 8) x = tip.x - el.offsetWidth - 12;
+    if (y + el.offsetHeight > window.innerHeight - 8) y = tip.y - el.offsetHeight - 12;
+    el.style.left = `${x}px`;
+    el.style.top = `${y}px`;
+  }, [tip]);
+
+  const hide = () => setTip(null);
+  const handlers: Tip["handlers"] = (content) => ({
+    onPointerEnter: (event) => setTip({ ...content(), x: event.clientX, y: event.clientY }),
+    onPointerMove: (event) =>
+      setTip((current) => (current ? { ...current, x: event.clientX, y: event.clientY } : current)),
+    onPointerLeave: hide,
+    onPointerDown: hide,
+  });
+
+  const node = tip
+    ? createPortal(
+        <div ref={ref} className="tip" role="tooltip">
+          <b>{tip.head}</b>
+          {tip.body ? <span>{tip.body}</span> : null}
+        </div>,
+        document.body,
+      )
+    : null;
+
+  return { handlers, hide, node };
+}
+
+// ---------------------------------------------------------------------------
+// Row model.
+// ---------------------------------------------------------------------------
+
+interface Group {
   key: string;
-  top: number;
-  label?: string;
-  count?: number;
-  span?: Span | null;
-  derived?: boolean;
-  issue?: IssueDto;
+  label: string;
+  items: IssueDto[];
+  epic?: IssueDto;
 }
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-function monthTicks(from: number, days: number, ppd: number) {
-  const ticks: Array<{ x: number; width: number; label: string }> = [];
-  const end = from + days * DAY_MS;
-  let cursor = from;
-  while (cursor < end) {
-    const date = new Date(cursor);
-    const monthStart = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1);
-    const nextMonth = Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1);
-    const a = Math.max(monthStart, from);
-    const b = Math.min(nextMonth, end);
-    ticks.push({
-      x: ((a - from) / DAY_MS) * ppd,
-      width: ((b - a) / DAY_MS) * ppd,
-      label: `${MONTHS[date.getUTCMonth()]} ${date.getUTCFullYear()}`,
-    });
-    cursor = nextMonth;
-  }
-  return ticks;
-}
+type GanttRow =
+  | { kind: "g"; group: Group; y: number }
+  | { kind: "i"; issue: IssueDto; span: Span; y: number };
 
 export function GanttView({ onOpen }: { onOpen: (id: string) => void }) {
-  const issues = useIssues({ limit: PAGE_SIZE });
+  const issues = useIssues({ limit: POOL_LIMIT });
   const schema = useSchema();
-  // The tray schedules one issue at a time through the same endpoint every
-  // other edit uses — one PATCH, one commit.
-  const schedule = useBulkPatchIssue();
+  const status = useStatus();
+  const { filters, toggleMine, toggleContext, toggleType } = useViewOptions();
   const options = useGanttOptions();
+  // The tray schedules through the same endpoint every other edit uses: one
+  // PATCH per issue, one commit per file on the server.
+  const bulk = useBulkPatchIssue();
+  const tip = useTip();
   const scroller = useRef<HTMLDivElement>(null);
+  const leftRows = useRef<HTMLDivElement>(null);
 
-  const statuses: StatusDto[] = schema.data?.workflow.statuses ?? [];
-  const doneIds = useMemo(
-    () => new Set(statuses.filter((s) => s.category === "done").map((s) => s.id)),
-    [statuses],
-  );
+  const me = status.data?.me ?? null;
+  const statuses = schema.data?.workflow.statuses ?? [];
+  const done = useMemo(() => doneIds(statuses), [statuses]);
+  const categoryOf = useMemo(() => {
+    const map = new Map(statuses.map((s) => [s.id, s.category]));
+    return (id: string): StatusCategory => map.get(id) ?? "todo";
+  }, [statuses]);
 
   const all = issues.data?.items ?? [];
-  const epics = useMemo(() => all.filter((issue) => issue.type === "story"), [all]);
-  const work = useMemo(
+  const today = dayStart(new Date().toISOString());
+  const range = ganttRange(options.zoom, today);
+  const width = range.days * range.ppd;
+  const xOf = (ms: number) => ((ms - range.start) / DAY_MS) * range.ppd;
+
+  const byId = useMemo(() => new Map(all.map((issue) => [issue.id, issue])), [all]);
+
+  // The pool: work (not epics), through the shared filters, done hidden
+  // unless asked for. Scheduled is anything with at least one date.
+  const pool = useMemo(
     () =>
       all.filter(
         (issue) =>
-          issue.type !== "story" && (options.showDone || !doneIds.has(issue.status)),
+          issue.type !== "story" &&
+          matchesFilters(issue, filters, me) &&
+          (options.showDone || !isDone(issue, done)),
       ),
-    [all, doneIds, options.showDone],
+    [all, filters, me, options.showDone, done],
   );
-
-  const scheduled = useMemo(() => work.filter((issue) => spanOf(issue) !== null), [work]);
-  const unscheduled = useMemo(() => work.filter((issue) => spanOf(issue) === null), [work]);
+  const scheduled = useMemo(() => pool.filter((issue) => spanOf(issue) !== null), [pool]);
+  const unscheduled = useMemo(() => pool.filter((issue) => spanOf(issue) === null), [pool]);
 
   const critical = useMemo(
-    () =>
-      options.critical
-        ? criticalPath(
-            scheduled.map((issue) => ({
-              short_ref: issue.short_ref,
-              start: issue.start,
-              due: issue.due,
-              estimate: issue.estimate,
-              // `blocked_by` is not on the wire yet; the field exists in the
-              // file and the model, so this reads empty until the DTO
-              // carries it. The path then appears with no UI change.
-              blocked_by: [],
-            })),
-          )
-        : new Set<string>(),
+    () => (options.critical ? criticalPath(scheduled) : new Set<string>()),
     [options.critical, scheduled],
   );
 
-  // Rows: optionally grouped, each group's issues sorted by when they start.
-  const rows = useMemo(() => {
-    const byStart = (a: IssueDto, b: IssueDto) =>
-      (spanOf(a)?.start ?? 0) - (spanOf(b)?.start ?? 0);
-
-    const groups: Array<{ key: string; label: string; issues: IssueDto[]; epic?: IssueDto }> = [];
+  const { rows, total } = useMemo(() => {
+    let groups: Group[] = [];
     if (options.groupBy === "epic") {
-      for (const epic of epics) {
-        const children = scheduled.filter((issue) => issue.epic === epic.id);
-        if (children.length > 0) {
-          groups.push({ key: epic.id, label: epic.title, issues: children, epic });
-        }
-      }
-      const loose = scheduled.filter(
-        (issue) => !issue.epic || !epics.some((epic) => epic.id === issue.epic),
-      );
-      if (loose.length > 0) groups.push({ key: "none", label: "No epic", issues: loose });
+      const epics = all.filter((issue) => issue.type === "story" && !issue.epic);
+      const epicIds = new Set(epics.map((epic) => epic.id));
+      groups = epics
+        .map((epic) => ({
+          key: epic.id,
+          label: epic.title,
+          epic,
+          items: scheduled.filter((issue) => issue.epic === epic.id),
+        }))
+        .filter((group) => group.items.length > 0);
+      const none = scheduled.filter((issue) => !issue.epic || !epicIds.has(issue.epic));
+      if (none.length > 0) groups.push({ key: "none", label: "No epic", items: none });
     } else if (options.groupBy === "assignee") {
       const people = [...new Set(scheduled.flatMap((issue) => issue.assignees))].sort();
-      for (const person of people) {
-        groups.push({
-          key: person,
-          label: person,
-          issues: scheduled.filter((issue) => issue.assignees.includes(person)),
-        });
-      }
-      const nobody = scheduled.filter((issue) => issue.assignees.length === 0);
-      if (nobody.length > 0) groups.push({ key: "none", label: "Unassigned", issues: nobody });
+      groups = [...people, null]
+        .map((person) => ({
+          key: person ?? "none",
+          label: person ?? "Unassigned",
+          items: scheduled.filter((issue) =>
+            person ? issue.assignees.includes(person) : issue.assignees.length === 0,
+          ),
+        }))
+        .filter((group) => group.items.length > 0);
     } else {
-      groups.push({ key: "all", label: "Scheduled", issues: [...scheduled] });
+      groups = [{ key: "all", label: "All scheduled", items: [...scheduled] }];
     }
+    const byStart = (a: IssueDto, b: IssueDto) => (spanOf(a)?.start ?? 0) - (spanOf(b)?.start ?? 0);
 
-    const out: Row[] = [];
-    let top = 0;
+    const out: GanttRow[] = [];
+    let y = 0;
     for (const group of groups) {
       if (options.groupBy !== "none") {
-        const derived = group.epic
-          ? epicSpan(group.epic, group.issues)
-          : { span: null as Span | null, derived: true };
-        out.push({
-          kind: "group",
-          key: `g:${group.key}`,
-          top,
-          label: group.label,
-          count: group.issues.length,
-          span: derived?.span ?? null,
-          derived: derived?.derived ?? true,
-        });
-        top += GROUP_HEIGHT;
+        out.push({ kind: "g", group, y });
+        y += HEAD;
       }
-      for (const issue of [...group.issues].sort(byStart)) {
-        out.push({ kind: "issue", key: issue.short_ref, top, issue });
-        top += ROW_HEIGHT;
+      for (const issue of [...group.items].sort(byStart)) {
+        const span = spanOf(issue);
+        if (!span) continue;
+        out.push({ kind: "i", issue, span, y });
+        y += ROW;
       }
     }
-    return { rows: out, height: top };
-  }, [epics, options.groupBy, scheduled]);
+    return { rows: out, total: y };
+  }, [all, options.groupBy, scheduled]);
 
   useRegisterPeekList(
     useMemo(
-      () => rows.rows.filter((row) => row.issue).map((row) => row.issue!.short_ref),
+      () => rows.flatMap((row) => (row.kind === "i" ? [row.issue.short_ref] : [])),
       [rows],
     ),
   );
 
-  // The window: a few weeks either side of today, wide enough that dragging
-  // has somewhere to go.
-  const today = dayStart(new Date().toISOString());
-  const ppd = PIXELS_PER_DAY[options.zoom];
-  const window = WINDOW_DAYS[options.zoom];
-  const from = today - window.before * DAY_MS;
-  const width = window.total * ppd;
-  const xOf = (ms: number) => ((ms - from) / DAY_MS) * ppd;
+  // Today sits a little in from the left edge: on every zoom, and once the
+  // canvas exists (it does not while the plan is still loading).
+  const loaded = !issues.isPending;
+  useEffect(() => {
+    const el = scroller.current;
+    if (el) el.scrollLeft = Math.max(0, xOf(today) - TODAY_OFFSET_PX);
+    // xOf changes with the range, which is a function of zoom and today.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [options.zoom, today, loaded]);
+
+  const chips = [
+    ...(filters.mine ? [{ dql: "assignee = @me", remove: toggleMine }] : []),
+    ...[...filters.contexts].sort().map((context) => ({
+      dql: `label = context:${context}`,
+      remove: () => toggleContext(context),
+    })),
+    ...[...filters.types].sort().map((type) => ({ dql: `type = ${type}`, remove: () => toggleType(type) })),
+  ];
+  const chipDql = filtersToDql(filters).join(" and ");
 
   if (issues.isPending) return <Loading label="Loading plan…" className="flex-1" />;
   if (issues.isError) {
     return (
-      <ErrorBox
-        error={issues.error}
-        title="Could not load the plan"
-        onRetry={() => void issues.refetch()}
-      />
+      <ErrorBox error={issues.error} title="Could not load the plan" onRetry={() => void issues.refetch()} />
     );
   }
 
+  // Bar geometry by issue id, for the dependency arrows.
+  const positions = new Map<string, { x1: number; x2: number; yc: number }>();
+  for (const row of rows) {
+    if (row.kind === "i") {
+      positions.set(row.issue.id, { x1: xOf(row.span.start), x2: xOf(row.span.end), yc: row.y + ROW / 2 });
+    }
+  }
+  const deps: Array<{ key: string; d: string; bad: boolean }> = [];
+  if (options.deps) {
+    for (const row of rows) {
+      if (row.kind !== "i") continue;
+      for (const blocker of row.issue.blocked_by ?? []) {
+        const a = positions.get(blocker);
+        const b = positions.get(row.issue.id);
+        const blockerIssue = byId.get(blocker);
+        if (!a || !b || !blockerIssue) continue;
+        const blockerSpan = spanOf(blockerIssue);
+        const bad = blockerSpan !== null && blockerSpan.end > row.span.start;
+        deps.push({
+          key: `${blocker}>${row.issue.id}`,
+          d: `M${a.x2} ${a.yc} H${a.x2 + 8} V${b.yc} H${b.x1 - 2}`,
+          bad,
+        });
+      }
+    }
+  }
+
+  const months = monthSegments(range.start, range.start + range.days * DAY_MS);
+  const ticks: Array<{ key: number; left: number; width: number; label: string; we: boolean }> = [];
+  if (options.zoom === "day") {
+    for (let k = 0; k < range.days; k += 1) {
+      const date = new Date(range.start + k * DAY_MS);
+      ticks.push({
+        key: k,
+        left: k * range.ppd,
+        width: range.ppd,
+        label: String(date.getUTCDate()),
+        we: date.getUTCDay() % 6 === 0,
+      });
+    }
+  } else {
+    for (let k = 0; k < range.days; k += 7) {
+      const date = new Date(range.start + k * DAY_MS);
+      ticks.push({
+        key: k,
+        left: k * range.ppd,
+        width: 7 * range.ppd,
+        label: options.zoom === "week" ? shortDate(date.getTime()) : String(date.getUTCDate()),
+        we: false,
+      });
+    }
+  }
+  const weekends =
+    options.weekends && options.zoom !== "month" ? weekendOffsets(range.start, range.days) : [];
+
+  const scheduleOne = (issue: IssueDto) => {
+    const [plan] = scheduleSequentially([issue], today);
+    if (!plan) return;
+    bulk.mutate([{ id: issue.short_ref, set: { start: plan.start, due: plan.due } }], {
+      onSuccess: () => toast(`Scheduled · ${handleOf(issue)} ${shortDate(today)} → ${shortDate(dayStart(plan.due))}`),
+    });
+  };
+  const scheduleAll = () => {
+    const plans = scheduleSequentially(unscheduled, today);
+    const refs = new Map(unscheduled.map((issue) => [issue.id, issue.short_ref]));
+    bulk.mutate(
+      plans.map((plan) => ({ id: refs.get(plan.id) ?? plan.id, set: { start: plan.start, due: plan.due } })),
+      { onSuccess: () => toast("Scheduled back-to-back from today · one commit per field") },
+    );
+  };
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex items-center gap-3 border-b border-edge px-5 py-3">
-        <h1 className="shrink-0 text-lg font-semibold text-ink">Gantt</h1>
-        <span className="font-mono text-[11px] text-dim">
-          {scheduled.length} scheduled · {unscheduled.length} without dates
-        </span>
-        <span className="ml-auto hidden font-mono text-[11px] text-faint min-[1000px]:block">
-          drag a bar to move it · drag an edge to change start or due
-        </span>
-      </header>
+    <>
+      {chips.length > 0 ? (
+        <div className="filters">
+          {chips.map((chip) => (
+            <span key={chip.dql} className="fchip">
+              {chip.dql}
+              <button type="button" className="rmf" title="Remove this filter" onClick={chip.remove}>
+                <X className="i" aria-hidden />
+              </button>
+            </span>
+          ))}
+          <a className="dq" href={routeToHash({ name: "search", q: chipDql })} title="Run this exact query on the Search page">
+            {chipDql}
+          </a>
+        </div>
+      ) : null}
 
-      {scheduled.length === 0 && unscheduled.length === 0 ? (
-        <Empty
-          title="Nothing to plan yet"
-          hint="Create an issue, then give it a start or a due date."
-          className="flex-1 justify-center"
-        />
-      ) : (
-        <div className="flex min-h-0 flex-1">
-          {/* The row labels, fixed while the axis scrolls. */}
-          <div className="flex w-[280px] shrink-0 flex-col border-r border-edge bg-panel min-[1200px]:w-[340px]">
-            <div className="h-[46px] shrink-0 border-b border-edge" />
-            <div className="relative min-h-0 flex-1 overflow-hidden" style={{ height: rows.height }}>
-              {rows.rows.map((row) =>
-                row.kind === "group" ? (
-                  <div
-                    key={row.key}
-                    style={{ top: row.top, height: GROUP_HEIGHT }}
-                    className="absolute inset-x-0 flex items-center gap-2 border-b border-edge bg-sunken px-3 text-[12px] font-medium text-ink"
-                  >
-                    <span className="truncate">{row.label}</span>
-                    <span className="ml-auto font-mono text-[11px] text-muted">{row.count}</span>
-                  </div>
-                ) : (
-                  <button
-                    key={row.key}
-                    type="button"
-                    onClick={() => onOpen(row.issue!.short_ref)}
-                    style={{ top: row.top, height: ROW_HEIGHT }}
-                    className="absolute inset-x-0 flex items-center gap-2 border-b border-edge px-3 text-left text-[12.5px] text-ink-2 transition-colors hover:bg-hover hover:text-ink"
-                  >
-                    <IssueHandle shortRef={row.issue!.short_ref} number={row.issue!.number} />
-                    <TypeBadge type={row.issue!.type} />
-                    <PriorityDot priority={row.issue!.priority} />
-                    <span className="min-w-0 flex-1 truncate">{row.issue!.title}</span>
-                    <AssigneeCircles assignees={row.issue!.assignees} />
-                  </button>
-                ),
-              )}
-            </div>
+      <div className="gantt">
+        <div className="gleft">
+          <div className="gcorner">
+            <span>
+              {scheduled.length} scheduled · {unscheduled.length} unscheduled
+            </span>
           </div>
+          <div className="grows" ref={leftRows} style={{ height: total }}>
+            {rows.map((row) =>
+              row.kind === "g" ? (
+                <div key={`g:${row.group.key}`} className="grow gh" style={{ top: row.y, height: HEAD }}>
+                  {row.group.epic ? <TypeBadge type="story" /> : <Layers className="i" aria-hidden />}
+                  <span className="lbl">{row.group.label}</span>
+                  <span className="cnt">{row.group.items.length}</span>
+                </div>
+              ) : (
+                <button
+                  key={row.issue.id}
+                  type="button"
+                  className="grow"
+                  style={{ top: row.y, height: ROW }}
+                  onClick={() => onOpen(row.issue.short_ref)}
+                >
+                  <IssueHandle shortRef={row.issue.short_ref} number={row.issue.number} />
+                  <TypeBadge type={row.issue.type} />
+                  <PriorityDot priority={row.issue.priority} />
+                  <span className="lbl">{row.issue.title}</span>
+                  <AssigneeCircles assignees={row.issue.assignees} />
+                </button>
+              ),
+            )}
+          </div>
+        </div>
 
-          {/* The axis and the bars. */}
-          <div ref={scroller} className="min-h-0 flex-1 overflow-auto">
-            <div style={{ width }} className="relative">
-              <div className="sticky top-0 z-10 h-[46px] border-b border-edge bg-app">
-                <div className="relative h-[24px]">
-                  {monthTicks(from, window.total, ppd).map((tick) => (
-                    <span
-                      key={tick.label + tick.x}
-                      style={{ left: tick.x, width: tick.width }}
-                      className="absolute top-0 truncate border-l border-edge pl-2 text-[12px] font-medium leading-6 text-ink"
-                    >
-                      {tick.label}
-                    </span>
-                  ))}
-                </div>
-                <div className="relative h-[22px]">
-                  {options.zoom !== "month"
-                    ? Array.from({ length: window.total }, (_, index) => {
-                        const date = new Date(from + index * DAY_MS);
-                        const weekend = date.getUTCDay() % 6 === 0;
-                        if (options.zoom === "week" && date.getUTCDay() !== 1) return null;
-                        return (
-                          <span
-                            key={index}
-                            style={{ left: index * ppd, width: ppd * (options.zoom === "week" ? 7 : 1) }}
-                            className={cn(
-                              "absolute top-0 border-l border-edge text-center font-mono text-[10.5px] leading-5",
-                              weekend ? "text-faint" : "text-muted",
-                            )}
-                          >
-                            {date.getUTCDate()}
-                          </span>
-                        );
-                      })
-                    : null}
-                </div>
+        <div
+          className="gscroll"
+          ref={scroller}
+          onScroll={(event) => {
+            // The labels have no scrollbar of their own; they follow the
+            // canvas so a row and its bar never drift apart.
+            if (leftRows.current) leftRows.current.style.transform = `translateY(${-event.currentTarget.scrollTop}px)`;
+          }}
+        >
+          <div className="gcanvas" style={{ width }}>
+            <div className="axis">
+              <div className="months">
+                {months.map((month) => (
+                  <span key={month.label} style={{ left: xOf(month.start), width: xOf(month.end) - xOf(month.start) }}>
+                    {month.label}
+                  </span>
+                ))}
               </div>
-
-              <div className="relative" style={{ height: rows.height }}>
-                {/* Weekends, so a bar's length reads as working time. */}
-                {options.weekends && options.zoom !== "month"
-                  ? Array.from({ length: window.total }, (_, index) => {
-                      const date = new Date(from + index * DAY_MS);
-                      if (date.getUTCDay() % 6 !== 0) return null;
-                      return (
-                        <i
-                          key={index}
-                          style={{ left: index * ppd, width: ppd }}
-                          className="absolute inset-y-0 bg-sunken"
-                        />
-                      );
-                    })
-                  : null}
-                <i
-                  style={{ left: xOf(today) }}
-                  className="absolute inset-y-0 z-[1] border-l-2 border-dashed border-accent"
-                  aria-hidden
-                />
-
-                {rows.rows.map((row) =>
-                  row.kind === "group" ? (
+              <div className="ticks">
+                {ticks.map((tick) => (
+                  <span key={tick.key} className={cn("tick", tick.we && "we")} style={{ left: tick.left, width: tick.width }}>
+                    {tick.label}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div className="gbody" style={{ height: total }}>
+              {weekends.map((offset) => (
+                <i key={offset} className="we" style={{ left: offset * range.ppd, width: range.ppd }} />
+              ))}
+              {rows.map((row) =>
+                row.kind === "g" ? (
+                  <i key={`line:${row.group.key}`} className="gline" style={{ top: row.y, height: HEAD }} />
+                ) : null,
+              )}
+              <i className="today" style={{ left: xOf(today) }}>
+                <b>today</b>
+              </i>
+              <svg className="deps" width={width} height={total}>
+                <defs>
+                  <marker id="gar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                    <path d="M0 0L10 5 0 10z" />
+                  </marker>
+                  <marker id="garb" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                    <path d="M0 0L10 5 0 10z" />
+                  </marker>
+                </defs>
+                {deps.map((dep) => (
+                  <path key={dep.key} d={dep.d} className={cn("dep", dep.bad && "bad")} markerEnd={`url(#gar${dep.bad ? "b" : ""})`} />
+                ))}
+              </svg>
+              {rows.map((row) => {
+                if (row.kind === "g") {
+                  if (!row.group.epic) return null;
+                  const children = all.filter((issue) => issue.epic === row.group.epic!.id);
+                  const resolved = epicSpan(row.group.epic, children);
+                  if (!resolved) return null;
+                  return (
                     <div
-                      key={row.key}
-                      style={{ top: row.top, height: GROUP_HEIGHT }}
-                      className="absolute inset-x-0 border-b border-edge bg-sunken/60"
-                    >
-                      {row.span ? (
-                        <span
-                          title={
-                            row.derived
-                              ? "Span derived from the issues inside — never stored"
-                              : "The epic's own start and target"
-                          }
-                          style={{
-                            left: xOf(row.span.start),
-                            width: Math.max(4, xOf(row.span.end) - xOf(row.span.start)),
-                          }}
-                          className={cn(
-                            "absolute top-[11px] block h-2 rounded-full",
-                            row.derived ? "border border-dashed border-ctl" : "bg-ctl",
-                          )}
-                        />
-                      ) : null}
-                    </div>
-                  ) : (
-                    <GanttBar
-                      key={row.key}
-                      issue={row.issue!}
-                      top={row.top}
-                      ppd={ppd}
-                      from={from}
-                      today={today}
-                      done={doneIds.has(row.issue!.status)}
-                      critical={critical.has(row.issue!.short_ref)}
-                      onOpen={onOpen}
+                      key={`span:${row.group.key}`}
+                      className={cn("espan", resolved.derived && "derived")}
+                      style={{
+                        left: xOf(resolved.span.start),
+                        width: Math.max(4, xOf(resolved.span.end) - xOf(resolved.span.start)),
+                        top: row.y + 11,
+                      }}
+                      title={resolved.derived ? "Span derived from the children — never stored" : "Epic start → target"}
                     />
-                  ),
-                )}
-              </div>
+                  );
+                }
+                return (
+                  <GanttBar
+                    key={row.issue.id}
+                    issue={row.issue}
+                    span={row.span}
+                    y={row.y}
+                    ppd={range.ppd}
+                    xOf={xOf}
+                    today={today}
+                    category={categoryOf(row.issue.status)}
+                    done={isDone(row.issue, done)}
+                    critical={critical.has(row.issue.id)}
+                    tip={tip}
+                    onOpen={onOpen}
+                  />
+                );
+              })}
             </div>
           </div>
         </div>
-      )}
+      </div>
 
-      {/* Everything with no dates at all. An empty tray is the goal state. */}
-      {unscheduled.length > 0 ? (
-        <div className="max-h-[34%] shrink-0 overflow-auto border-t border-edge bg-panel px-5 py-3">
-          <div className="mb-2 flex items-center gap-2">
-            <SectionHeading size="sm">Not scheduled</SectionHeading>
-            <span className="font-mono text-[11px] text-faint">
-              no start, no due — schedule one to put it on the axis
-            </span>
-          </div>
-          <ul className="flex flex-col">
-            {unscheduled.map((issue) => (
-              <li
-                key={issue.short_ref}
-                className="flex items-center gap-2.5 py-1 text-[12.5px] text-ink-2"
-              >
+      <div className="tray">
+        <SectionHeading>
+          Unscheduled <HeadingNote>no start, no due — drag onto the chart or schedule from the estimate</HeadingNote>
+          <Sp />
+          {unscheduled.length > 0 ? (
+            <Btn onClick={scheduleAll} disabled={bulk.isPending}>
+              <Calendar className="i" aria-hidden />
+              Schedule all from estimates
+            </Btn>
+          ) : null}
+        </SectionHeading>
+        <div className="trayrows">
+          {unscheduled.length === 0 ? (
+            <p className="empty" style={{ padding: "6px 0" }}>
+              Everything visible has dates.
+            </p>
+          ) : (
+            unscheduled.map((issue) => (
+              <div key={issue.id} className="irow" style={{ gridTemplateColumns: "52px 16px 8px minmax(0,1fr) auto auto" }}>
                 <IssueHandle shortRef={issue.short_ref} number={issue.number} />
                 <TypeBadge type={issue.type} />
                 <PriorityDot priority={issue.priority} />
-                <button
-                  type="button"
-                  onClick={() => onOpen(issue.short_ref)}
-                  className="min-w-0 flex-1 truncate text-left hover:text-ink hover:underline"
-                >
+                <button type="button" className="t" style={{ textAlign: "left" }} onClick={() => onOpen(issue.short_ref)}>
                   {issue.title}
                 </button>
-                <span className="shrink-0 font-mono text-[11px] text-faint">
+                <span className="est mono" style={{ fontSize: 11, color: "var(--muted)" }}>
                   {issue.estimate ? `${issue.estimate}pt → ${durationDays(issue)}d` : "no estimate"}
                 </span>
-                <button
-                  type="button"
-                  disabled={schedule.isPending}
-                  onClick={() =>
-                    schedule.mutate([
-                      {
-                        id: issue.short_ref,
-                        set: {
-                          start: toDay(today),
-                          due: toDay(today + (durationDays(issue) - 1) * DAY_MS),
-                        },
-                      },
-                    ])
-                  }
-                  className="flex shrink-0 items-center gap-1.5 rounded-md border border-edge px-2 py-0.5 text-[11.5px] transition-colors hover:border-ctl hover:text-ink disabled:opacity-50"
-                >
-                  <CalendarPlus className="size-3.5" aria-hidden />
+                <Btn onClick={() => scheduleOne(issue)} disabled={bulk.isPending}>
+                  <Calendar className="i" aria-hidden />
                   Schedule
-                </button>
-              </li>
-            ))}
-          </ul>
+                </Btn>
+              </div>
+            ))
+          )}
         </div>
-      ) : null}
-    </div>
+      </div>
+      {tip.node}
+    </>
   );
 }
 
-/** One draggable bar. Dragging the middle moves both dates; dragging an edge
- *  moves that one. Nothing commits until the pointer is released, and a drag
- *  that ends where it started is a click that opens the issue. */
+/** `#12` once numbered, the short ref until then — for toasts. */
+function handleOf(issue: Pick<IssueDto, "number" | "short_ref">): string {
+  return issue.number !== null ? `#${issue.number}` : issue.short_ref;
+}
+
+// ---------------------------------------------------------------------------
+// One draggable bar. Dragging the middle moves both dates; dragging an edge
+// moves that one. Nothing commits until the pointer is released, and a drag
+// that ends where it started is a click that opens the issue.
+// ---------------------------------------------------------------------------
+
+type DragMode = "m" | "l" | "r";
+
+interface Drag {
+  mode: DragMode;
+  x0: number;
+  /** Live dates while dragging; null until the pointer has moved. */
+  cur: { start: number; end: number } | null;
+}
+
 function GanttBar({
   issue,
-  top,
+  span,
+  y,
   ppd,
-  from,
+  xOf,
   today,
+  category,
   done,
   critical,
+  tip,
   onOpen,
 }: {
   issue: IssueDto;
-  top: number;
+  span: Span;
+  y: number;
   ppd: number;
-  from: number;
+  xOf: (ms: number) => number;
   today: number;
+  category: StatusCategory;
   done: boolean;
   critical: boolean;
+  tip: Tip;
   onOpen: (id: string) => void;
 }) {
   const patch = usePatchIssue(issue.short_ref);
-  const [drag, setDrag] = useState<{ mode: "move" | "start" | "end"; days: number } | null>(null);
-  const origin = useRef(0);
+  const [drag, setDrag] = useState<Drag | null>(null);
 
-  const span = spanOf(issue);
-  if (!span) return null;
-
-  const shift = (drag?.days ?? 0) * DAY_MS;
-  const start = drag?.mode === "end" ? span.start : span.start + shift;
-  const end = drag?.mode === "start" ? span.end : span.end + (drag?.mode === "move" ? shift : 0);
-  const live = {
-    start: drag?.mode === "start" ? Math.min(span.start + shift, span.end - DAY_MS) : start,
-    end: drag?.mode === "end" ? Math.max(span.end + shift, span.start + DAY_MS) : end,
-  };
-  const xOf = (ms: number) => ((ms - from) / DAY_MS) * ppd;
+  const live = drag?.cur ?? { start: span.start, end: span.end };
   const late = isLate(span, done, today);
+  const days = Math.round((span.end - span.start) / DAY_MS);
+  // `end` is exclusive; the due date the file stores is the day before.
+  const dueOf = (end: number) => end - DAY_MS;
 
-  const begin = (mode: "move" | "start" | "end") => (event: ReactPointerEvent<HTMLElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
-    origin.current = event.clientX;
-    setDrag({ mode, days: 0 });
+  const commit = (start: number, end: number) => {
+    const set: { start?: string; due?: string } = {};
+    if (start !== span.start || !issue.start) set.start = toDay(start);
+    if (end !== span.end || !issue.due) set.due = toDay(dueOf(end));
+    if (!set.start && !set.due) return;
+    patch.mutate(set, {
+      onSuccess: () => toast(`Committed · ${handleOf(issue)} ${shortDate(start)} → ${shortDate(dueOf(end))}`),
+    });
+  };
+
+  const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement;
+    const mode: DragMode = target.classList.contains("gh-l") ? "l" : target.classList.contains("gh-r") ? "r" : "m";
+    setDrag({ mode, x0: event.clientX, cur: null });
     event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+    tip.hide();
   };
-  const move = (event: ReactPointerEvent<HTMLElement>) => {
+  const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!drag) return;
-    setDrag({ ...drag, days: Math.round((event.clientX - origin.current) / ppd) });
+    const moved = Math.round((event.clientX - drag.x0) / ppd) * DAY_MS;
+    let start = span.start;
+    let end = span.end;
+    if (drag.mode === "m") {
+      start += moved;
+      end += moved;
+    } else if (drag.mode === "l") {
+      start = Math.min(span.end - DAY_MS, span.start + moved);
+    } else {
+      end = Math.max(span.start + DAY_MS, span.end + moved);
+    }
+    setDrag({ ...drag, cur: { start, end } });
   };
-  const finish = (event: ReactPointerEvent<HTMLElement>) => {
+  const finish = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!drag) return;
-    const moved = drag.days;
-    const mode = drag.mode;
+    const current = drag.cur;
     setDrag(null);
-    if (moved === 0) {
+    if (!current || (current.start === span.start && current.end === span.end)) {
       if (event.type === "pointerup") onOpen(issue.short_ref);
       return;
     }
-    // The bar covers its due date, so the stored `due` is the day before the
-    // exclusive end — the same arithmetic `spanOf` reads back.
-    const set: { start?: string; due?: string } = {};
-    if (mode === "move" || mode === "start") set.start = toDay(live.start);
-    if (mode === "move" || mode === "end") set.due = toDay(live.end - DAY_MS);
-    patch.mutate(set);
+    commit(current.start, current.end);
   };
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Enter") onOpen(issue.short_ref);
+    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+    event.preventDefault();
+    const step = (event.key === "ArrowRight" ? 1 : -1) * DAY_MS;
+    if (event.shiftKey) commit(span.start, span.end + step);
+    else commit(span.start + step, span.end + step);
+  };
+
+  const tipHandlers = tip.handlers(() => ({
+    head: issue.title,
+    body: (
+      <>
+        {toDay(span.start)} → {toDay(dueOf(span.end))} · {days}d
+        {span.inferredStart || span.inferredEnd ? " · inferred from estimate" : ""}
+        {late ? (
+          <>
+            {" · "}
+            <b>past due</b>
+          </>
+        ) : null}
+        {critical ? " · on the critical path" : ""}
+      </>
+    ),
+  }));
 
   return (
     <div
-      style={{ top, height: ROW_HEIGHT }}
-      className="absolute inset-x-0 border-b border-edge"
+      role="button"
+      tabIndex={0}
+      aria-label={`${issue.title}, ${toDay(span.start)} to ${toDay(dueOf(span.end))}`}
+      className={cn(
+        "gbar",
+        category,
+        critical && "crit",
+        late && "late",
+        span.inferredStart && "inf-s",
+        span.inferredEnd && "inf-e",
+        drag && "dragging",
+      )}
+      style={{
+        left: xOf(live.start),
+        width: Math.max(ppd * 0.8, xOf(live.end) - xOf(live.start)),
+        top: y + 7,
+      }}
+      {...tipHandlers}
+      onPointerDown={onPointerDown}
+      onPointerMove={(event) => {
+        tipHandlers.onPointerMove(event);
+        onPointerMove(event);
+      }}
+      onPointerUp={finish}
+      onPointerCancel={finish}
+      onKeyDown={onKeyDown}
     >
-      <div
-        role="button"
-        tabIndex={0}
-        aria-label={`${issue.title}, ${toDay(live.start)} to ${toDay(live.end - DAY_MS)}`}
-        title={`${toDay(live.start)} → ${toDay(live.end - DAY_MS)}${span.inferredStart || span.inferredEnd ? " · dashed edge inferred from the estimate" : ""}`}
-        onPointerDown={begin("move")}
-        onPointerMove={move}
-        onPointerUp={finish}
-        onPointerCancel={finish}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") onOpen(issue.short_ref);
-          if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-          event.preventDefault();
-          const step = (event.key === "ArrowRight" ? 1 : -1) * DAY_MS;
-          patch.mutate(
-            event.shiftKey
-              ? { due: toDay(span.end - DAY_MS + step) }
-              : { start: toDay(span.start + step), due: toDay(span.end - DAY_MS + step) },
-          );
-        }}
-        style={{
-          left: xOf(live.start),
-          width: Math.max(ppd * 0.8, xOf(live.end) - xOf(live.start)),
-        }}
-        className={cn(
-          "absolute top-[7px] flex h-5 cursor-grab select-none items-center rounded-md border px-2 text-[11.5px] text-ink transition-[filter]",
-          done
-            ? "border-done-line bg-done-bg text-muted"
-            : late
-              ? "border-crit-text bg-warn-bg"
-              : "border-doing-line bg-doing-bg",
-          span.inferredStart && "border-l-dashed",
-          span.inferredEnd && "border-r-dashed",
-          critical && "ring-2 ring-warn-text ring-offset-1 ring-offset-app",
-          drag && "z-20 cursor-grabbing shadow-[var(--dit-shadow)]",
-        )}
-      >
-        <span className="truncate">
-          {drag ? `${toDay(live.start)} → ${toDay(live.end - DAY_MS)}` : issue.title}
-        </span>
-        <i
-          onPointerDown={begin("start")}
-          onPointerMove={move}
-          onPointerUp={finish}
-          onPointerCancel={finish}
-          title="Drag to change the start date"
-          className="absolute inset-y-0 -left-1 w-2 cursor-ew-resize"
-        />
-        <i
-          onPointerDown={begin("end")}
-          onPointerMove={move}
-          onPointerUp={finish}
-          onPointerCancel={finish}
-          title="Drag to change the due date"
-          className="absolute inset-y-0 -right-1 w-2 cursor-ew-resize"
-        />
-      </div>
+      <span className="gl">
+        {drag?.cur ? `${shortDate(live.start)} → ${shortDate(dueOf(live.end))}` : issue.title}
+      </span>
+      <i className="gh-l" title="Drag to change start" />
+      <i className="gh-r" title="Drag to change due" />
     </div>
   );
 }

@@ -7,15 +7,19 @@
 // the plan, so none of it is written to the repo.
 
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
-import { CheckSquare, SectionHeading } from "../chrome";
-import { cn } from "../../lib/cn";
+import { Btn, CheckSquare, Row, SectionHeading } from "../chrome";
+import { useIssues, useSchema } from "../../lib/queries";
+import { doneIds, isDone, POOL_LIMIT } from "../../lib/lists";
+import type { GanttZoom } from "../../lib/schedule";
 
-export type GanttZoom = "day" | "week" | "month";
+export type { GanttZoom } from "../../lib/schedule";
 export type GanttGroupBy = "epic" | "assignee" | "none";
 
 export interface GanttOptions {
   zoom: GanttZoom;
   groupBy: GanttGroupBy;
+  /** Draw the `blocked_by` arrows. */
+  deps: boolean;
   critical: boolean;
   showDone: boolean;
   weekends: boolean;
@@ -28,6 +32,7 @@ interface GanttOptionsValue extends GanttOptions {
 const DEFAULTS: GanttOptions = {
   zoom: "week",
   groupBy: "epic",
+  deps: true,
   critical: false,
   showDone: false,
   weekends: true,
@@ -54,117 +59,85 @@ export function useGanttOptions(): GanttOptionsValue {
   return value;
 }
 
-const ZOOMS: Array<{ value: GanttZoom; label: string }> = [
-  { value: "day", label: "Day" },
-  { value: "week", label: "Week" },
-  { value: "month", label: "Month" },
+const ZOOMS: Array<[GanttZoom, string]> = [
+  ["day", "Day"],
+  ["week", "Week"],
+  ["month", "Month"],
 ];
 
-const GROUPS: Array<{ value: GanttGroupBy; label: string; hint?: string }> = [
-  { value: "epic", label: "Epic" },
-  { value: "assignee", label: "Assignee" },
-  { value: "none", label: "Nothing" },
+const GROUPS: Array<[GanttGroupBy, string]> = [
+  ["epic", "Epic"],
+  ["assignee", "Assignee"],
+  ["none", "Nothing"],
 ];
 
-function Row({
-  label,
-  on,
-  onClick,
-  title,
-  round,
-}: {
-  label: string;
-  on: boolean;
-  onClick: () => void;
-  title?: string;
-  round?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={title}
-      className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-hover"
-    >
-      <span className={cn(round && "[&>span]:rounded-full")}>
-        <CheckSquare on={on} />
-      </span>
-      <span className="text-[12.5px] text-ink-2">{label}</span>
-    </button>
-  );
-}
+const SHOW: Array<[keyof Pick<GanttOptions, "deps" | "critical" | "showDone" | "weekends">, string]> = [
+  ["deps", "Dependencies (blocked_by)"],
+  ["critical", "Critical path"],
+  ["showDone", "Done issues"],
+  ["weekends", "Weekend shading"],
+];
 
 export function GanttPane() {
   const options = useGanttOptions();
+  const issues = useIssues({ limit: POOL_LIMIT });
+  const schema = useSchema();
+
+  // How much of the open work has no dates at all — the number that says
+  // whether the chart is a plan or a sample.
+  const done = doneIds(schema.data?.workflow.statuses);
+  const undated = (issues.data?.items ?? []).filter(
+    (issue) => issue.type !== "story" && !isDone(issue, done) && !issue.start && !issue.due,
+  ).length;
 
   return (
-    <div className="flex flex-col gap-4 p-3">
-      <section>
-        <SectionHeading size="sm" className="px-1 pb-2">
-          Zoom
-        </SectionHeading>
-        <div className="flex gap-1 px-1">
-          {ZOOMS.map((zoom) => (
-            <button
-              key={zoom.value}
-              type="button"
-              onClick={() => options.set("zoom", zoom.value)}
-              className={cn(
-                "flex-1 rounded-md border px-2 py-1 text-[12px] transition-colors",
-                options.zoom === zoom.value
-                  ? "border-accent bg-accent text-on-accent"
-                  : "border-edge text-ink-2 hover:border-ctl hover:text-ink",
-              )}
+    <>
+      <SectionHeading size="sm">Zoom</SectionHeading>
+      <div className="sb-body">
+        <div style={{ display: "flex", gap: 4, padding: "2px 8px 6px" }}>
+          {ZOOMS.map(([zoom, label]) => (
+            <Btn
+              key={zoom}
+              primary={options.zoom === zoom}
+              onClick={() => options.set("zoom", zoom)}
+              style={{ flex: 1, justifyContent: "center" }}
             >
-              {zoom.label}
-            </button>
+              {label}
+            </Btn>
           ))}
         </div>
-      </section>
 
-      <section>
-        <SectionHeading size="sm" className="px-1 pb-2">
-          Group rows by
-        </SectionHeading>
-        {GROUPS.map((group) => (
-          <Row
-            key={group.value}
-            label={group.label}
-            round
-            on={options.groupBy === group.value}
-            onClick={() => options.set("groupBy", group.value)}
-          />
+        <SectionHeading size="sm">Group rows by</SectionHeading>
+        {GROUPS.map(([key, label]) => (
+          <Row key={key} on={options.groupBy === key} onClick={() => options.set("groupBy", key)}>
+            <CheckSquare on={options.groupBy === key} radio />
+            <span className="lbl">{label}</span>
+          </Row>
         ))}
-      </section>
 
-      <section>
-        <SectionHeading size="sm" className="px-1 pb-2">
+        <SectionHeading size="sm" className="mt-2">
           Show
         </SectionHeading>
-        <Row
-          label="Critical path"
-          title="The longest chain of blocked_by dependencies"
-          on={options.critical}
-          onClick={() => options.set("critical", !options.critical)}
-        />
-        <Row
-          label="Done issues"
-          on={options.showDone}
-          onClick={() => options.set("showDone", !options.showDone)}
-        />
-        <Row
-          label="Weekend shading"
-          on={options.weekends}
-          onClick={() => options.set("weekends", !options.weekends)}
-        />
-      </section>
+        {SHOW.map(([key, label]) => (
+          <Row key={key} onClick={() => options.set(key, !options[key])}>
+            <CheckSquare on={options[key]} />
+            <span className="lbl">{label}</span>
+          </Row>
+        ))}
 
-      <p className="px-1 text-[11.5px] leading-relaxed text-muted">
-        Bars read <span className="font-mono">start</span> and{" "}
-        <span className="font-mono">due</span> from the issue file. A missing edge is drawn dashed
-        and inferred from the estimate — shown, never stored. Dragging a bar commits the real
-        fields.
-      </p>
-    </div>
+        <SectionHeading size="sm" className="mt-2">
+          How dates work
+        </SectionHeading>
+        <p
+          className="empty"
+          style={{ padding: "2px 8px 0", fontSize: 11.5, lineHeight: 1.5, color: "var(--muted)" }}
+        >
+          <span className="mono">start</span> and <span className="mono">due</span> live in the issue
+          file. A missing side is inferred from the estimate (2 days per point) and drawn dashed — shown,
+          never stored. Dragging a bar commits the real fields. {undated} open{" "}
+          {undated === 1 ? "issue has" : "issues have"} no dates.
+        </p>
+      </div>
+    </>
   );
 }

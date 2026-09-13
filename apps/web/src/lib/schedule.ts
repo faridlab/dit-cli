@@ -102,11 +102,13 @@ export function isLate(span: Span, done: boolean, now: number): boolean {
  *  merged and nothing forbids them from disagreeing.
  */
 export function criticalPath(
-  issues: readonly (Pick<IssueDto, "short_ref" | "start" | "due" | "estimate"> & {
+  issues: readonly (Pick<IssueDto, "id" | "start" | "due" | "estimate"> & {
     blocked_by?: readonly string[];
   })[],
 ): ReadonlySet<string> {
-  const byRef = new Map(issues.map((issue) => [issue.short_ref, issue]));
+  // `blocked_by` names issues by id, not by short ref, so the walk is keyed
+  // the same way.
+  const byRef = new Map(issues.map((issue) => [issue.id, issue]));
   const memo = new Map<string, { length: number; path: string[] }>();
 
   const longest = (ref: string, seen: ReadonlySet<string>): { length: number; path: string[] } => {
@@ -133,7 +135,7 @@ export function criticalPath(
 
   let best = { length: 0, path: [] as string[] };
   for (const issue of issues) {
-    const chain = longest(issue.short_ref, new Set());
+    const chain = longest(issue.id, new Set());
     if (chain.length > best.length) best = chain;
   }
   return new Set(best.path);
@@ -143,15 +145,121 @@ export function criticalPath(
  *  where the previous one ended. Returns the dates to commit, so the caller
  *  can write them as ordinary field edits. */
 export function scheduleSequentially(
-  issues: readonly Pick<IssueDto, "short_ref" | "estimate">[],
+  issues: readonly Pick<IssueDto, "id" | "estimate">[],
   from: number,
-): Array<{ short_ref: string; start: string; due: string }> {
+): Array<{ id: string; start: string; due: string }> {
   let cursor = from;
   return issues.map((issue) => {
     const days = durationDays(issue);
     const start = cursor;
     const end = cursor + (days - 1) * DAY_MS;
     cursor = end + DAY_MS;
-    return { short_ref: issue.short_ref, start: toDay(start), due: toDay(end) };
+    return { id: issue.id, start: toDay(start), due: toDay(end) };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Axes. The two plan views each pick a window around today and split it into
+// months; the arithmetic lives here so the windows are testable and the views
+// only place things.
+// ---------------------------------------------------------------------------
+
+export const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "Sep 7" — the shape every axis label and tooltip uses. */
+export function shortDate(ms: number): string {
+  const date = new Date(ms);
+  return `${MONTHS[date.getUTCMonth()]} ${date.getUTCDate()}`;
+}
+
+export type GanttZoom = "day" | "week" | "month";
+
+export interface GanttRange {
+  /** First day on the canvas, midnight UTC. */
+  start: number;
+  days: number;
+  /** Pixels per day. */
+  ppd: number;
+}
+
+/** The Gantt window at each zoom. Day zoom starts a week ago so the recent
+ *  past is visible; week zoom snaps to a Monday so the ticks read as weeks;
+ *  month zoom starts on the first of a month so the month bands line up. */
+export function ganttRange(zoom: GanttZoom, today: number): GanttRange {
+  if (zoom === "day") return { start: today - 7 * DAY_MS, days: 28, ppd: 40 };
+  if (zoom === "month") {
+    const date = new Date(today);
+    date.setUTCDate(1);
+    date.setUTCMonth(date.getUTCMonth() - 2);
+    return { start: date.getTime(), days: 183, ppd: 6 };
+  }
+  const monday = new Date(today);
+  const weekday = (monday.getUTCDay() + 6) % 7;
+  monday.setUTCDate(monday.getUTCDate() - weekday - 21);
+  return { start: monday.getTime(), days: 84, ppd: 14 };
+}
+
+export type RoadmapHorizon = "quarter" | "half" | "year";
+
+/** The roadmap window: whole months, so quarter boundaries land on edges. */
+export function roadmapRange(horizon: RoadmapHorizon, today: number): { start: number; end: number } {
+  const start = new Date(today);
+  start.setUTCDate(1);
+  if (horizon === "quarter") {
+    start.setUTCMonth(Math.floor(start.getUTCMonth() / 3) * 3);
+    const end = new Date(start);
+    end.setUTCMonth(end.getUTCMonth() + 3);
+    return { start: start.getTime(), end: end.getTime() };
+  }
+  if (horizon === "year") {
+    start.setUTCMonth(start.getUTCMonth() - 3);
+    const end = new Date(start);
+    end.setUTCMonth(end.getUTCMonth() + 12);
+    return { start: start.getTime(), end: end.getTime() };
+  }
+  start.setUTCMonth(start.getUTCMonth() - 2);
+  const end = new Date(start);
+  end.setUTCMonth(end.getUTCMonth() + 6);
+  return { start: start.getTime(), end: end.getTime() };
+}
+
+export interface MonthSegment {
+  /** Clipped to the range at both ends. */
+  start: number;
+  end: number;
+  /** 0-based, as `Date` counts. */
+  month: number;
+  year: number;
+  /** "Sep 2026" */
+  label: string;
+}
+
+/** The months a range touches, each clipped to the range. */
+export function monthSegments(start: number, end: number): MonthSegment[] {
+  const out: MonthSegment[] = [];
+  let cursor = start;
+  while (cursor < end) {
+    const date = new Date(cursor);
+    const monthStart = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1);
+    const nextMonth = Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1);
+    out.push({
+      start: Math.max(monthStart, start),
+      end: Math.min(nextMonth, end),
+      month: date.getUTCMonth(),
+      year: date.getUTCFullYear(),
+      label: `${MONTHS[date.getUTCMonth()]} ${date.getUTCFullYear()}`,
+    });
+    cursor = nextMonth;
+  }
+  return out;
+}
+
+/** Day offsets from `start` that fall on a Saturday or Sunday. */
+export function weekendOffsets(start: number, days: number): number[] {
+  const out: number[] = [];
+  for (let offset = 0; offset < days; offset += 1) {
+    const weekday = new Date(start + offset * DAY_MS).getUTCDay();
+    if (weekday === 0 || weekday === 6) out.push(offset);
+  }
+  return out;
 }

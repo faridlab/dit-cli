@@ -9,17 +9,22 @@ import {
   DAY_MS,
   durationDays,
   epicSpan,
+  ganttRange,
   isLate,
+  monthSegments,
+  roadmapRange,
   scheduleSequentially,
+  shortDate,
   spanOf,
   toDay,
+  weekendOffsets,
 } from "./schedule";
 
 const day = (iso: string) => Date.parse(`${iso}T00:00:00Z`);
 
 const issue = (fields: Partial<Record<string, unknown>> = {}) =>
   ({
-    short_ref: "AAA0001",
+    id: "AAA0001",
     start: null,
     due: null,
     estimate: null,
@@ -133,26 +138,26 @@ describe("isLate", () => {
 describe("criticalPath", () => {
   it("picks the longest chain of blockers, not the longest single bar", () => {
     const chain = [
-      issue({ short_ref: "A", start: "2026-09-01", due: "2026-09-02", blocked_by: [] }),
-      issue({ short_ref: "B", start: "2026-09-03", due: "2026-09-04", blocked_by: ["A"] }),
-      issue({ short_ref: "C", start: "2026-09-05", due: "2026-09-06", blocked_by: ["B"] }),
+      issue({ id: "A", start: "2026-09-01", due: "2026-09-02", blocked_by: [] }),
+      issue({ id: "B", start: "2026-09-03", due: "2026-09-04", blocked_by: ["A"] }),
+      issue({ id: "C", start: "2026-09-05", due: "2026-09-06", blocked_by: ["B"] }),
       // Longer on its own, but nothing depends on it.
-      issue({ short_ref: "D", start: "2026-09-01", due: "2026-09-05", blocked_by: [] }),
+      issue({ id: "D", start: "2026-09-01", due: "2026-09-05", blocked_by: [] }),
     ];
     expect([...criticalPath(chain)].sort()).toEqual(["A", "B", "C"]);
   });
 
   it("survives a dependency cycle instead of recursing forever", () => {
     const cyclic = [
-      issue({ short_ref: "A", start: "2026-09-01", due: "2026-09-02", blocked_by: ["B"] }),
-      issue({ short_ref: "B", start: "2026-09-03", due: "2026-09-04", blocked_by: ["A"] }),
+      issue({ id: "A", start: "2026-09-01", due: "2026-09-02", blocked_by: ["B"] }),
+      issue({ id: "B", start: "2026-09-03", due: "2026-09-04", blocked_by: ["A"] }),
     ];
     expect(criticalPath(cyclic).size).toBeGreaterThan(0);
   });
 
   it("ignores a blocker that is not on screen", () => {
     const dangling = [
-      issue({ short_ref: "A", start: "2026-09-01", due: "2026-09-02", blocked_by: ["GONE"] }),
+      issue({ id: "A", start: "2026-09-01", due: "2026-09-02", blocked_by: ["GONE"] }),
     ];
     expect([...criticalPath(dangling)]).toEqual(["A"]);
   });
@@ -166,22 +171,79 @@ describe("scheduleSequentially", () => {
   it("lays issues back to back from a starting day", () => {
     const plan = scheduleSequentially(
       [
-        issue({ short_ref: "A", estimate: 1 }),
-        issue({ short_ref: "B", estimate: 2 }),
-        issue({ short_ref: "C" }),
+        issue({ id: "A", estimate: 1 }),
+        issue({ id: "B", estimate: 2 }),
+        issue({ id: "C" }),
       ],
       day("2026-09-10"),
     );
     expect(plan).toEqual([
       // One point: two days, the 10th and the 11th.
-      { short_ref: "A", start: "2026-09-10", due: "2026-09-11" },
-      { short_ref: "B", start: "2026-09-12", due: "2026-09-15" },
+      { id: "A", start: "2026-09-10", due: "2026-09-11" },
+      { id: "B", start: "2026-09-12", due: "2026-09-15" },
       // No estimate: one day.
-      { short_ref: "C", start: "2026-09-16", due: "2026-09-16" },
+      { id: "C", start: "2026-09-16", due: "2026-09-16" },
     ]);
   });
 
   it("produces dates in the shape the files store", () => {
     expect(toDay(day("2026-09-10"))).toBe("2026-09-10");
+  });
+});
+
+// 2026-09-13 is a Sunday: the awkward case for "the Monday three weeks back".
+const TODAY = day("2026-09-13");
+
+describe("ganttRange", () => {
+  it("at day zoom starts a week ago and shows four weeks at 40px a day", () => {
+    expect(ganttRange("day", TODAY)).toEqual({ start: day("2026-09-06"), days: 28, ppd: 40 });
+  });
+
+  it("at week zoom starts on the Monday three weeks back", () => {
+    expect(ganttRange("week", TODAY)).toEqual({ start: day("2026-08-17"), days: 84, ppd: 14 });
+  });
+
+  it("at month zoom starts on the first of the month two months back", () => {
+    expect(ganttRange("month", TODAY)).toEqual({ start: day("2026-07-01"), days: 183, ppd: 6 });
+  });
+});
+
+describe("roadmapRange", () => {
+  it("quarter is the current calendar quarter", () => {
+    expect(roadmapRange("quarter", TODAY)).toEqual({ start: day("2026-07-01"), end: day("2026-10-01") });
+  });
+
+  it("half looks two months back and six months long", () => {
+    expect(roadmapRange("half", TODAY)).toEqual({ start: day("2026-07-01"), end: day("2027-01-01") });
+  });
+
+  it("year looks three months back and twelve months long", () => {
+    expect(roadmapRange("year", TODAY)).toEqual({ start: day("2026-06-01"), end: day("2027-06-01") });
+  });
+});
+
+describe("monthSegments", () => {
+  it("clips the first and last month to the range", () => {
+    const segments = monthSegments(day("2026-08-17"), day("2026-11-09"));
+    expect(segments.map((segment) => segment.label)).toEqual(["Aug 2026", "Sep 2026", "Oct 2026", "Nov 2026"]);
+    expect(segments[0]).toMatchObject({ start: day("2026-08-17"), end: day("2026-09-01"), month: 7, year: 2026 });
+    expect(segments[3]).toMatchObject({ start: day("2026-11-01"), end: day("2026-11-09") });
+  });
+
+  it("is empty for an empty range", () => {
+    expect(monthSegments(TODAY, TODAY)).toEqual([]);
+  });
+});
+
+describe("weekendOffsets", () => {
+  it("names the Saturdays and Sundays as day offsets from the start", () => {
+    // Monday the 17th: the weekend is days 5 and 6, then 12 and 13.
+    expect(weekendOffsets(day("2026-08-17"), 14)).toEqual([5, 6, 12, 13]);
+  });
+});
+
+describe("shortDate", () => {
+  it("reads as the design labels dates", () => {
+    expect(shortDate(day("2026-09-07"))).toBe("Sep 7");
   });
 });
