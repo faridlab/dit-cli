@@ -15,6 +15,8 @@ const ROUTES: Route[] = [
   { name: "issues", q: "status != done", issue: "Q2R7VN8" },
   { name: "issues", q: null, starred: true, issue: null },
   { name: "issues", q: null, starred: true, issue: "Q2R7VN8" },
+  { name: "issues", q: null, inbox: true, issue: null },
+  { name: "issues", q: null, inbox: true, issue: "Q2R7VN8" },
   { name: "docs", p: null },
   { name: "docs", p: "docs/flows/auth-session.md" },
   { name: "search", q: "", issue: null },
@@ -26,6 +28,7 @@ const ROUTES: Route[] = [
   { name: "issue", id: "Q2R7VN8", from: null },
   { name: "issue", id: "Q2R7VN8", from: "board" },
   { name: "new-issue" },
+  { name: "new-issue", type: "story" },
   { name: "settings" },
 ];
 
@@ -70,7 +73,18 @@ describe("parseHash", () => {
       q: null,
       issue: null,
       starred: false,
+      inbox: false,
     });
+  });
+
+  it("reads the inbox flag only when it is set", () => {
+    expect(parseHash("#/issues?inbox=1")).toMatchObject({ inbox: true });
+    expect(parseHash("#/issues")).toMatchObject({ inbox: false });
+  });
+
+  it("keeps the inbox list the inbox while a panel is open over it", () => {
+    const inbox: Route = { name: "issues", q: null, inbox: true, issue: null };
+    expect(withPeek(inbox, "Q2R7VN8")).toMatchObject({ inbox: true, issue: "Q2R7VN8" });
   });
 
   it("reads the starred flag only when it is set", () => {

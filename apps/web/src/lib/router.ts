@@ -25,7 +25,17 @@ const PEEK_HOSTS: readonly string[] = [
 export type Route =
   | { name: "home"; issue?: string | null }
   | { name: "board"; issue?: string | null }
-  | { name: "issues"; q: string | null; issue?: string | null; starred?: boolean }
+  | {
+      name: "issues";
+      q: string | null;
+      issue?: string | null;
+      /** This browser's shortlist — not a server query, so it rides as a flag. */
+      starred?: boolean;
+      /** The untriaged list (no owner or no @context). Computed client-side
+       *  from the open pool because DQL has no "is empty" test, so it too
+       *  rides as a flag rather than pretending to be a query. */
+      inbox?: boolean;
+    }
   | { name: "docs"; p: string | null }
   | { name: "search"; q: string; issue?: string | null }
   /** The three plan views. Each hosts the issue panel like any list. */
@@ -33,7 +43,8 @@ export type Route =
   | { name: "roadmap"; issue?: string | null }
   | { name: "gantt"; issue?: string | null }
   | { name: "issue"; id: string; from?: PeekHost | null }
-  | { name: "new-issue" }
+  /** The composer; `type` preselects the issue type (the roadmap's "New epic"). */
+  | { name: "new-issue"; type?: string | null }
   | { name: "settings" };
 
 /** Query string from pairs, skipping empties, in a stable order so the same
@@ -57,6 +68,7 @@ export function routeToHash(route: Route): string {
         // A private shortlist cannot be a server query, so it rides as its
         // own flag rather than pretending to be DQL.
         ["starred", route.starred === true ? "1" : null],
+        ["inbox", route.inbox === true ? "1" : null],
         ["issue", route.issue],
       ])}`;
     case "docs":
@@ -80,7 +92,7 @@ export function routeToHash(route: Route): string {
     case "issue":
       return `#/issue/${encodeURIComponent(route.id)}${query([["from", route.from]])}`;
     case "new-issue":
-      return "#/new";
+      return `#/new${query([["type", route.type]])}`;
     case "settings":
       return "#/settings";
   }
@@ -115,7 +127,13 @@ export function parseHash(hash: string): Route {
     // a shareable, reloadable thing, not private view state. `starred` is
     // the exception: it names this browser's own shortlist, so a link
     // carrying it shows the recipient *their* stars, not the sender's.
-    return { name: "issues", q: nonEmpty("q"), issue, starred: params.get("starred") === "1" };
+    return {
+      name: "issues",
+      q: nonEmpty("q"),
+      issue,
+      starred: params.get("starred") === "1",
+      inbox: params.get("inbox") === "1",
+    };
   }
   if (first === "docs") {
     // The selected page rides in `p` as the full `docs/…` path — kept in
@@ -129,7 +147,7 @@ export function parseHash(hash: string): Route {
   }
   if (first === "roadmap") return { name: "roadmap", issue };
   if (first === "gantt") return { name: "gantt", issue };
-  if (first === "new") return { name: "new-issue" };
+  if (first === "new") return { name: "new-issue", type: nonEmpty("type") };
   if (first === "settings") return { name: "settings" };
   // Home is the landing view: capture, triage, orient — the board is one
   // click away for people who want to go straight to moving cards.
@@ -170,7 +188,7 @@ export function withPeek(route: Route, id: string | null): Route {
     case "board":
       return { name: "board", issue: id };
     case "issues":
-      return { name: "issues", q: route.q, starred: route.starred, issue: id };
+      return { name: "issues", q: route.q, starred: route.starred, inbox: route.inbox, issue: id };
     case "search":
       return { name: "search", q: route.q, issue: id };
     case "timeline":
