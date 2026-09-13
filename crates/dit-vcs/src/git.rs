@@ -139,6 +139,23 @@ impl Repo {
         self.run(&["config", "user.email"]).is_ok()
     }
 
+    /// The DIT alias this clone attributes writes to (`dit.me` in the
+    /// repo-local config). Repo-local like the identity above: the alias is
+    /// a fact about this person at this clone, so it lives next to
+    /// `user.email` rather than in a committed file everyone shares. `None`
+    /// when unset.
+    pub fn alias(&self) -> Option<String> {
+        self.run(&["config", "--get", "dit.me"])
+            .ok()
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Set the clone's DIT alias. Overwrites; never touches global config.
+    pub fn set_alias(&self, alias: &str) -> Result<(), VcsError> {
+        self.run(&["config", "dit.me", alias])?;
+        Ok(())
+    }
+
     // -- day-to-day plumbing -------------------------------------------------
 
     pub fn current_branch(&self) -> Result<String, VcsError> {

@@ -447,3 +447,24 @@ fn mv_creates_the_destination_parent_when_missing() {
     repo.mv("a/b.txt", "deep/nested/b.txt").unwrap();
     assert!(tmp.path().join("deep/nested/b.txt").is_file());
 }
+
+#[test]
+fn the_dit_alias_lives_in_repo_local_config() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = hermetic_repo(tmp.path());
+    // Nothing set: no alias, not an error.
+    assert_eq!(repo.alias(), None);
+    repo.set_alias("farid").unwrap();
+    assert_eq!(repo.alias().as_deref(), Some("farid"));
+    // Repo-local, never global: a fresh handle on the same repo sees it, and
+    // the machine's global config is untouched.
+    assert_eq!(
+        Repo::open(tmp.path()).unwrap().alias().as_deref(),
+        Some("farid")
+    );
+    let other = tempfile::tempdir().unwrap();
+    assert_eq!(hermetic_repo(other.path()).alias(), None);
+    // Overwrite, not append.
+    repo.set_alias("budi").unwrap();
+    assert_eq!(repo.alias().as_deref(), Some("budi"));
+}
