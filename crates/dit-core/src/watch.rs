@@ -8,11 +8,16 @@
 //! The server already holds `Dit` behind exactly this mutex (§16.4).
 //!
 //! The watcher never reads working files and never writes anything. On a
-//! debounced burst it compares HEAD against the state watermark and reindexes
-//! from git blobs only when HEAD moved — own-process writes already moved the
-//! watermark in `absorb_commit`, so they produce no signal and a write
-//! announces exactly once. Any watcher error degrades to HEAD polling, never
-//! to silence.
+//! debounced burst it compares HEAD against the last head it signalled —
+//! in memory, NOT the index watermark, because `.dit-cache/index.sqlite` is
+//! shared between processes and another actor's CLI absorbs its own commit
+//! into that shared index; a watermark gate would stay silent exactly when a
+//! browser is waiting for a frame. When HEAD moved, it reindexes from git
+//! blobs only if the shared index is stale (a raw `git commit` never
+//! absorbs; a facade writer in any process already did), then signals once.
+//! An own-process write is announced by the write path immediately and may
+//! add one further watcher frame — a refetch hint, never a loop. Any watcher
+//! error degrades to HEAD polling, never to silence.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -86,12 +91,21 @@ pub fn spawn(dit: Arc<Mutex<Dit>>) -> mpsc::Receiver<()> {
             };
             if let Err(e) = run(event_tx) {
                 warn!("file watcher unavailable ({e}) — degrading to HEAD polling");
+                let mut seen_head = {
+                    let dit = lock(&notify_dit);
+                    dit.repo.head().ok()
+                };
                 while !notify_stopped.load(Ordering::Relaxed) {
-                    if head_moved(&notify_dit) {
+                    let head = {
+                        let dit = lock(&notify_dit);
+                        dit.repo.head().ok()
+                    };
+                    if head.is_some() && head != seen_head {
+                        seen_head = head;
                         let mut dit = lock(&notify_dit);
-                        if dit.refresh_state().unwrap_or(false) {
-                            let _ = notify_signal_tx.send(());
-                        }
+                        let _ = dit.refresh_state();
+                        drop(dit);
+                        let _ = notify_signal_tx.send(());
                     }
                     std::thread::sleep(POLL_INTERVAL);
                 }
@@ -105,32 +119,50 @@ pub fn spawn(dit: Arc<Mutex<Dit>>) -> mpsc::Receiver<()> {
         return rx;
     }
 
-    // The debounce + watermark side.
+    // The debounce + seen-head side.
     let mover = Arc::clone(&stopped);
     let mover_dit = Arc::clone(&dit);
     let signal_tx = tx;
     let signal_thread = std::thread::Builder::new()
         .name("dit-watch-signal".into())
         .spawn(move || {
+            // What this watcher has already told the world about. Deliberately
+            // in-memory, NOT the index watermark: `.dit-cache/index.sqlite` is
+            // shared between processes, and another actor's CLI absorbs its
+            // own commit into that shared index — so by the time we look, the
+            // watermark already matches HEAD and a watermark gate would stay
+            // silent exactly when a browser is waiting for a frame.
+            let mut seen_head = {
+                let dit = lock(&mover_dit);
+                dit.repo.head().ok()
+            };
             let mut armed = false;
             while !mover.load(Ordering::Relaxed) {
                 // Extend the quiet window while events keep arriving.
                 match event_rx.recv_timeout(DEBOUNCE) {
                     Ok(()) => armed = true,
                     Err(mpsc::RecvTimeoutError::Timeout) => {
-                        if armed && head_moved(&mover_dit) {
-                            let mut dit = lock(&mover_dit);
-                            match dit.refresh_state() {
-                                Ok(true) => {
-                                    let _ = signal_tx.send(());
-                                    debug!("external write absorbed; index refreshed");
-                                }
-                                Ok(false) => {}
-                                Err(e) => {
+                        if armed {
+                            let head = {
+                                let dit = lock(&mover_dit);
+                                dit.repo.head().ok()
+                            };
+                            if head.is_some() && head != seen_head {
+                                seen_head = head;
+                                // Bring the index current when the writer
+                                // could not have (a raw git commit never
+                                // absorbs); a no-op when it already did.
+                                let mut dit = lock(&mover_dit);
+                                if let Err(e) = dit.refresh_state() {
                                     // The index is disposable; the next event
-                                    // retries. Never kill the watcher.
+                                    // retries. Never kill the watcher — the
+                                    // announce still goes out: the underlying
+                                    // git state changed either way.
                                     warn!("refresh after external write failed: {e}");
                                 }
+                                drop(dit);
+                                let _ = signal_tx.send(());
+                                debug!("write observed; index refreshed; signal sent");
                             }
                         }
                         armed = false;
@@ -153,19 +185,6 @@ fn lock(dit: &Arc<Mutex<Dit>>) -> std::sync::MutexGuard<'_, Dit> {
     match dit.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
-    }
-}
-
-/// Did HEAD move past the state watermark? Cheap by design: one git call and
-/// one SQLite read, and only after a debounced event.
-fn head_moved(dit: &Arc<Mutex<Dit>>) -> bool {
-    let dit = lock(dit);
-    match (
-        dit.repo.head().ok(),
-        dit.index.watermark("state").ok().flatten(),
-    ) {
-        (Some(head), Some(watermark)) => head != watermark,
-        _ => false,
     }
 }
 

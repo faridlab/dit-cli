@@ -60,17 +60,24 @@ CLI commits + absorbs into its own process's index
 
 Dedupe and safety, each answering a §6.3 rule:
 
-- **Own writes do not double-announce**: the server's writes already went
-  through `write_dit` (announce) *and* moved the watermark in
-  `absorb_commit`; the watcher sees head == watermark and no-ops. The
-  watermark is the `state_head` entry in `.dit-cache/state.json`, now also
-  written by `absorb_commit` itself, so the watcher needs no new state.
+- **The gate is the watcher's own in-memory seen-head, not the index
+  watermark.** `.dit-cache/index.sqlite` is shared between processes: a CLI
+  in another process absorbs its own commit into that shared index, so a
+  watermark gate finds head == watermark at the watcher and stays silent
+  exactly when a browser is waiting for a frame — found live in the pilot,
+  fixed by tracking what this watcher has already signalled. When HEAD
+  moved, the watcher reindexes from git blobs only if the shared index is
+  stale (a raw `git commit` never absorbs; any facade writer already did)
+  and signals once per debounced burst.
+- **Own writes may add one watcher frame** on top of the write path's
+  immediate announce — a refetch hint, never a loop: frames cause no
+  writes. The cost is one extra fetch per own-write burst.
 - **Mid-transaction wakeups are benign**: a commit is atomic, so HEAD is
   either the old or the new value, and reindex reads `HEAD:` blobs, never
   half-written working files.
 - **Watcher errors never kill the feature**: any `notify` error — including
   `MaxFilesWatch` — degrades to a 2 s HEAD-polling loop doing the same
-  watermark check. Reindex errors are logged and skipped; the index is
+  seen-head check. Reindex errors are logged and skipped; the index is
   disposable (Principle 2) and the next event retries.
 - **Startup closes the old gap**: `dit-server` and `dit ui` call the new
   `Dit::refresh_state()` once before binding — today neither reindexes at

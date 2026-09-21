@@ -783,12 +783,32 @@ fn issue(cmd: Issue, explicit: Option<&str>) -> Result<ExitCode, DitError> {
             if !comments.is_empty() {
                 println!("\n-- comments --");
                 for c in &comments {
-                    println!(
-                        "{} {}:\n  {}",
-                        c.author,
-                        c.created,
-                        c.body.replace('\n', "\n  ")
-                    );
+                    // The id prefix is what `--reply` takes, so it belongs in
+                    // the listing — a thread you cannot reference you cannot
+                    // answer (§4.4).
+                    let handle = &c.id.as_str()[..10];
+                    match c.reply_to {
+                        Some(parent) => {
+                            let parent = &parent.as_str()[..10];
+                            println!(
+                                "{} {} ({} -> {}):\n  {}",
+                                c.author,
+                                c.created,
+                                handle,
+                                parent,
+                                c.body.replace('\n', "\n  ")
+                            );
+                        }
+                        None => {
+                            println!(
+                                "{} {} ({}):\n  {}",
+                                c.author,
+                                c.created,
+                                handle,
+                                c.body.replace('\n', "\n  ")
+                            );
+                        }
+                    }
                 }
             }
             let history = dit.history(&id, None)?;
