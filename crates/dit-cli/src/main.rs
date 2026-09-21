@@ -134,6 +134,14 @@ enum Command {
         #[arg(long)]
         until: Option<String>,
     },
+    /// The lane's inbox (ADR 0015): threads on its issues whose latest
+    /// comment is not from the lane's own voice — the questions still
+    /// waiting for an answer. Empty output means nobody is waiting on you.
+    Inbox {
+        /// Only issues of this lane.
+        #[arg(long)]
+        lane: Option<String>,
+    },
     /// Called by git during merges; humans never type this.
     #[command(hide = true)]
     MergeDriver {
@@ -202,7 +210,8 @@ enum Issue {
         #[arg(long)]
         force: bool,
     },
-    /// Add a comment, or a reply with `--reply <comment ref>`.
+    /// Add a comment, a reply with `--reply <comment ref>`, or an evidence
+    /// report drafted from a template with `--template <name>`.
     Comment {
         reference: String,
         /// The comment text; multiple words are joined into one paragraph.
@@ -210,6 +219,10 @@ enum Issue {
         /// The parent comment this replies to: its id or 7-char short form.
         #[arg(long)]
         reply: Option<String>,
+        /// Seed the comment from `.dit/templates/<name>.md`, edit it in
+        /// $EDITOR, and post the result (refused if left untouched).
+        #[arg(long)]
+        template: Option<String>,
     },
 }
 
@@ -589,10 +602,14 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
                 if report.protocol_written {
                     println!("wrote the peer protocol section into CLAUDE.md");
                 }
+                if report.report_template_written {
+                    println!("wrote .dit/templates/integration-report.md (the evidence report)");
+                }
                 if !report.schema_created
                     && !report.lanes_written
                     && !report.coordination_written
                     && !report.protocol_written
+                    && !report.report_template_written
                 {
                     println!("nothing to do — the coordination plane is already scaffolded");
                 }
@@ -689,6 +706,49 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
                     issue.lane.as_deref().unwrap_or("(unlaned)"),
                     issue.title
                 );
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Inbox { lane } => {
+            let dit = open()?;
+            let items = dit.inbox(lane.as_deref())?;
+            if items.is_empty() {
+                println!(
+                    "inbox empty{} — no thread is waiting on this lane",
+                    lane.as_deref()
+                        .map(|l| format!(" for lane {l}"))
+                        .unwrap_or_default()
+                );
+                return Ok(ExitCode::SUCCESS);
+            }
+            for item in &items {
+                let issue = &item.issue.issue;
+                let handle = issue
+                    .number
+                    .map(|n| format!("#{n}"))
+                    .unwrap_or_else(|| issue.id.short_ref().as_str().to_owned());
+                println!(
+                    "{:<10} {:<9} {}",
+                    handle,
+                    issue.lane.as_deref().unwrap_or("(unlaned)"),
+                    issue.title
+                );
+                let excerpt: String = item
+                    .root
+                    .body
+                    .lines()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("")
+                    .chars()
+                    .take(72)
+                    .collect();
+                println!(
+                    "  last {} {} ({} replies)",
+                    item.last_author,
+                    &item.last_at[..10.min(item.last_at.len())],
+                    item.replies
+                );
+                println!("  thread: {excerpt}");
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -863,8 +923,32 @@ fn issue(cmd: Issue, explicit: Option<&str>) -> Result<ExitCode, DitError> {
             reference,
             text,
             reply,
+            template,
         } => {
-            let body = text.join(" ");
+            let mut body = text.join(" ");
+            if let Some(name) = &template {
+                // An evidence report (or any templated comment) is drafted in
+                // the editor and posted from what comes back; posting the
+                // untouched skeleton would be noise wearing a report's shape.
+                if !body.trim().is_empty() {
+                    eprintln!("dit: pass either text or --template, not both");
+                    return Ok(ExitCode::from(2));
+                }
+                let dit = open()?;
+                let Some(path) = dit.template_path(name) else {
+                    return Err(DitError::TemplateMissing(name.clone()));
+                };
+                let skeleton = std::fs::read_to_string(&path)?;
+                let draft = edit_temp_draft(&skeleton)?;
+                if draft.trim() == skeleton.trim() {
+                    eprintln!(
+                        "dit: the `{name}` template came back untouched — fill it in, or drop \
+                         --template to write freely"
+                    );
+                    return Ok(ExitCode::from(2));
+                }
+                body = draft;
+            }
             if body.trim().is_empty() {
                 eprintln!("dit: a comment needs text");
                 return Ok(ExitCode::from(2));
@@ -907,6 +991,25 @@ fn issue(cmd: Issue, explicit: Option<&str>) -> Result<ExitCode, DitError> {
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+/// Draft a comment in $EDITOR: write `seed` to a temp file, hand it to the
+/// editor, return what survives. The file lives in the system temp dir — a
+/// draft is scratch, never workspace content — and is written through the
+/// sanctioned atomic writer like everything else (invariant I1).
+fn edit_temp_draft(seed: &str) -> Result<String, DitError> {
+    let path = std::env::temp_dir().join(format!("dit-comment-{}.md", std::process::id()));
+    dit_core::atomic::write(&path, seed)?;
+    let editor = std::env::var("EDITOR")
+        .or_else(|_| std::env::var("VISUAL"))
+        .unwrap_or_else(|_| "vi".to_owned());
+    let status = std::process::Command::new(&editor).arg(&path).status()?;
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let _ = std::fs::remove_file(&path);
+    if !status.success() {
+        return Err(DitError::Refuse(format!("editor ({editor}) failed")));
+    }
+    Ok(text)
 }
 
 /// The `templates` subcommand. Templates are plain files: `list` reads the

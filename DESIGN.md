@@ -1253,7 +1253,9 @@ dit board --as-of <tag|date>          # §14.3b
 dit workflow init [--lanes backend,frontend]  # ADR 0015: lane registry + protocol scaffold, idempotent
 dit claim Q2R7VN8 [--renew|--takeover|--release] [--force]   # exclusive intent, one commit
 dit ready [--lane backend] [--until review]  # derived readiness (ADR 0015); exit 0 lists pickable issues
+dit inbox [--lane backend]                  # threads waiting on the lane: latest author not its voice
 dit issue comment Q2R7VN8 --reply <comment-ref> "answer"     # threaded replies (§4.4)
+dit issue comment Q2R7VN8 --template integration-report      # draft an evidence report in $EDITOR
 dit index rebuild [--vectors|--events]
 dit merge-driver <base> <ours> <theirs> <marker> <path>
 dit upgrade [version]                 # replace this binary with a release (checksum-verified)
@@ -2262,6 +2264,7 @@ impl Dit {
     pub fn resolve(&self, needle: &str) -> Result<IssueId, DitError>;  // ambiguity-rejecting (ADR 0018)
     pub fn ready(&self, lane: Option<&str>, until: Option<&str>) -> Result<Vec<ReadyIssue>>;
     pub fn workflow_board(&self) -> Result<WorkflowBoard>;   // lanes × statuses, read-only view
+    pub fn inbox(&self, lane: Option<&str>) -> Result<Vec<InboxItem>>; // threads a lane has not answered
 }
 
 pub struct Scope { pub repo: Option<RepoId>, pub include_archived: bool }
@@ -2735,6 +2738,7 @@ Terms used across sections that easily confuse new contributors.
 | **Claim** | An actor's authored assertion of exclusive intent (`claimed_by` + `claimed_at`). Advisory, never a lock: staleness only unlocks takeover. | §4.3, ADR 0015 |
 | **Gate** | The status set a blocker must have reached for a dependent to be ready. Default `terminal`; `--until` overrides per call. | §4.5 |
 | **Ready** | Derived, never stored: status in `pick_from` **and** all blockers through the gate. A cancelled blocker is *broken*, never satisfying. | §4.5, ADR 0015 |
+| **Inbox** | A lane's unanswered threads: the latest comment on an issue of the lane whose author is not the lane's voice (its registered `owners`, falling back to the issue's assignees and claimant). Derived from comments, never stored. | §4.4, ADR 0015 |
 | **Workspace** | A single DIT repo. The server can serve several under the path `/w/<name>/`. | §5.0, §6.5 |
 | **Repo scope** | A code-repo filter within a polyrepo workspace. Sticky per view. | §5.0 |
 | **Team mode** | One `dit-server` on the LAN; non-technical members just open a URL and install nothing. | §6.5 |

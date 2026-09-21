@@ -16,7 +16,17 @@ per work stream) without out-of-band coordination:
   rejection: duplicates name their candidates instead of silently picking the
   first hit. Status writes validate against the workflow.
 - **Threaded comments** — `reply_to` is writable; conversations between
-  actors happen on the issue under discussion.
+  actors happen on the issue under discussion, indented in the activity
+  stream with a per-comment Reply action.
+- **Evidence reports** — `dit workflow init` seeds
+  `.dit/templates/integration-report.md` (expectation vs actual, the request
+  and the response verbatim, diagnosis, unblock); `dit issue comment
+  --template integration-report` drafts it in $EDITOR and refuses to post it
+  untouched.
+- **The lane inbox** — `dit inbox [--lane X]` lists the threads on a lane's
+  issues whose latest author is not the lane's voice (its registered owners,
+  falling back to assignees and the current claimant) — the questions still
+  waiting for an answer.
 - **Live UI** — a read-only Workflow screen (swimlanes per lane, blocked/ready
   and claim badges) that refreshes on any process's write via the new file
   watcher feeding the existing event channel.

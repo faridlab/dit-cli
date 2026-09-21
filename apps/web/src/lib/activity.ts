@@ -25,6 +25,8 @@ export type ActivityEntry =
       ts: string;
       author: string;
       bodyHtml: string;
+      /** The comment this one replies to (§4.4), or null for top-level. */
+      replyTo: string | null;
     }
   | {
       kind: "commit";
@@ -86,6 +88,7 @@ export function mergeActivity(
         ts: comment.created,
         author: comment.author,
         bodyHtml: comment.body_html,
+        replyTo: comment.reply_to ?? null,
       });
       c += 1;
     }
@@ -100,6 +103,7 @@ export function mergeActivity(
       ts: comment.created,
       author: comment.author,
       bodyHtml: comment.body_html,
+      replyTo: comment.reply_to ?? null,
     });
   }
   return merged;

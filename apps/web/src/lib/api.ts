@@ -119,10 +119,14 @@ export function getComments(id: string): Promise<CommentDto[]> {
   return request<CommentDto[]>(`/api/issues/${encodeURIComponent(id)}/comments`);
 }
 
-export function addComment(id: string, body: string): Promise<CommentDto> {
+export function addComment(
+  id: string,
+  body: string,
+  replyTo?: string | null,
+): Promise<CommentDto> {
   return request<CommentDto>(`/api/issues/${encodeURIComponent(id)}/comments`, {
     method: "POST",
-    body: JSON.stringify({ body }),
+    body: JSON.stringify({ body, ...(replyTo ? { reply_to: replyTo } : {}) }),
   });
 }
 

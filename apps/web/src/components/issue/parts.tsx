@@ -20,6 +20,7 @@ import {
   Maximize2,
   MessageSquare,
   PanelRight,
+  Reply,
   Star,
   Trash2,
   X,
@@ -723,8 +724,24 @@ export function IssueActivity({
 
   const entries = useMemo(() => mergeActivity(history, comments.data ?? []), [history, comments.data]);
 
+  // Who wrote each comment, for the "replied to AUTHOR" line a thread shows.
+  const authorOf = useMemo(() => {
+    const byId = new Map<string, string>();
+    for (const comment of comments.data ?? []) byId.set(comment.id, comment.author);
+    return (id: string): string | null => byId.get(id) ?? null;
+  }, [comments.data]);
+  // Which comment the composer is answering, if any.
+  const [replyingTo, setReplyingTo] = useState<{ id: string; author: string } | null>(null);
+
   type Shown =
-    | { kind: "cm"; id: string; author: string; ts: string; html: string }
+    | {
+        kind: "cm";
+        id: string;
+        author: string;
+        ts: string;
+        html: string;
+        replyTo: string | null;
+      }
     | { kind: "chg"; seq: number; author: string; ts: string; event: FieldEventDto };
   // Newest first: the panel is opened to see what just happened, so the
   // stream runs backwards from now down to the issue's creation, which is
@@ -738,7 +755,14 @@ export function IssueActivity({
     if (entry === undefined) continue;
     if (entry.kind === "comment") {
       if (filter !== "changes") {
-        shown.push({ kind: "cm", id: entry.id, author: entry.author, ts: entry.ts, html: entry.bodyHtml });
+        shown.push({
+          kind: "cm",
+          id: entry.id,
+          author: entry.author,
+          ts: entry.ts,
+          html: entry.bodyHtml,
+          replyTo: entry.replyTo,
+        });
       }
       continue;
     }
@@ -761,6 +785,7 @@ export function IssueActivity({
 
   // A comment is a discrete message in git history, so the composer sends
   // when the writer says so — the button or ⌘↵ — never on a typing pause.
+  // A reply rides `reply_to` (§4.4) and lands in the same thread.
   const send = () => {
     const body = draft.trim();
     if (body.length === 0) {
@@ -768,13 +793,17 @@ export function IssueActivity({
       return;
     }
     if (add.isPending) return;
-    add.mutate(body, {
-      onSuccess: () => {
-        setDraft("");
-        refresh();
-        toast("Comment committed");
+    add.mutate(
+      { body, replyTo: replyingTo?.id ?? null },
+      {
+        onSuccess: () => {
+          setDraft("");
+          setReplyingTo(null);
+          refresh();
+          toast(replyingTo ? "Reply committed" : "Comment committed");
+        },
       },
-    });
+    );
   };
 
   return (
@@ -798,11 +827,18 @@ export function IssueActivity({
       <div className="tl" ref={listRef}>
         {shown.map((entry) =>
           entry.kind === "cm" ? (
-            <div className="ev" key={entry.id}>
+            <div className={cn("ev", entry.replyTo && "reply")} key={entry.id}>
               <Avatar name={entry.author} />
               <div>
                 <div className="who">
-                  <b>{entry.author}</b> commented
+                  <b>{entry.author}</b>{" "}
+                  {entry.replyTo ? (
+                    <>
+                      replied to <b>{authorOf(entry.replyTo) ?? "a comment"}</b>
+                    </>
+                  ) : (
+                    "commented"
+                  )}
                   <span className="ts" title={fullTimestamp(entry.ts)}>
                     {relativeTime(entry.ts)}
                   </span>
@@ -810,6 +846,16 @@ export function IssueActivity({
                 <div className="cm">
                   <Markdown html={entry.html} className="md" />
                 </div>
+                <button
+                  type="button"
+                  className="replyBtn"
+                  onClick={() =>
+                    setReplyingTo({ id: entry.id, author: entry.author })
+                  }
+                  title="Answer in this thread"
+                >
+                  <Reply className="i" aria-hidden /> Reply
+                </button>
               </div>
             </div>
           ) : (
@@ -866,16 +912,35 @@ export function IssueActivity({
               send();
             }
           }}
-          placeholder="Write a comment… Markdown"
-          aria-label="Comment"
+          placeholder={
+            replyingTo
+              ? `Reply to ${replyingTo.author}… Markdown`
+              : "Write a comment… Markdown"
+          }
+          aria-label={replyingTo ? "Reply" : "Comment"}
         />
         <div className="bar2">
-          <span style={{ fontSize: 11, color: "var(--faint)" }}>
-            Comments are discrete messages in git history — sent when you say so.
-          </span>
+          {replyingTo ? (
+            <span className="chip ctx" style={{ alignItems: "center", display: "inline-flex", gap: 6 }}>
+              replying to {replyingTo.author}
+              <button
+                type="button"
+                onClick={() => setReplyingTo(null)}
+                title="Write a top-level comment instead"
+                style={{ border: 0, background: "transparent", cursor: "pointer", padding: 0, color: "inherit" }}
+              >
+                <X className="i" aria-hidden />
+              </button>
+            </span>
+          ) : (
+            <span style={{ fontSize: 11, color: "var(--faint)" }}>
+              Comments are discrete messages in git history — sent when you say so.
+            </span>
+          )}
           <Sp />
           <Btn primary className="cmSend" onClick={send} disabled={add.isPending}>
-            Comment<kbd>⌘↵</kbd>
+            {replyingTo ? "Reply" : "Comment"}
+            <kbd>⌘↵</kbd>
           </Btn>
         </div>
       </div>

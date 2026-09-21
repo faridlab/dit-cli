@@ -1042,3 +1042,9 @@ mark{background:var(--mark);color:inherit;border-radius:2px;padding:0 1px}
 .card .chip.claim.stale{opacity:.55;text-decoration:line-through}
 .card .i.ready{color:var(--ok,#3d9a50)}
 .wfoot .legend{font:11px var(--mono);color:var(--faint)}
+
+/* threaded replies in the activity stream (§4.4, ADR 0015) */
+.ev.reply{margin-left:26px;border-left:2px solid var(--edge);padding-left:10px}
+.replyBtn{display:inline-flex;align-items:center;gap:4px;margin-top:2px;border:0;background:transparent;padding:2px 4px;border-radius:4px;font:11px var(--sans);color:var(--muted);cursor:pointer;opacity:0;transition:opacity .12s}
+.ev:hover .replyBtn{opacity:1}
+.replyBtn:hover{color:var(--ink);background:var(--hover)}

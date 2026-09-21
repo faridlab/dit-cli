@@ -2033,3 +2033,134 @@ fn the_watcher_signals_external_commits_and_ignores_own_writes() {
         assert!(extra <= 1, "one commit, at most one watcher frame on top");
     }
 }
+
+#[test]
+fn workflow_init_seeds_the_evidence_report_template_and_hand_edits_survive() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    let lanes = vec![LaneSpec {
+        id: "backend".into(),
+        label: "Backend".into(),
+        owners: vec!["be-1".into()],
+    }];
+    let first = dit.init_workflow(&lanes).unwrap();
+    assert!(first.report_template_written);
+    let path = tmp.path().join(".dit/templates/integration-report.md");
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("## Expectation"), "{text}");
+    assert!(text.contains("## Request"), "{text}");
+
+    // A hand edit survives the second run; the report stays unwritten.
+    std::fs::write(&path, format!("{text}<!-- tuned -->\n")).unwrap();
+    let second = dit.init_workflow(&lanes).unwrap();
+    assert!(!second.report_template_written);
+    assert!(std::fs::read_to_string(&path).unwrap().contains("tuned"));
+}
+
+#[test]
+fn the_inbox_lists_threads_the_lane_has_not_answered() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    dit.init_workflow(&[
+        LaneSpec {
+            id: "backend".into(),
+            label: "Backend".into(),
+            owners: vec!["be-1".into()],
+        },
+        LaneSpec {
+            id: "frontend".into(),
+            label: "Frontend".into(),
+            owners: vec![],
+        },
+    ])
+    .unwrap();
+
+    let api = issue_with(
+        &mut dit,
+        "Endpoint returns 500",
+        dit_core::FieldPatch {
+            lane: Some("backend".into()),
+            ..Default::default()
+        },
+    );
+    let ui = issue_with(
+        &mut dit,
+        "Page renders the panel",
+        dit_core::FieldPatch {
+            lane: Some("frontend".into()),
+            ..Default::default()
+        },
+    );
+
+    // A frontend question on the backend issue: unanswered for backend.
+    let mut tx = dit.transaction("fe-1").unwrap();
+    let root = tx
+        .comment(&api, "fe-1", None, "expected JSON, got HTML — see report")
+        .unwrap();
+    tx.commit("question").unwrap();
+
+    let inbox = dit.inbox(Some("backend")).unwrap();
+    assert_eq!(inbox.len(), 1, "{inbox:?}");
+    assert_eq!(inbox[0].issue.issue.id, api);
+    assert_eq!(inbox[0].root.body, "expected JSON, got HTML — see report");
+    assert_eq!(inbox[0].last_author, "fe-1");
+    assert_eq!(inbox[0].replies, 0);
+
+    // The lane filter: the same thread is not the frontend's inbox (the
+    // issue is not theirs), and an own-thread never waits on its own lane.
+    assert!(dit.inbox(Some("frontend")).unwrap().is_empty());
+
+    // The owner answers: the thread leaves the inbox.
+    let mut tx = dit.transaction("be-1").unwrap();
+    tx.comment(
+        &api,
+        "be-1",
+        Some(&root),
+        "fixed in the cast hint; probe green",
+    )
+    .unwrap();
+    tx.commit("answer").unwrap();
+    assert!(dit.inbox(Some("backend")).unwrap().is_empty());
+
+    // A follow-up question reopens it, and the count of replies reflects the
+    // thread's depth.
+    let mut tx = dit.transaction("fe-1").unwrap();
+    tx.comment(
+        &api,
+        "fe-1",
+        Some(&root),
+        "confirmed on the second route — one more?",
+    )
+    .unwrap();
+    tx.commit("follow-up").unwrap();
+    let inbox = dit.inbox(Some("backend")).unwrap();
+    assert_eq!(inbox.len(), 1);
+    assert_eq!(
+        inbox[0].replies, 2,
+        "root + two replies, replies counted past the root"
+    );
+    assert_eq!(inbox[0].last_author, "fe-1");
+
+    // The owners-empty lane falls back to the issue's assignees as its
+    // voice: a stranger's thread waits, an assignee's own note does not.
+    let mut tx = dit.transaction("be-1").unwrap();
+    tx.set_fields(
+        &ui,
+        dit_core::FieldPatch {
+            assignees: Some(vec!["fe-1".to_owned()]),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    tx.commit("assign").unwrap();
+    let mut tx = dit.transaction("be-1").unwrap();
+    tx.comment(
+        &ui,
+        "be-1",
+        None,
+        "the panel flashes on load — backend eyes?",
+    )
+    .unwrap();
+    tx.commit("question on ui").unwrap();
+    assert_eq!(dit.inbox(Some("frontend")).unwrap().len(), 1);
+}

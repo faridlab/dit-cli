@@ -22,10 +22,15 @@ pub mod workflow;
 use std::path::Path;
 
 use dit_index::Index;
-use dit_store::atomic::{self, LockGuard};
+use dit_store::atomic::LockGuard;
 use dit_store::{Changeset, Store};
 use dit_vcs::{Repo, EMPTY_TREE};
 use time::OffsetDateTime;
+
+/// The sanctioned disk writer (invariant I1): every write outside a
+/// `Transaction` — scaffolding, drafts — goes through here, never a direct
+/// `fs::write`.
+pub use dit_store::atomic;
 
 pub use board::{Board, BoardColumn};
 pub use diagnostics::{Diagnostic, DiagnosticLevel};
@@ -44,7 +49,8 @@ pub use dit_model::{
 pub use dit_vcs::{SyncOptions, SyncReport};
 pub use watch::spawn as spawn_watcher;
 pub use workflow::{
-    BlockerDisposition, BlockerState, ClaimState, WorkflowBoard, WorkflowCard, WorkflowLane,
+    BlockerDisposition, BlockerState, ClaimState, InboxItem, WorkflowBoard, WorkflowCard,
+    WorkflowLane,
 };
 
 /// Which parts of the index to rebuild. The state half is cheap (read every
@@ -126,6 +132,7 @@ pub struct WorkflowInitReport {
     pub lanes_written: bool,
     pub coordination_written: bool,
     pub protocol_written: bool,
+    pub report_template_written: bool,
 }
 
 /// An open workspace: git repo + files on one side, the index on the other.
@@ -896,6 +903,21 @@ impl Dit {
             report.protocol_written = true;
         }
 
+        // 3. The evidence-report template, seeded like every other template:
+        // only when absent, hand edits survive.
+        let report_template = self
+            .store
+            .layout()
+            .templates_dir()
+            .join("integration-report.md");
+        if !report_template.exists() {
+            std::fs::create_dir_all(report_template.parent().ok_or_else(|| {
+                DitError::Refuse("templates dir must live inside a directory".into())
+            })?)?;
+            atomic::write(&report_template, TEMPLATE_INTEGRATION_REPORT)?;
+            report.report_template_written = true;
+        }
+
         self.reload_schema();
 
         let root = self.repo.root().to_owned();
@@ -906,10 +928,15 @@ impl Dit {
         if report.protocol_written {
             self.repo.add("CLAUDE.md")?;
         }
+        if report.report_template_written {
+            let rel = rel_to_root(&root, &report_template);
+            self.repo.add(&rel)?;
+        }
         if report.lanes_written
             || report.coordination_written
             || report.schema_created
             || report.protocol_written
+            || report.report_template_written
         {
             self.repo
                 .commit("init workflow coordination: lanes and peer protocol")?;
@@ -2310,6 +2337,12 @@ const TEMPLATE_STORY: &str = include_str!("../templates/story.md");
 /// A spike is a question with a deadline, not a deliverable - and it ends in
 /// one named outcome, not in time running out.
 const TEMPLATE_SPIKE: &str = include_str!("../templates/spike.md");
+
+/// The evidence report a waiting actor posts on the blocker's issue (ADR
+/// 0015's phase 2): expectation vs actual, with the request and the response
+/// verbatim. Seeded by `dit workflow init`, not `dit init` — it belongs to
+/// the coordination plane, not to issue authoring.
+const TEMPLATE_INTEGRATION_REPORT: &str = include_str!("../templates/integration-report.md");
 
 /// How many issues sat in each workflow category at a point in history.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

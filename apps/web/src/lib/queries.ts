@@ -348,7 +348,8 @@ export function usePutIssueBody(id: string) {
 export function useAddComment(id: string) {
   const invalidate = useIssueInvalidator();
   return useMutation({
-    mutationFn: (body: string) => api.addComment(id, body),
+    mutationFn: (input: { body: string; replyTo?: string | null }) =>
+      api.addComment(id, input.body, input.replyTo ?? null),
     onSuccess: invalidate,
     onError: reportError("Could not comment"),
   });
