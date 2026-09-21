@@ -356,6 +356,9 @@ updated: 2026-08-16T11:40:00Z
 due: 2026-08-30
 start: 2026-08-20               # optional — only issues someone actually scheduled
 blocked_by: [01K3M5QQQQ0000000000ZZZZ]
+lane: frontend                  # optional — ADR 0015; a lane id from schema/workflow.yaml
+claimed_by: fe-1                # optional — written by `dit claim` only, never at creation
+claimed_at: 2026-08-16T11:38:00Z # RFC3339; claim liveness is derived from this + the TTL
 ---
 
 ## Context
@@ -373,7 +376,7 @@ Users on a 3G connection get logged out after ~8 seconds idle. See [[docs/flows/
 Suspect it's in `src/auth/session.rs:142`.
 ```
 
-**What is deliberately NOT in this file** (Principle 3): the list of related commits, PR links, activity log, status change history, comment counts. All of it is computed from git during indexing. If it were stored, every code commit would touch the issue file → constant conflicts and noisy diffs.
+**What is deliberately NOT in this file** (Principle 3): the list of related commits, PR links, activity log, status change history, comment counts. All of it is computed from git during indexing. If it were stored, every code commit would touch the issue file → constant conflicts and noisy diffs. The same rule covers coordination judgments (ADR 0015): claim age/liveness and readiness are derived at read time — only the actor's *assertion* (`lane`, `claimed_by`, `claimed_at`) is authored.
 
 **Issue templates.** `dit issue new` does not start from a blank page — it seeds the body from a template. Templates are machinery (they shape content, they are not content), so they live in `.dit/templates/`:
 
@@ -426,6 +429,8 @@ The same applies to changelog fragments and event logs — every *append-only* p
 
 **Numbered comment files (`001-comment.md`, `001-reply-001-comment.md`) are rejected on purpose.** Inserting a comment mid-thread means renumbering, renumbering means renames, and the merge driver is never invoked for rename/modify conflicts (§4.2). Ordering comes from the ULID (`seq`, §14); threading lives in `reply_to`, not in the filename.
 
+`reply_to` is writable (ADR 0015): `null` for a top-level comment, the parent comment's ULID for a reply. Older binaries reject a non-null value loudly instead of dropping it — §18.2's forward-compatibility rule — so threading arrives in an existing workspace without a migration.
+
 ### 4.5 Configurable workflow
 
 `.dit/schema/workflow.yaml`:
@@ -455,7 +460,20 @@ derived_status:
     implies: review
   - on: pr_merged                 # needs the host API — optional, degrades gracefully
     implies: done
+
+# Coordination between parallel actors (ADR 0015). Both blocks are optional;
+# absent lanes = every issue is Unlaned, absent coordination = the defaults below.
+lanes:
+  - { id: backend,  label: Backend,  owners: [be-1] }
+  - { id: frontend, label: Frontend, owners: [fe-1] }
+coordination:
+  claim_ttl_minutes: 15           # a claim older than this is stale: takable, renewable
+  readiness:
+    pick_from: todo               # status category an issue must sit in to be pickable
+    gate: terminal                # what a blocker must have reached (terminal, or a status id = "or later")
 ```
+
+**Readiness is derived, never stored** (ADR 0015): an issue is *ready* when its status is in `pick_from` and every `blocked_by` entry has reached the `gate`. `terminal` means the terminal completion status; a status id means "that status or later" in declaration order — `dit ready --until review` overrides the gate per call and is never written back. **A cancelled blocker never satisfies any gate**: it is reported as a *broken* dependency and the dependent stays blocked until someone removes or re-points the `blocked_by` entry — an edit recorded in git, not a silent auto-unblock onto an abandoned dependency. Status writes validate membership in `statuses` (with `--force` as the escape), closing the charset-only gap admitted below.
 
 **Why derived and not write-back.** The first version of this design wrote the status back into the frontmatter whenever a commit trailer appeared. That violates Principle 3 and cancels the entire §5.2 argument: if automation writes to the issue file every time there's a code commit, we're back to the "every code commit touches the issue file" pattern — exactly what §4.3 was designed to avoid, and a source of cross-branch conflicts.
 
@@ -827,6 +845,11 @@ For each field in the frontmatter:
          conflict        : leave markers, human required   ← for critical fields
     └─ special case for `status`: if the resolved value is not a legal transition from base
                         according to workflow.yaml → force a conflict
+    └─ coordination fields (ADR 0016) — builtin policies, consulted before fields.yaml:
+         lane                 : commit_order (a rare admin edit)
+         claimed_by/claimed_at: CONFLICT when divergent — two actors claiming the same
+                               issue concurrently is a fact both must see; identical
+                               same-actor renews stay clean via the equal-values path
 
   SET (labels, assignees, blocked_by, relates_to)
     → true set merge:
@@ -1039,7 +1062,7 @@ Incremental, and this is what makes DIT feel instant:
 6. Emit an event to the UI over WebSocket → React re-renders
 ```
 
-Plus `notify` (file watcher) to catch manual edits from Obsidian/VSCode in the working tree that have not been committed yet.
+Plus `notify` (file watcher) to see writes from *other processes* — the multi-actor case (ADR 0015): a CLI run by each lane must still light up a browser watching the board. Realized as `dit_core::watch::spawn(Arc<Mutex<Dit>>) -> Receiver<()>` (ADR 0017; §16.2's `subscribe()`), bridged by the server into its existing announce channel. The watcher never reads working files: on a debounced burst it compares `HEAD` against the state watermark (`refresh_state()`), and reindexes from git blobs only when HEAD moved. Own-process writes already moved the watermark in `absorb_commit`, so they announce exactly once and the watcher no-ops — no feedback loop. `notify` is a dependency of `dit-core` only (pinned `=8.x`, recorded here per the no-silent-dependency rule; dit-core is not in the wasm32 check set), and any watcher error — including `MaxFilesWatch` — degrades to a 2 s HEAD-polling loop doing the same watermark check.
 
 **The file watcher will not survive at the target scale if it is set up naively.** inotify is per-directory. The §4.1 layout gives each issue one folder plus `comments/` plus `attachments/` — at a target of 50,000 issues that is ~150,000 watches. On my test machine `fs.inotify.max_user_watches = 64834`, and many systems are still at 8192. The watcher will fail, or worse, **silently lose events**.
 
@@ -1227,6 +1250,10 @@ dit docs sync <slug>                  # update a stale document
 dit changelog regen <version>
 dit release plan|verify|diff|tag      # §15
 dit board --as-of <tag|date>          # §14.3b
+dit workflow init [--lanes backend,frontend]  # ADR 0015: lane registry + protocol scaffold, idempotent
+dit claim Q2R7VN8 [--renew|--takeover|--release] [--force]   # exclusive intent, one commit
+dit ready [--lane backend] [--until review]  # derived readiness (ADR 0015); exit 0 lists pickable issues
+dit issue comment Q2R7VN8 --reply <comment-ref> "answer"     # threaded replies (§4.4)
 dit index rebuild [--vectors|--events]
 dit merge-driver <base> <ours> <theirs> <marker> <path>
 dit upgrade [version]                 # replace this binary with a release (checksum-verified)
@@ -2227,6 +2254,14 @@ impl Dit {
     pub fn backlinks(&self, target: &LinkTarget) -> Result<Vec<LinkRef>>;
 
     pub fn subscribe(&self) -> Receiver<DitEvent>;   // from the file watcher & our own writes
+    // realized as dit_core::watch::spawn(Arc<Mutex<Dit>>) -> Receiver<()> (ADR 0017):
+    // a &self method returning a receiver off a watcher thread would be self-referential,
+    // and the server already holds Dit behind exactly this mutex (§16.4).
+
+    // Coordination reads (ADR 0015) — derived, never stored:
+    pub fn resolve(&self, needle: &str) -> Result<IssueId, DitError>;  // ambiguity-rejecting (ADR 0018)
+    pub fn ready(&self, lane: Option<&str>, until: Option<&str>) -> Result<Vec<ReadyIssue>>;
+    pub fn workflow_board(&self) -> Result<WorkflowBoard>;   // lanes × statuses, read-only view
 }
 
 pub struct Scope { pub repo: Option<RepoId>, pub include_archived: bool }
@@ -2248,6 +2283,12 @@ impl Dit {
     pub fn migrate_layout(&mut self, to: DataLayout) -> Result<MigrationReport>;
     pub fn set_numbering(&mut self, numbering: Numbering) -> Result<()>;
     pub fn renumber(&mut self) -> Result<usize>;  // count numbered; 0 = nothing to do
+
+    // Coordination writes (ADR 0015) — claim is one transaction, one commit,
+    // refused (not errored into silence) when the protocol is violated:
+    pub fn claim(&mut self, id: &IssueId, actor: &str, opts: ClaimOptions) -> Result<ClaimReport>;
+    pub fn init_workflow(&mut self, lanes: &[LaneSpec]) -> Result<WorkflowInitReport>;
+    pub fn refresh_state(&mut self) -> Result<IndexReport>;  // reindex when HEAD moved past the watermark (ADR 0017)
 }
 
 pub struct Transaction<'a> { /* ... */ }
@@ -2255,7 +2296,7 @@ pub struct Transaction<'a> { /* ... */ }
 impl<'a> Transaction<'a> {
     pub fn create_issue(&mut self, draft: IssueDraft) -> Result<IssueId>;
     pub fn set_fields(&mut self, id: &IssueId, patch: FieldPatch) -> Result<()>;
-    pub fn comment(&mut self, id: &IssueId, body: &str) -> Result<CommentId>;
+    pub fn comment(&mut self, id: &IssueId, body: &str, reply_to: Option<&IssueId>) -> Result<CommentId>;
     pub fn write_doc(&mut self, slug: &DocSlug, content: &Markdown) -> Result<()>;
 
     pub fn commit(self, message: &str) -> Result<CommitSha>;  // consumes self
@@ -2475,6 +2516,10 @@ dql_sql(q)                 == dql_eval(q)         differential, if an evaluator 
 | A half-merged file goes through `dit fmt` | The markers are swallowed |
 | delete/modify and rename/modify conflicts | The driver is not invoked |
 | Branch names `dit` + `dit/<x>` | D/F conflict |
+| Two issues sharing one `#number` | Ambiguous references are rejected naming both candidates (ADR 0018) |
+| Divergent concurrent claims on one issue | The driver conflicts; identical same-actor renews stay clean (ADR 0016) |
+| Legacy workflow.yaml without `lanes`/`coordination` | Parses to defaults; mixed-version teams degrade safely (ADR 0015) |
+| A comment with non-null `reply_to` | Old readers reject loudly; new readers round-trip (§4.4) |
 
 **5. Fuzzing** (`cargo-fuzz`) — on the two surfaces that consume untrusted input (§17): the frontmatter parser and the merge driver. The pass criterion for the driver is not "does not panic" but **"never produces a file without markers when it fails"**.
 
@@ -2686,6 +2731,10 @@ Terms used across sections that easily confuse new contributors.
 | **Defenses #1–#5** | The five mechanisms that stop a merge driver failure from silently deleting data. Risk #0. | §5.3, §12.3 |
 | **The four conflict layers** | 1) pull-first + CAS · 2) one-write-unit-one-file · 3) the merge driver · 4) presence. | §5.3 |
 | **Trailer** | The line `Closes: #Q2R7VN8` in a commit message. The code↔issue bridge, and the basis of all derived data. | §5.2 |
+| **Lane** | A declared parallel work stream (registry in `workflow.yaml`). An issue without one is *Unlaned* — valid, not an error. | §4.5, ADR 0015 |
+| **Claim** | An actor's authored assertion of exclusive intent (`claimed_by` + `claimed_at`). Advisory, never a lock: staleness only unlocks takeover. | §4.3, ADR 0015 |
+| **Gate** | The status set a blocker must have reached for a dependent to be ready. Default `terminal`; `--until` overrides per call. | §4.5 |
+| **Ready** | Derived, never stored: status in `pick_from` **and** all blockers through the gate. A cancelled blocker is *broken*, never satisfying. | §4.5, ADR 0015 |
 | **Workspace** | A single DIT repo. The server can serve several under the path `/w/<name>/`. | §5.0, §6.5 |
 | **Repo scope** | A code-repo filter within a polyrepo workspace. Sticky per view. | §5.0 |
 | **Team mode** | One `dit-server` on the LAN; non-technical members just open a URL and install nothing. | §6.5 |
