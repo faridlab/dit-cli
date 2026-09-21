@@ -108,6 +108,15 @@ pub fn issue_from_document(doc: &Document) -> Result<Issue, IssueParseError> {
         .iter()
         .map(|b| IssueId::parse(b).map_err(|e: IdError| bad("blocked_by", e.to_string())))
         .collect::<Result<_, _>>()?;
+    let lane = scalar(doc, "lane")?.filter(|s| !s.is_empty());
+    let claimed_by = scalar(doc, "claimed_by")?.filter(|s| !s.is_empty());
+    let claimed_at = match scalar(doc, "claimed_at")?.filter(|s| !s.is_empty()) {
+        Some(at) => {
+            parse_rfc3339(&at).map_err(|e| bad("claimed_at", e.to_string()))?;
+            Some(at)
+        }
+        None => None,
+    };
     let body = doc.body().to_owned();
 
     Ok(Issue {
@@ -128,9 +137,9 @@ pub fn issue_from_document(doc: &Document) -> Result<Issue, IssueParseError> {
         due,
         start,
         blocked_by,
-        lane: None,
-        claimed_by: None,
-        claimed_at: None,
+        lane,
+        claimed_by,
+        claimed_at,
         body,
     })
 }
@@ -214,6 +223,11 @@ pub fn serialize_new_issue(
             .map(|b| b.as_str().to_owned())
             .collect();
         doc.set_raw("blocked_by", &serialize_seq(&blocked));
+    }
+    // Claims never ride creation (ADR 0015): no claimed_by/claimed_at here,
+    // on purpose — `dit claim` is the only writer of those keys.
+    if let Some(l) = &draft.lane {
+        doc.set_raw("lane", &serialize_scalar(l));
     }
     doc.set_raw("created", &serialize_scalar(now_rfc3339));
     doc.set_raw("updated", &serialize_scalar(now_rfc3339));
@@ -328,6 +342,19 @@ pub fn apply_patch(
         doc.set_raw("blocked_by", &serialize_seq(&blocked));
         touched.push("blocked_by");
     }
+    if let Some(l) = &patch.lane {
+        doc.set_raw("lane", &serialize_scalar(l));
+        touched.push("lane");
+    }
+    if let Some(c) = &patch.claimed_by {
+        doc.set_raw("claimed_by", &serialize_scalar(c));
+        touched.push("claimed_by");
+    }
+    if let Some(c) = &patch.claimed_at {
+        parse_rfc3339(c).map_err(|e| bad("claimed_at", e.to_string()))?;
+        doc.set_raw("claimed_at", &serialize_scalar(c));
+        touched.push("claimed_at");
+    }
     for field in &patch.clear {
         // Removing the line, not writing an empty value: an absent key and
         // an empty key both read as "none", but only one of them is what a
@@ -369,6 +396,132 @@ mod tests {
 \n\
 \nUsers on 3G get logged out.\
 \n";
+
+    fn draft(title: &str) -> IssueDraft {
+        IssueDraft {
+            number: None,
+            title: title.into(),
+            kind: IssueKind::Bug,
+            status: Some("todo".into()),
+            priority: None,
+            reporter: None,
+            assignees: vec![],
+            labels: vec![],
+            epic: None,
+            estimate: None,
+            sprint: None,
+            due: None,
+            start: None,
+            blocked_by: vec![],
+            lane: None,
+            body: String::new(),
+        }
+    }
+
+    #[test]
+    fn parses_lane_and_claim_fields() {
+        let file = "---\
+\nid: 01K3M9ZXQ2R7VN8P4TDBCEFGHJ\
+\ntitle: Login timeout\
+\ntype: bug\
+\nstatus: todo\
+\ncreated: 2026-08-16T09:12:00Z\
+\nupdated: 2026-08-16T11:40:00Z\
+\nlane: frontend\
+\nclaimed_by: fe-1\
+\nclaimed_at: 2026-08-16T11:38:00Z\
+\n---\
+\n\nBody.\
+\n";
+        let (issue, _) = parse_issue(file).unwrap();
+        assert_eq!(issue.lane.as_deref(), Some("frontend"));
+        assert_eq!(issue.claimed_by.as_deref(), Some("fe-1"));
+        assert_eq!(issue.claimed_at.as_deref(), Some("2026-08-16T11:38:00Z"));
+    }
+
+    #[test]
+    fn a_bad_claimed_at_names_the_field() {
+        let file = "---\
+\nid: 01K3M9ZXQ2R7VN8P4TDBCEFGHJ\
+\ntitle: Login timeout\
+\ntype: bug\
+\nstatus: todo\
+\ncreated: 2026-08-16T09:12:00Z\
+\nupdated: 2026-08-16T11:40:00Z\
+\nclaimed_at: yesterday\
+\n---\
+\n\nBody.\
+\n";
+        assert!(matches!(
+            parse_issue(file).unwrap_err(),
+            IssueParseError::BadField {
+                field: "claimed_at",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn lane_and_claim_patches_are_surgical() {
+        let mut doc = Document::parse(FILE).unwrap();
+        let patch = FieldPatch {
+            lane: Some("backend".into()),
+            claimed_by: Some("be-1".into()),
+            claimed_at: Some("2026-08-17T09:00:00Z".into()),
+            ..FieldPatch::default()
+        };
+        let touched = apply_patch(&mut doc, &patch, "2026-08-17T09:00:00Z").unwrap();
+        assert!(touched.contains(&"lane"));
+        assert!(touched.contains(&"claimed_by"));
+        assert!(touched.contains(&"claimed_at"));
+        let text = doc.to_string();
+        assert!(text.contains("lane: backend\n"));
+        assert!(text.contains("claimed_by: be-1\n"));
+        assert!(text.contains("claimed_at: 2026-08-17T09:00:00Z\n"));
+        // The unknown field survives a claim patch untouched.
+        assert!(text.contains("future_field: keep me"));
+
+        // Release removes the lines entirely — an absent key, not an empty one.
+        let release = FieldPatch {
+            clear: vec![ClearableField::ClaimedBy, ClearableField::ClaimedAt],
+            ..FieldPatch::default()
+        };
+        apply_patch(&mut doc, &release, "2026-08-17T09:30:00Z").unwrap();
+        let text = doc.to_string();
+        assert!(!text.contains("claimed_by"));
+        assert!(!text.contains("claimed_at"));
+        assert!(text.contains("lane: backend\n"));
+    }
+
+    #[test]
+    fn a_patch_cannot_set_and_clear_a_claim_in_one_go() {
+        let mut doc = Document::parse(FILE).unwrap();
+        let contradictory = FieldPatch {
+            claimed_by: Some("be-1".into()),
+            clear: vec![ClearableField::ClaimedBy],
+            ..FieldPatch::default()
+        };
+        assert!(matches!(
+            apply_patch(&mut doc, &contradictory, "2026-08-17T09:00:00Z").unwrap_err(),
+            IssueParseError::BadField {
+                field: "claimed_by",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn new_issue_writes_lane_but_never_claims() {
+        let id = IssueId::parse("01K3M9ZXQ2R7VN8P4TDBCEFGHJ").unwrap();
+        let draft = IssueDraft {
+            lane: Some("frontend".into()),
+            ..draft("Fix login timeout")
+        };
+        let file = serialize_new_issue(&id, &draft, "2026-08-16T09:12:00Z").unwrap();
+        assert!(file.contains("lane: frontend\n"));
+        assert!(!file.contains("claimed_by"));
+        assert!(!file.contains("claimed_at"));
+    }
 
     #[test]
     fn parses_every_known_field() {

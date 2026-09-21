@@ -537,7 +537,7 @@ async fn post_comment(
         let issue_id = target.issue.id;
         let short = target.issue.id.short_ref().as_str().to_owned();
         let mut tx = dit.transaction(&me).map_err(ServerError::Dit)?;
-        tx.comment(&issue_id, &me, &input.body)
+        tx.comment(&issue_id, &me, None, &input.body)
             .map_err(ServerError::Dit)?;
         tx.commit(&format!("comment on {short}"))
             .map_err(ServerError::Dit)?;

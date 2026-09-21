@@ -1132,8 +1132,14 @@ impl<'a> Transaction<'a> {
         }
     }
 
-    pub fn comment(&mut self, id: &IssueId, alias: &str, body: &str) -> Result<IssueId, DitError> {
-        Ok(self.store_tx.add_comment(id, alias, body)?)
+    pub fn comment(
+        &mut self,
+        id: &IssueId,
+        alias: &str,
+        reply_to: Option<&IssueId>,
+        body: &str,
+    ) -> Result<IssueId, DitError> {
+        Ok(self.store_tx.add_comment(id, alias, reply_to, body)?)
     }
 
     /// Move (rename) a doc page in one commit. Byte-identical content at the

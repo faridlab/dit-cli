@@ -151,11 +151,14 @@ enum Issue {
         /// field=value pairs; list fields take comma-separated values.
         fields: Vec<String>,
     },
-    /// Add a comment.
+    /// Add a comment, or a reply with `--reply <comment ref>`.
     Comment {
         reference: String,
         /// The comment text; multiple words are joined into one paragraph.
         text: Vec<String>,
+        /// The parent comment this replies to: its id or 7-char short form.
+        #[arg(long)]
+        reply: Option<String>,
     },
 }
 
@@ -638,7 +641,11 @@ fn issue(cmd: Issue, explicit: Option<&str>) -> Result<ExitCode, DitError> {
             println!("updated {}", id.short_ref().as_str());
             Ok(ExitCode::SUCCESS)
         }
-        Issue::Comment { reference, text } => {
+        Issue::Comment {
+            reference,
+            text,
+            reply,
+        } => {
             let body = text.join(" ");
             if body.trim().is_empty() {
                 eprintln!("dit: a comment needs text");
@@ -646,9 +653,37 @@ fn issue(cmd: Issue, explicit: Option<&str>) -> Result<ExitCode, DitError> {
             }
             let mut dit = open()?;
             let id = resolve(&dit, &reference)?;
+            // A reply must name a comment on this very issue — the thread
+            // lives on the issue under discussion, nowhere else.
+            let parent = match &reply {
+                Some(needle) => {
+                    let comments = dit.comments(&id)?;
+                    let hits: Vec<_> = comments
+                        .iter()
+                        .filter(|c| {
+                            c.id.as_str() == needle || c.id.as_str().starts_with(needle.as_str())
+                        })
+                        .collect();
+                    match hits.as_slice() {
+                        [one] => Some(one.id),
+                        [] => {
+                            eprintln!("dit: no comment on this issue matches `{needle}`");
+                            return Ok(ExitCode::from(2));
+                        }
+                        many => {
+                            eprintln!(
+                                "dit: `{needle}` matches {} comments — use more of the id",
+                                many.len()
+                            );
+                            return Ok(ExitCode::from(2));
+                        }
+                    }
+                }
+                None => None,
+            };
             let me = me_for(&dit, explicit);
             let mut tx = dit.transaction(&me)?;
-            tx.comment(&id, &me, &body)?;
+            tx.comment(&id, &me, parent.as_ref(), &body)?;
             tx.commit(&format!("comment on {reference}"))?;
             println!("commented on {}", id.short_ref().as_str());
             Ok(ExitCode::SUCCESS)

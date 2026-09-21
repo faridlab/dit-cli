@@ -120,7 +120,7 @@ fn comments_are_written_committed_and_readable_from_the_index() {
     let mut dit = workspace(tmp.path());
     let mut tx = dit.transaction("farid").unwrap();
     let id = tx.create_issue(draft("Login timeout")).unwrap();
-    let cid = tx.comment(&id, "budi", "Reproduced on 3G.").unwrap();
+    let cid = tx.comment(&id, "budi", None, "Reproduced on 3G.").unwrap();
     tx.commit("create with comment").unwrap();
 
     let comments = dit.comments(&id).unwrap();
@@ -188,7 +188,8 @@ fn reindex_rebuilds_a_deleted_index_from_git_alone() {
     let mut dit = workspace(tmp.path());
     let mut tx = dit.transaction("farid").unwrap();
     let id = tx.create_issue(draft("Login timeout")).unwrap();
-    tx.comment(&id, "budi", "Seen on Safari too.").unwrap();
+    tx.comment(&id, "budi", None, "Seen on Safari too.")
+        .unwrap();
     tx.commit("create").unwrap();
 
     // Simulate a lost cache: a fresh Dit on a wiped database file.
@@ -1248,10 +1249,10 @@ fn recent_comments_span_issues_newest_first() {
     assert!(dit.recent_comments(10).unwrap().is_empty());
 
     let mut tx = dit.transaction("farid").unwrap();
-    tx.comment(&a, "farid", "first on a").unwrap();
+    tx.comment(&a, "farid", None, "first on a").unwrap();
     tx.commit("comment").unwrap();
     let mut tx = dit.transaction("budi").unwrap();
-    tx.comment(&b, "budi", "then on b").unwrap();
+    tx.comment(&b, "budi", None, "then on b").unwrap();
     tx.commit("comment").unwrap();
 
     let feed = dit.recent_comments(10).unwrap();
@@ -1473,7 +1474,7 @@ fn deleting_an_issue_removes_its_files_but_keeps_its_history() {
     let mut tx = dit.transaction("farid").unwrap();
     let doomed = tx.create_issue(draft("Doomed")).unwrap();
     let survivor = tx.create_issue(draft("Survivor")).unwrap();
-    tx.comment(&doomed, "farid", "last words").unwrap();
+    tx.comment(&doomed, "farid", None, "last words").unwrap();
     tx.commit("create").unwrap();
     let folder = tmp
         .path()

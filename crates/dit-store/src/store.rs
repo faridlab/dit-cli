@@ -487,12 +487,18 @@ impl Transaction {
         &mut self,
         id: &IssueId,
         alias: &str,
+        reply_to: Option<&IssueId>,
         body: &str,
     ) -> Result<IssueId, StoreError> {
         let comment_id = self.mint_id()?;
         let name = Layout::comment_file_name(&comment_id, alias)?;
-        let contents =
-            dit_parse::serialize_comment(&comment_id, alias, &format_rfc3339(self.now), body)?;
+        let contents = dit_parse::serialize_comment(
+            &comment_id,
+            alias,
+            &format_rfc3339(self.now),
+            reply_to,
+            body,
+        )?;
         let dir = self.issue_dir(id)?;
         self.push_staged(
             dir.join("comments").join(name),

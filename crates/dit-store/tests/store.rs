@@ -125,9 +125,9 @@ fn comments_added_in_one_transaction_read_back_in_addition_order() {
     let store = Store::open(tmp.path());
     let mut tx = store.transaction(now(), "farid");
     let id = tx.create_issue(draft("Has comments")).unwrap();
-    tx.add_comment(&id, "farid", "first").unwrap();
-    tx.add_comment(&id, "farid", "second").unwrap();
-    tx.add_comment(&id, "farid", "third").unwrap();
+    tx.add_comment(&id, "farid", None, "first").unwrap();
+    tx.add_comment(&id, "farid", None, "second").unwrap();
+    tx.add_comment(&id, "farid", None, "third").unwrap();
     tx.finish().unwrap();
 
     let comments = store.read_comments(&id).unwrap();
@@ -203,7 +203,9 @@ fn add_comment_writes_its_own_file_and_it_parses_back() {
     let store = Store::open(tmp.path());
     let mut tx = store.transaction(now(), "farid");
     let id = tx.create_issue(draft("Login timeout")).unwrap();
-    let comment_id = tx.add_comment(&id, "budi", "Reproduced on iOS.").unwrap();
+    let comment_id = tx
+        .add_comment(&id, "budi", None, "Reproduced on iOS.")
+        .unwrap();
     tx.finish().unwrap();
 
     let path = store
@@ -217,12 +219,33 @@ fn add_comment_writes_its_own_file_and_it_parses_back() {
 }
 
 #[test]
+fn a_reply_thread_writes_and_reads_its_parent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path());
+    let mut tx = store.transaction(now(), "farid");
+    let id = tx.create_issue(draft("Login timeout")).unwrap();
+    let parent = tx
+        .add_comment(&id, "fe-1", None, "call returns HTML, expected JSON")
+        .unwrap();
+    let reply = tx
+        .add_comment(&id, "be-1", Some(&parent), "payload hits the 500 path")
+        .unwrap();
+    tx.finish().unwrap();
+
+    let comments = store.read_comments(&id).unwrap();
+    let parent = comments.iter().find(|c| c.id == parent).unwrap();
+    let reply = comments.iter().find(|c| c.id == reply).unwrap();
+    assert_eq!(parent.reply_to, None);
+    assert_eq!(reply.reply_to, Some(parent.id));
+}
+
+#[test]
 fn a_comment_alias_that_cannot_be_a_filename_is_rejected() {
     let tmp = tempfile::tempdir().unwrap();
     let store = Store::open(tmp.path());
     let mut tx = store.transaction(now(), "farid");
     let id = tx.create_issue(draft("Login timeout")).unwrap();
-    let err = tx.add_comment(&id, "../escape", "nope").unwrap_err();
+    let err = tx.add_comment(&id, "../escape", None, "nope").unwrap_err();
     assert!(err.to_string().contains("alias"), "{err}");
 }
 
@@ -737,8 +760,8 @@ fn removing_an_issue_stages_its_body_and_comments_and_prunes_the_folder() {
     let store = Store::open(tmp.path());
     let mut tx = store.transaction(now(), "farid");
     let id = tx.create_issue(draft("Doomed")).unwrap();
-    tx.add_comment(&id, "farid", "one").unwrap();
-    tx.add_comment(&id, "budi", "two").unwrap();
+    tx.add_comment(&id, "farid", None, "one").unwrap();
+    tx.add_comment(&id, "budi", None, "two").unwrap();
     tx.finish().unwrap();
     let body = store.layout().issue_body(&id).unwrap();
     let folder = body.parent().unwrap().to_path_buf();

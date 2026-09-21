@@ -2,8 +2,8 @@
 //! and emit canonically for `dit init`.
 
 use dit_model::{
-    Config, DataLayout, DerivedRule, DerivedSignal, Numbering, RepoLink, StatusCategory,
-    Transition, Workflow, WorkflowStatus,
+    Config, Coordination, DataLayout, DerivedRule, DerivedSignal, Gate, Lane, Numbering,
+    ReadinessConfig, RepoLink, StatusCategory, Transition, Workflow, WorkflowStatus,
 };
 
 use crate::yaml::{self, Yaml, YamlError};
@@ -91,6 +91,16 @@ fn signal_of(v: &str) -> Result<DerivedSignal, SchemaError> {
     }
 }
 
+/// The gate a blocker must reach (ADR 0015): `terminal`, or a status id.
+/// Whether the id is declared is a cross-field check — see `validate_workflow`.
+fn gate_of(v: &str) -> Gate {
+    if v == "terminal" {
+        Gate::Terminal
+    } else {
+        Gate::Until(v.to_owned())
+    }
+}
+
 /// Parse and validate `schema/workflow.yaml`.
 pub fn parse_workflow(text: &str) -> Result<Workflow, SchemaError> {
     let root = yaml::parse(text)?;
@@ -169,12 +179,57 @@ pub fn parse_workflow(text: &str) -> Result<Workflow, SchemaError> {
         }
     }
 
+    let mut lanes = Vec::new();
+    if let Some(ln) = root.get("lanes") {
+        for node in ln.as_seq().ok_or(SchemaError::NotAList("lanes".into()))? {
+            lanes.push(Lane {
+                id: str_of(node, "id")?,
+                label: str_of(node, "label")?,
+                owners: node
+                    .get("owners")
+                    .and_then(Yaml::as_seq)
+                    .map(|os| {
+                        os.iter()
+                            .filter_map(|o| o.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            });
+        }
+    }
+
+    let coordination = match root.get("coordination") {
+        None | Some(Yaml::Null) => Coordination::default(),
+        Some(cn) => {
+            if !matches!(cn, Yaml::Map(_)) {
+                return Err(SchemaError::NotAMap("coordination".into()));
+            }
+            let claim_ttl_minutes = opt_u32_of(cn, "claim_ttl_minutes")?.unwrap_or(15);
+            let readiness = match cn.get("readiness") {
+                None | Some(Yaml::Null) => ReadinessConfig::default(),
+                Some(rn) => {
+                    if !matches!(rn, Yaml::Map(_)) {
+                        return Err(SchemaError::NotAMap("coordination.readiness".into()));
+                    }
+                    ReadinessConfig {
+                        pick_from: category_of(&str_of(rn, "pick_from")?)?,
+                        gate: gate_of(&str_of(rn, "gate")?),
+                    }
+                }
+            };
+            Coordination {
+                claim_ttl_minutes,
+                readiness,
+            }
+        }
+    };
+
     let workflow = Workflow {
         statuses,
         transitions,
         derived,
-        lanes: Vec::new(),
-        coordination: dit_model::Coordination::default(),
+        lanes,
+        coordination,
     };
     validate_workflow(&workflow)?;
     Ok(workflow)
@@ -218,6 +273,47 @@ fn validate_workflow(wf: &Workflow) -> Result<(), SchemaError> {
                 hint: "not one of the declared statuses".into(),
             });
         }
+    }
+    // Lanes (ADR 0015): ids share the status charset (they land in queries,
+    // paths and SQL as tokens) and must be unique.
+    let mut seen_lanes = std::collections::HashSet::new();
+    for l in &wf.lanes {
+        let plain = !l.id.is_empty()
+            && l.id
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
+        if !plain {
+            return Err(SchemaError::BadValue {
+                key: "lanes.id".into(),
+                value: l.id.clone(),
+                hint: "lane ids are lowercase letters, digits, dashes and underscores".into(),
+            });
+        }
+        if !seen_lanes.insert(&l.id) {
+            return Err(SchemaError::BadValue {
+                key: "lanes".into(),
+                value: l.id.clone(),
+                hint: "the same lane id appears twice".into(),
+            });
+        }
+    }
+    // The coordination block (ADR 0015). A gate naming a status that does not
+    // exist would silently block every dependent forever — refuse it here.
+    if let Gate::Until(id) = &wf.coordination.readiness.gate {
+        if !wf.contains_status(id) {
+            return Err(SchemaError::BadValue {
+                key: "coordination.readiness.gate".into(),
+                value: id.clone(),
+                hint: "must be `terminal` or one of the declared statuses".into(),
+            });
+        }
+    }
+    if wf.coordination.claim_ttl_minutes == 0 {
+        return Err(SchemaError::BadValue {
+            key: "coordination.claim_ttl_minutes".into(),
+            value: "0".into(),
+            hint: "a zero TTL makes every claim instantly stale — pick a real number".into(),
+        });
     }
     Ok(())
 }
@@ -355,6 +451,39 @@ pub fn write_workflow(wf: &Workflow) -> String {
             out.push_str(&format!("    implies: {}\n", quote_if_needed(&d.implies)));
         }
     }
+    // Lanes and coordination (ADR 0015) are emitted only when configured —
+    // the seed workflow and every pre-ADR-0015 file stay byte-identical.
+    if !wf.lanes.is_empty() {
+        out.push_str("lanes:\n");
+        for l in &wf.lanes {
+            let mut fields = format!(
+                "id: {}, label: {}",
+                quote_if_needed(&l.id),
+                quote_if_needed(&l.label)
+            );
+            if !l.owners.is_empty() {
+                let os: Vec<String> = l.owners.iter().map(|o| quote_if_needed(o)).collect();
+                fields.push_str(&format!(", owners: [{}]", os.join(", ")));
+            }
+            out.push_str(&format!("  - {{ {fields} }}\n"));
+        }
+    }
+    if wf.coordination != Coordination::default() {
+        out.push_str("coordination:\n");
+        out.push_str(&format!(
+            "  claim_ttl_minutes: {}\n",
+            wf.coordination.claim_ttl_minutes
+        ));
+        out.push_str("  readiness:\n");
+        out.push_str(&format!(
+            "    pick_from: {}\n",
+            wf.coordination.readiness.pick_from.as_str()
+        ));
+        out.push_str(&format!(
+            "    gate: {}\n",
+            wf.coordination.readiness.gate.as_str()
+        ));
+    }
     out
 }
 
@@ -394,6 +523,109 @@ mod tests {
         let text = write_workflow(&wf);
         let back = parse_workflow(&text).unwrap();
         assert_eq!(back, wf);
+    }
+
+    #[test]
+    fn a_workflow_with_lanes_and_coordination_round_trips() {
+        let wf = Workflow {
+            lanes: vec![
+                Lane {
+                    id: "backend".into(),
+                    label: "Backend".into(),
+                    owners: vec!["be-1".into()],
+                },
+                Lane {
+                    id: "frontend".into(),
+                    label: "Front End".into(),
+                    owners: vec![],
+                },
+            ],
+            coordination: Coordination {
+                claim_ttl_minutes: 30,
+                readiness: ReadinessConfig {
+                    pick_from: StatusCategory::Todo,
+                    gate: Gate::Until("review".into()),
+                },
+            },
+            ..Workflow::default_workflow()
+        };
+        let text = write_workflow(&wf);
+        assert!(text.contains("lanes:\n"));
+        assert!(text.contains("id: backend, label: Backend, owners: [be-1]"));
+        assert!(text.contains("label: \"Front End\""));
+        assert!(text.contains("gate: review"));
+        assert_eq!(parse_workflow(&text).unwrap(), wf);
+    }
+
+    #[test]
+    fn a_legacy_workflow_without_the_blocks_defaults_them() {
+        let text = "\
+statuses:
+  - { id: todo, label: To Do, category: todo }
+  - { id: done, label: Done, category: done, terminal: true }
+transitions:
+  - from: [todo]
+    to: done
+";
+        let wf = parse_workflow(text).unwrap();
+        assert!(wf.lanes.is_empty());
+        assert_eq!(wf.coordination, Coordination::default());
+        // And the canonical emitter adds nothing the legacy file lacked.
+        let emitted = write_workflow(&wf);
+        assert!(!emitted.contains("lanes:"));
+        assert!(!emitted.contains("coordination:"));
+        assert_eq!(parse_workflow(&emitted).unwrap(), wf);
+    }
+
+    #[test]
+    fn a_gate_naming_an_undeclared_status_is_refused() {
+        let text = "\
+statuses:
+  - { id: todo, label: To Do, category: todo }
+  - { id: done, label: Done, category: done, terminal: true }
+coordination:
+  claim_ttl_minutes: 15
+  readiness:
+    pick_from: todo
+    gate: shipping
+";
+        let err = parse_workflow(text).unwrap_err();
+        assert!(err.to_string().contains("shipping"), "{err}");
+    }
+
+    #[test]
+    fn duplicate_lane_ids_and_bad_charsets_are_refused() {
+        let lanes = |id: &str| {
+            format!(
+                "\
+statuses:
+  - {{ id: todo, label: To Do, category: todo }}
+lanes:
+  - {{ id: {id}, label: L1 }}
+  - {{ id: {id}, label: L2 }}
+"
+            )
+        };
+        assert!(parse_workflow(&lanes("backend")).is_err());
+        let bad_charset = "\
+statuses:
+  - { id: todo, label: To Do, category: todo }
+lanes:
+  - { id: Backend, label: L1 }
+";
+        assert!(parse_workflow(bad_charset).is_err());
+    }
+
+    #[test]
+    fn a_zero_claim_ttl_is_refused() {
+        let text = "\
+statuses:
+  - { id: todo, label: To Do, category: todo }
+coordination:
+  claim_ttl_minutes: 0
+";
+        let err = parse_workflow(text).unwrap_err();
+        assert!(err.to_string().contains("claim_ttl_minutes"), "{err}");
     }
 
     #[test]
