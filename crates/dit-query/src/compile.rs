@@ -293,6 +293,7 @@ fn column(field: &Field) -> &'static str {
         Field::Updated => "issues.updated",
         Field::Due => "issues.due",
         Field::Start => "issues.start",
+        Field::Lane => "issues.lane",
         Field::Body => "issues.body",
     }
 }
@@ -352,6 +353,26 @@ mod tests {
             c.params
         );
         assert_eq!(c.order_sql, "issues.priority DESC, issues.updated DESC");
+    }
+
+    #[test]
+    fn lane_filters_on_its_column() {
+        let c = compile_str("lane = backend AND status = todo");
+        assert_eq!(c.where_sql, "(issues.lane = ?1 AND issues.status = ?2)");
+        assert_eq!(
+            c.params,
+            vec![SqlVal::Text("backend".into()), SqlVal::Text("todo".into())]
+        );
+
+        let c = compile_str("lane IN (backend, frontend)");
+        assert_eq!(c.where_sql, "issues.lane IN (?1, ?2)");
+        assert_eq!(
+            c.params,
+            vec![
+                SqlVal::Text("backend".into()),
+                SqlVal::Text("frontend".into())
+            ]
+        );
     }
 
     #[test]

@@ -21,6 +21,7 @@ pub enum Field {
     Updated,
     Due,
     Start,
+    Lane,
     Body,
 }
 
@@ -45,6 +46,7 @@ impl Field {
             "updated" => Field::Updated,
             "due" => Field::Due,
             "start" => Field::Start,
+            "lane" => Field::Lane,
             "body" | "text" => Field::Body,
             _ => return None,
         };
@@ -70,6 +72,7 @@ impl Field {
             Field::Updated => "updated",
             Field::Due => "due",
             Field::Start => "start",
+            Field::Lane => "lane",
             Field::Body => "body",
         }
     }
