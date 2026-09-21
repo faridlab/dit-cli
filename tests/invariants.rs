@@ -157,6 +157,7 @@ fn workspace_with_issue(title: &str) -> (dit_core::Dit, tempfile::TempDir) {
         due: None,
         start: None,
         blocked_by: Vec::new(),
+        lane: None,
         body: "body".to_owned(),
     };
     let mut tx = dit.transaction("guard").unwrap();
@@ -239,7 +240,14 @@ const KNOWN_ISSUE_KEYS: &[&str] = &[
     "estimate",
     "sprint",
     "due",
+    "start",
     "blocked_by",
+    // ADR 0015: authored coordination state — an actor's assertion, the same
+    // class as `assignees`, not a derived fact. Age, liveness and readiness
+    // are computed from these, never stored.
+    "lane",
+    "claimed_by",
+    "claimed_at",
     "created",
     "updated",
 ];

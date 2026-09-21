@@ -128,6 +128,9 @@ pub fn issue_from_document(doc: &Document) -> Result<Issue, IssueParseError> {
         due,
         start,
         blocked_by,
+        lane: None,
+        claimed_by: None,
+        claimed_at: None,
         body,
     })
 }
@@ -245,6 +248,9 @@ pub fn apply_patch(
             ClearableField::Sprint => patch.sprint.is_some(),
             ClearableField::Due => patch.due.is_some(),
             ClearableField::Start => patch.start.is_some(),
+            ClearableField::Lane => patch.lane.is_some(),
+            ClearableField::ClaimedBy => patch.claimed_by.is_some(),
+            ClearableField::ClaimedAt => patch.claimed_at.is_some(),
         };
         if also_set {
             return Err(bad(
@@ -515,6 +521,7 @@ mod tests {
             due: Some("2026-09-01".into()),
             start: None,
             blocked_by: vec![],
+            lane: None,
             body: "Body here".into(),
         };
         let file = serialize_new_issue(&id, &draft, "2026-08-16T09:12:00Z").unwrap();
@@ -636,6 +643,7 @@ mod tests {
             due: None,
             start: None,
             blocked_by: vec![],
+            lane: None,
             body: String::new(),
         };
         let file = serialize_new_issue(&id, &draft, "2026-08-16T09:12:00Z").unwrap();

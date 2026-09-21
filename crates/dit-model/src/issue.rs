@@ -116,6 +116,16 @@ pub struct Issue {
     /// inferred from `due` and the estimate without writing anything back.
     pub start: Option<String>,
     pub blocked_by: Vec<IssueId>,
+    /// A lane id from `schema/workflow.yaml` (ADR 0015). None = Unlaned;
+    /// valid, not an error.
+    pub lane: Option<String>,
+    /// The actor asserting exclusive intent (ADR 0015). Written by
+    /// `dit claim` only, never at creation. An assertion like `assignees`,
+    /// not a derived fact — its liveness is computed from `claimed_at` +
+    /// the TTL, never stored.
+    pub claimed_by: Option<String>,
+    /// RFC3339, minted alongside `claimed_by`.
+    pub claimed_at: Option<String>,
     /// The markdown body below the frontmatter.
     pub body: String,
 }
@@ -140,6 +150,9 @@ pub struct IssueDraft {
     pub due: Option<String>,
     pub start: Option<String>,
     pub blocked_by: Vec<IssueId>,
+    /// Claims never ride creation (ADR 0015): an issue is claimable once it
+    /// exists, by an actor, through `dit claim`.
+    pub lane: Option<String>,
     pub body: String,
 }
 
@@ -154,16 +167,24 @@ pub enum ClearableField {
     Sprint,
     Due,
     Start,
+    Lane,
+    /// `claim --release` clears the pair together; they are separate variants
+    /// so `touched_keys` reports each line the merge driver must reason about.
+    ClaimedBy,
+    ClaimedAt,
 }
 
 impl ClearableField {
-    pub const ALL: [ClearableField; 6] = [
+    pub const ALL: [ClearableField; 9] = [
         ClearableField::Priority,
         ClearableField::Epic,
         ClearableField::Estimate,
         ClearableField::Sprint,
         ClearableField::Due,
         ClearableField::Start,
+        ClearableField::Lane,
+        ClearableField::ClaimedBy,
+        ClearableField::ClaimedAt,
     ];
 
     /// The frontmatter key this field lives under.
@@ -175,6 +196,9 @@ impl ClearableField {
             ClearableField::Sprint => "sprint",
             ClearableField::Due => "due",
             ClearableField::Start => "start",
+            ClearableField::Lane => "lane",
+            ClearableField::ClaimedBy => "claimed_by",
+            ClearableField::ClaimedAt => "claimed_at",
         }
     }
 }
@@ -206,6 +230,9 @@ pub struct FieldPatch {
     pub due: Option<String>,
     pub start: Option<String>,
     pub blocked_by: Option<Vec<IssueId>>,
+    pub lane: Option<String>,
+    pub claimed_by: Option<String>,
+    pub claimed_at: Option<String>,
     /// Optional fields to remove from the file. A field both set and cleared
     /// in one patch is a contradiction the parser refuses.
     pub clear: Vec<ClearableField>,
@@ -235,6 +262,9 @@ impl FieldPatch {
             (self.due.is_some(), "due"),
             (self.start.is_some(), "start"),
             (self.blocked_by.is_some(), "blocked_by"),
+            (self.lane.is_some(), "lane"),
+            (self.claimed_by.is_some(), "claimed_by"),
+            (self.claimed_at.is_some(), "claimed_at"),
         ] {
             if present {
                 keys.push(key);
@@ -296,6 +326,15 @@ impl Issue {
         if let Some(b) = &patch.blocked_by {
             self.blocked_by = b.clone();
         }
+        if let Some(l) = &patch.lane {
+            self.lane = Some(l.clone());
+        }
+        if let Some(c) = &patch.claimed_by {
+            self.claimed_by = Some(c.clone());
+        }
+        if let Some(c) = &patch.claimed_at {
+            self.claimed_at = Some(c.clone());
+        }
         for field in &patch.clear {
             match field {
                 ClearableField::Priority => self.priority = None,
@@ -304,6 +343,9 @@ impl Issue {
                 ClearableField::Sprint => self.sprint = None,
                 ClearableField::Due => self.due = None,
                 ClearableField::Start => self.start = None,
+                ClearableField::Lane => self.lane = None,
+                ClearableField::ClaimedBy => self.claimed_by = None,
+                ClearableField::ClaimedAt => self.claimed_at = None,
             }
         }
         Ok(())
@@ -334,8 +376,45 @@ mod tests {
             due: None,
             start: None,
             blocked_by: vec![],
+            lane: None,
+            claimed_by: None,
+            claimed_at: None,
             body: "## Context\n\nUsers on 3G get logged out.".into(),
         }
+    }
+
+    #[test]
+    fn lane_and_claim_patch_set_clear_and_touch_their_keys() {
+        let mut issue = sample_issue();
+        let patch = FieldPatch {
+            lane: Some("frontend".into()),
+            claimed_by: Some("fe-1".into()),
+            claimed_at: Some("2026-08-16T11:38:00Z".into()),
+            ..FieldPatch::default()
+        };
+        assert_eq!(
+            patch.touched_keys(),
+            vec!["lane", "claimed_by", "claimed_at"]
+        );
+        issue.apply(&patch).unwrap();
+        assert_eq!(issue.lane.as_deref(), Some("frontend"));
+        assert_eq!(issue.claimed_by.as_deref(), Some("fe-1"));
+        assert_eq!(issue.claimed_at.as_deref(), Some("2026-08-16T11:38:00Z"));
+
+        // Release clears the claim pair; each cleared key counts as touched.
+        let release = FieldPatch {
+            clear: vec![ClearableField::ClaimedBy, ClearableField::ClaimedAt],
+            ..FieldPatch::default()
+        };
+        assert_eq!(release.touched_keys(), vec!["claimed_by", "claimed_at"]);
+        issue.apply(&release).unwrap();
+        assert_eq!(issue.claimed_by, None);
+        assert_eq!(issue.claimed_at, None);
+        assert_eq!(
+            issue.lane.as_deref(),
+            Some("frontend"),
+            "lane survives a release"
+        );
     }
 
     #[test]

@@ -340,6 +340,7 @@ async fn create_issue(
             due: None,
             start: None,
             blocked_by: Vec::new(),
+            lane: None,
             body: input.body,
         };
         let mut tx = dit.transaction(&me).map_err(ServerError::Dit)?;

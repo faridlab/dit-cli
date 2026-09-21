@@ -90,6 +90,7 @@ pub fn parse_comment(input: &str) -> Result<Comment, CommentError> {
         id,
         author,
         created,
+        reply_to: None,
         // The file separates frontmatter from body with a blank line and
         // ends with a newline; the typed value is the content itself,
         // without those file-format artifacts.

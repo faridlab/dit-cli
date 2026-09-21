@@ -559,6 +559,7 @@ fn issue(cmd: Issue, explicit: Option<&str>) -> Result<ExitCode, DitError> {
                 due: None,
                 start: None,
                 blocked_by: vec![],
+                lane: None,
                 body: body.unwrap_or_default(),
                 // The number is facade-owned (ADR 0007): numbering policy
                 // assigns it inside the transaction, never the caller.

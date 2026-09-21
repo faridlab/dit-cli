@@ -173,6 +173,8 @@ pub fn parse_workflow(text: &str) -> Result<Workflow, SchemaError> {
         statuses,
         transitions,
         derived,
+        lanes: Vec::new(),
+        coordination: dit_model::Coordination::default(),
     };
     validate_workflow(&workflow)?;
     Ok(workflow)
@@ -483,6 +485,7 @@ statuses:
             }],
             transitions: vec![],
             derived: vec![],
+            ..Workflow::default_workflow()
         };
         let text = write_workflow(&wf);
         assert!(text.contains("label: \"Waiting for Review\""));

@@ -32,6 +32,7 @@ fn draft(title: &str) -> IssueDraft {
         due: None,
         start: None,
         blocked_by: vec![],
+        lane: None,
         body: "## Context\n\nIt breaks.".to_owned(),
     }
 }

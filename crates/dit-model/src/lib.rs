@@ -20,6 +20,7 @@ mod events;
 mod ids;
 mod issue;
 mod layout;
+mod readiness;
 mod release;
 mod status;
 mod time;
@@ -36,12 +37,13 @@ pub use layout::{
     looks_like_issue_body, release_version_from_path, DataLayout, CONTENT_ROOTS,
     GENERATED_INDEX_MARKER, ISSUE_BODY_FILE, LEGACY_ISSUE_BODY_FILE, RELEASES_DIR, RELEASE_FILE,
 };
+pub use readiness::{claim_liveness, readiness, ClaimLiveness, Readiness};
 pub use release::{
     validate_release_version, Release, ReleasePatch, ReleaseStatus, ReleaseVersionError,
 };
 pub use status::{Status, StatusCategory};
 pub use time::{format_rfc3339, parse_rfc3339, validate_date, TimeError};
 pub use workflow::{
-    resolve_status, DerivedRule, DerivedSignal, DerivedStatusSignal, Transition, Workflow,
-    WorkflowError, WorkflowStatus,
+    resolve_status, Coordination, DerivedRule, DerivedSignal, DerivedStatusSignal, Gate, Lane,
+    ReadinessConfig, Transition, Workflow, WorkflowError, WorkflowStatus,
 };

@@ -41,6 +41,7 @@ fn draft(title: &str) -> IssueDraft {
         due: None,
         start: None,
         blocked_by: vec![],
+        lane: None,
         number: None,
         body: "Users get logged out.".into(),
     }
@@ -371,6 +372,7 @@ fn draft_with(title: &str, body: &str) -> IssueDraft {
         due: None,
         start: None,
         blocked_by: vec![],
+        lane: None,
         number: None,
         body: body.into(),
     }

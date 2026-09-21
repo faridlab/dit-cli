@@ -680,6 +680,7 @@ impl Index {
                     .map_err(|e| IndexError::Corrupt(format!("comment id `{id}`: {e}")))?,
                 author,
                 created: at,
+                reply_to: None,
                 body,
             });
         }
@@ -781,6 +782,7 @@ impl Index {
                         .map_err(|e| IndexError::Corrupt(format!("comment id `{id}`: {e}")))?,
                     author,
                     created: at,
+                    reply_to: None,
                     body,
                 },
                 issue_id: IssueId::parse(&issue_id)
@@ -1235,6 +1237,9 @@ fn hydrate(
             due: cols.due,
             start: cols.start,
             blocked_by,
+            lane: None,
+            claimed_by: None,
+            claimed_at: None,
             body: cols.body,
         },
         path: cols.path,
@@ -1267,6 +1272,9 @@ mod tests {
             due: None,
             start: None,
             blocked_by: vec![],
+            lane: None,
+            claimed_by: None,
+            claimed_at: None,
             body: "Users on 3G get logged out.".into(),
         }
     }
@@ -1352,6 +1360,7 @@ mod tests {
             id: IssueId::parse(id).unwrap(),
             author: "budi".into(),
             created: at.into(),
+            reply_to: None,
             body: "note".into(),
         };
         idx.upsert_comment(
@@ -1609,12 +1618,14 @@ mod tests {
             id: IssueId::parse("01K3MA1F7XQW8N2V5RTGBCDEFH").unwrap(),
             author: "farid".into(),
             created: "2026-08-16T10:00:00Z".into(),
+            reply_to: None,
             body: "reproduced".into(),
         };
         let late = Comment {
             id: IssueId::parse("01K3MA1F7XZZZZZZZZZZZZZZZZ").unwrap(),
             author: "budi".into(),
             created: "2026-08-16T11:00:00Z".into(),
+            reply_to: None,
             body: "same here".into(),
         };
         // Insert late first: read order must not follow insert order.

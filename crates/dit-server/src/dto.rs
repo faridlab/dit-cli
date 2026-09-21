@@ -816,6 +816,9 @@ pub fn to_field_patch(dto: FieldPatchDto) -> Result<FieldPatch, String> {
         due,
         start,
         blocked_by,
+        lane: None,
+        claimed_by: None,
+        claimed_at: None,
         clear,
     })
 }
