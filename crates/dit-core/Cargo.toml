@@ -27,6 +27,7 @@ time = { workspace = true, features = ["std"] }
 # Session-token entropy for the server. Already in the graph via dit-store;
 # declared here because the facade is the only crate delivery names.
 getrandom = { workspace = true }
+notify = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

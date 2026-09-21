@@ -68,6 +68,15 @@ time = { version = "0.3", default-features = false, features = ["parsing", "form
 # features are off: they pull in syntax highlighting (a C regex engine) and a
 # builder crate we never use.
 comrak  = { version = "=0.54.0", default-features = false }
+
+# File watcher (ADR 0017): how a running dit-server sees writes made by other
+# processes — each parallel actor's CLI. dit-core only; never in the pure
+# crates, which must stay I/O-free and wasm32-clean. The macOS kqueue backend
+# is enabled deliberately: FSEvents (the default there) coalesces and can
+# drop modify events for a single quiet file, which is exactly the signal
+# the watcher exists to catch; kqueue is per-directory and deterministic,
+# and the watcher already degrades to polling when watch limits hit.
+notify = { version = "8.2.0", features = ["macos_kqueue"] }
 # Embedded SQLite — the index is disposable, so "bundled" avoids depending on
 # the user's system SQLite version.
 rusqlite = { version = "0.40", features = ["bundled"] }

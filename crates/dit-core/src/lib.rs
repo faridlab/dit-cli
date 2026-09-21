@@ -16,6 +16,8 @@
 pub mod board;
 pub mod diagnostics;
 pub mod error;
+pub mod watch;
+pub mod workflow;
 
 use std::path::Path;
 
@@ -33,13 +35,17 @@ pub use error::DitError;
 // second dependency — the facade is the only crate delivery names.
 pub use dit_index::{IndexedIssue, IndexedRelease, WorkspaceComment};
 pub use dit_model::{
-    validate_date, validate_release_version, ChangeSummary, ClearableField, Comment, Config,
-    DataLayout, DayCount, DerivedSignal, DocEntry, DocPath, DocPathError, FieldPatch, Issue,
-    IssueDraft, IssueId, IssueKind, Numbering, Priority, Release, ReleasePatch, ReleaseStatus,
-    StatusCategory, StoredFieldEvent, Workflow, WorkflowStatus, CONTENT_ROOTS, DOC_ROOTS,
-    GENERATED_INDEX_MARKER,
+    claim_liveness, validate_date, validate_release_version, ChangeSummary, ClaimLiveness,
+    ClearableField, Comment, Config, DataLayout, DayCount, DerivedSignal, DocEntry, DocPath,
+    DocPathError, FieldPatch, Gate, Issue, IssueDraft, IssueId, IssueKind, Numbering, Priority,
+    Readiness, Release, ReleasePatch, ReleaseStatus, StatusCategory, StoredFieldEvent, Workflow,
+    WorkflowStatus, CONTENT_ROOTS, DOC_ROOTS, GENERATED_INDEX_MARKER,
 };
 pub use dit_vcs::{SyncOptions, SyncReport};
+pub use watch::spawn as spawn_watcher;
+pub use workflow::{
+    BlockerDisposition, BlockerState, ClaimState, WorkflowBoard, WorkflowCard, WorkflowLane,
+};
 
 /// Which parts of the index to rebuild. The state half is cheap (read every
 /// file at HEAD); the history half walks the whole commit graph, so it gets
@@ -72,6 +78,54 @@ pub struct RepoStatus {
     pub branch: String,
     pub head: String,
     pub dirty: bool,
+}
+
+/// One ready issue with its derived readiness (ADR 0015).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReadyIssue {
+    pub issue: IndexedIssue,
+    pub readiness: Readiness,
+}
+
+/// What kind of claim operation to run (ADR 0015). The flags are mutually
+/// exclusive at the CLI edge; the facade treats `release` first, then
+/// `renew`, as the plain claim.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClaimOptions {
+    /// Skip the readiness guard and refresh an existing claim's timestamp.
+    pub renew: bool,
+    /// Take the issue over from another actor's live claim.
+    pub takeover: bool,
+    /// Clear the claim pair entirely.
+    pub release: bool,
+    /// The human escape hatch: write the claim regardless of any guard.
+    pub force: bool,
+}
+
+/// What `claim` did — `wrote: false` means no commit was needed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimReport {
+    pub wrote: bool,
+    pub note: String,
+}
+
+/// One lane for `init_workflow` to register: id (charset-checked like a
+/// status id), display label, and the advisory owner aliases.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaneSpec {
+    pub id: String,
+    pub label: String,
+    pub owners: Vec<String>,
+}
+
+/// What `init_workflow` wrote. A second run reports all-false and writes
+/// nothing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WorkflowInitReport {
+    pub schema_created: bool,
+    pub lanes_written: bool,
+    pub coordination_written: bool,
+    pub protocol_written: bool,
 }
 
 /// An open workspace: git repo + files on one side, the index on the other.
@@ -461,6 +515,406 @@ impl Dit {
     pub fn query(&self, dql: &str, me: Option<&str>) -> Result<Vec<IndexedIssue>, DitError> {
         let compiled = dit_query::compile_str(dql, me, OffsetDateTime::now_utc())?;
         Ok(self.index.list_issues(&compiled)?)
+    }
+
+    /// Resolve a reference to exactly one issue, or refuse (ADR 0018). The
+    /// same ladder as [`Dit::get`] — `#N`, full id, short ref — but a
+    /// reference matching several issues (duplicate numbers exist in real
+    /// workspaces) is [`DitError::Ambiguous`] naming the candidates, never a
+    /// silently chosen first hit. Every *acting* path resolves through here;
+    /// `get` keeps its display semantics.
+    pub fn resolve(&self, needle: &str) -> Result<IssueId, DitError> {
+        let stripped = needle.strip_prefix('#').unwrap_or(needle);
+        if needle.starts_with('#') {
+            if let Ok(n) = stripped.parse::<u32>() {
+                if n > 0 {
+                    let holders = self.index.issues_with_number(n)?;
+                    return match holders.as_slice() {
+                        [one] => Ok(one.issue.id),
+                        [] => Err(DitError::NotFound(needle.to_owned())),
+                        many => Err(ambiguous(
+                            needle,
+                            many.iter()
+                                .map(|h| (h.issue.id.as_str().to_owned(), h.issue.title.clone()))
+                                .collect(),
+                        )),
+                    };
+                }
+            }
+        }
+        if stripped.len() == 26 {
+            if let Ok(id) = IssueId::parse(stripped) {
+                return match self.index.get_issue(&id)? {
+                    Some(_) => Ok(id),
+                    None => return Err(DitError::NotFound(needle.to_owned())),
+                };
+            }
+        }
+        let query = dit_query::Query {
+            filter: Some(dit_query::Expr::Cmp {
+                field: dit_query::Field::ShortRef,
+                op: dit_query::Op::Eq,
+                value: dit_query::Val::Str(stripped.to_owned()),
+            }),
+            order: vec![],
+            limit: Some(2),
+        };
+        let compiled = dit_query::compile(&query, None, OffsetDateTime::now_utc())
+            .map_err(dit_query::QueryError::from)?;
+        match self.index.list_issues(&compiled)?.as_slice() {
+            [one] => Ok(one.issue.id),
+            [] => Err(DitError::NotFound(needle.to_owned())),
+            many => Err(ambiguous(
+                needle,
+                many.iter()
+                    .map(|h| (h.issue.id.as_str().to_owned(), h.issue.title.clone()))
+                    .collect(),
+            )),
+        }
+    }
+
+    /// Issues this actor may pick up right now (ADR 0015): `pick_from`
+    /// status, lane-matching, every blocker through the gate. `until`
+    /// overrides the configured gate for this call only ("review-or-later"),
+    /// never writing anything back. Readiness is derived — nothing here
+    /// touches a file.
+    pub fn ready(
+        &self,
+        lane: Option<&str>,
+        until: Option<&str>,
+    ) -> Result<Vec<ReadyIssue>, DitError> {
+        let gate = match until {
+            Some(s) => {
+                if !self.workflow.contains_status(s) {
+                    return Err(DitError::Refuse(format!(
+                        "`{s}` is not one of this workflow's statuses — --until takes a status id"
+                    )));
+                }
+                Some(Gate::Until(s.to_owned()))
+            }
+            None => None,
+        };
+        let all = self.query("", None)?;
+        let by_id: std::collections::HashMap<IssueId, &str> = all
+            .iter()
+            .map(|h| (h.issue.id, h.issue.status.as_str()))
+            .collect();
+        let mut out = Vec::new();
+        for hit in &all {
+            if let Some(want) = lane {
+                if hit.issue.lane.as_deref() != Some(want) {
+                    continue;
+                }
+            }
+            let blockers: Vec<(IssueId, String)> = hit
+                .issue
+                .blocked_by
+                .iter()
+                .map(|b| {
+                    // A blocker that is not in the index (deleted) is broken:
+                    // the dependency needs a human to re-point it, not a
+                    // silent unblock.
+                    let status = by_id
+                        .get(b)
+                        .map(|s| (*s).to_owned())
+                        .unwrap_or_else(|| "cancelled".to_owned());
+                    (*b, status)
+                })
+                .collect();
+            let r =
+                dit_model::readiness(&hit.issue.status, &blockers, &self.workflow, gate.as_ref());
+            if matches!(r, Readiness::Ready) {
+                out.push(ReadyIssue {
+                    issue: hit.clone(),
+                    readiness: r,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Claim an issue as an actor's exclusive intent, renew a claim, take one
+    /// over, or release it (ADR 0015) — one commit when it writes. The CLI
+    /// guards live here, not in docs: claiming a terminal issue, an issue
+    /// with unsatisfied or broken blockers, or an issue another actor holds
+    /// live is refused with the way out named. A claim is advisory, never a
+    /// lock: staleness only unlocks takeover.
+    pub fn claim(
+        &mut self,
+        id: &IssueId,
+        actor: &str,
+        opts: ClaimOptions,
+    ) -> Result<ClaimReport, DitError> {
+        let target = self
+            .index
+            .get_issue(id)?
+            .ok_or_else(|| DitError::NotFound(id.as_str().to_owned()))?;
+        let issue = &target.issue;
+        let ttl = self.workflow.coordination.claim_ttl_minutes;
+        let liveness = claim_liveness(
+            issue.claimed_by.as_deref(),
+            issue.claimed_at.as_deref(),
+            OffsetDateTime::now_utc(),
+            ttl,
+        );
+        let holder = issue.claimed_by.clone();
+
+        if opts.release {
+            if let (Some(holder), ClaimLiveness::Live) = (&holder, liveness) {
+                if holder != actor && !opts.force {
+                    return Err(DitError::Refuse(format!(
+                        "{} is claimed live by `{holder}` — only they may release it, or pass \
+                         --force",
+                        id.short_ref().as_str()
+                    )));
+                }
+            }
+            let mut tx = self.transaction(actor)?;
+            tx.set_fields(
+                id,
+                FieldPatch {
+                    clear: vec![ClearableField::ClaimedBy, ClearableField::ClaimedAt],
+                    ..FieldPatch::default()
+                },
+            )?;
+            tx.commit(&format!("release {}: {}", id.short_ref().as_str(), actor))?;
+            return Ok(ClaimReport {
+                wrote: true,
+                note: "released".into(),
+            });
+        }
+
+        // The readiness guard: no claiming work that cannot be picked up.
+        // `--renew` refreshes an existing claim and skips it (the issue may
+        // legitimately have moved on since).
+        if !opts.renew {
+            if self.workflow.is_terminal(&issue.status) {
+                return Err(DitError::Refuse(format!(
+                    "`{}` is a terminal status — a finished issue cannot be claimed",
+                    issue.status
+                )));
+            }
+            let blockers: Vec<(IssueId, String)> = issue
+                .blocked_by
+                .iter()
+                .map(|b| {
+                    let status = self
+                        .index
+                        .get_issue(b)?
+                        .map(|t| t.issue.status.clone())
+                        // A blocker missing from the index is broken.
+                        .unwrap_or_else(|| "cancelled".to_owned());
+                    Ok((*b, status))
+                })
+                .collect::<Result<_, DitError>>()?;
+            if let Readiness::Blocked {
+                unsatisfied,
+                broken,
+            } = dit_model::readiness(&issue.status, &blockers, &self.workflow, None)
+            {
+                if !opts.force {
+                    let unsatisfied_list: Vec<String> = unsatisfied
+                        .iter()
+                        .map(|b| b.short_ref().as_str().to_owned())
+                        .collect();
+                    let broken_list: Vec<String> = broken
+                        .iter()
+                        .map(|b| b.short_ref().as_str().to_owned())
+                        .collect();
+                    let mut why = String::new();
+                    if !unsatisfied_list.is_empty() {
+                        why.push_str(&format!(
+                            "blockers not through the gate: {}",
+                            unsatisfied_list.join(", ")
+                        ));
+                    }
+                    if !broken_list.is_empty() {
+                        if !why.is_empty() {
+                            why.push_str("; ");
+                        }
+                        why.push_str(&format!(
+                            "broken dependencies (cancelled or gone): {}",
+                            broken_list.join(", ")
+                        ));
+                    }
+                    return Err(DitError::Refuse(format!(
+                        "blocked — {why}. Clear the blockers, or pass --force to claim anyway"
+                    )));
+                }
+            }
+        }
+
+        // The exclusivity guard.
+        match (&holder, liveness) {
+            (Some(other), ClaimLiveness::Live) if other != actor => {
+                if !opts.takeover && !opts.force {
+                    return Err(DitError::Refuse(format!(
+                        "claimed live by `{other}` (within the last {ttl} min) — pass \
+                         --takeover to take it over"
+                    )));
+                }
+            }
+            (Some(other), ClaimLiveness::Stale) if other != actor => {
+                // A stale claim is takable by plain `claim`; reaching for
+                // `--renew` on someone else's claim reads like a mistake, so
+                // name the right move.
+                if opts.renew && !opts.takeover && !opts.force {
+                    return Err(DitError::Refuse(format!(
+                        "`{other}`'s claim is stale — claim it plainly (no --renew), or \
+                         --takeover if you want the intent recorded as a takeover"
+                    )));
+                }
+            }
+            (Some(own), ClaimLiveness::Live) if own == actor && !opts.renew && !opts.force => {
+                return Ok(ClaimReport {
+                    wrote: false,
+                    note: format!(
+                        "already claimed by you (live, TTL {ttl} min) — --renew refreshes it"
+                    ),
+                });
+            }
+            _ => {}
+        }
+
+        let now = dit_model::format_rfc3339(OffsetDateTime::now_utc());
+        let mut tx = self.transaction(actor)?;
+        tx.set_fields(
+            id,
+            FieldPatch {
+                claimed_by: Some(actor.to_owned()),
+                claimed_at: Some(now),
+                ..FieldPatch::default()
+            },
+        )?;
+        tx.commit(&format!("claim {} as {}", id.short_ref().as_str(), actor))?;
+        Ok(ClaimReport {
+            wrote: true,
+            note: format!("claimed as {actor}"),
+        })
+    }
+
+    /// Bring the state index up to date when HEAD moved past the watermark
+    /// (ADR 0017): a write made by another process. Own-process writes move
+    /// the watermark in `absorb_commit`, so this is a no-op after them. The
+    /// history tier keeps its own watermark; nothing here touches it.
+    pub fn refresh_state(&mut self) -> Result<bool, DitError> {
+        let Ok(head) = self.repo.head() else {
+            return Ok(false);
+        };
+        if self.index.watermark("state")?.as_deref() == Some(head.as_str()) {
+            return Ok(false);
+        }
+        self.reindex(ReindexMode::State)?;
+        self.index.set_watermark("state", &head)?;
+        Ok(true)
+    }
+
+    /// Scaffold the coordination plane in this workspace (ADR 0015): the
+    /// lane registry + coordination block in workflow.yaml, and the peer
+    /// protocol section in CLAUDE.md. Idempotent — a second run writes
+    /// nothing. Existing workflow.yaml hand edits and comments survive: the
+    /// new blocks are appended textually, only when their top-level keys are
+    /// absent.
+    pub fn init_workflow(&mut self, lanes: &[LaneSpec]) -> Result<WorkflowInitReport, DitError> {
+        let mut report = WorkflowInitReport::default();
+
+        // 1. workflow.yaml — create with the canonical default when absent,
+        //    append the blocks when present but without them.
+        let schema_path = self.store.layout().workflow_yaml();
+        let aux = Workflow {
+            lanes: lanes
+                .iter()
+                .map(|l| dit_model::Lane {
+                    id: l.id.clone(),
+                    label: l.label.clone(),
+                    owners: l.owners.clone(),
+                })
+                .collect(),
+            coordination: self.workflow.coordination.clone(),
+            ..Workflow::default_workflow()
+        };
+        let aux_text = dit_parse::write_workflow(&aux);
+        let (lanes_block, coordination_block) = split_coordination_blocks(&aux_text);
+        // The emitter skips a default coordination block; the scaffold
+        // writes it anyway, so the knobs are visible from day one.
+        let coordination_block = if coordination_block.is_empty() {
+            DEFAULT_COORDINATION_BLOCK.to_owned()
+        } else {
+            coordination_block
+        };
+        let text = match std::fs::read_to_string(&schema_path) {
+            Ok(text) => {
+                let has_lanes = text.lines().any(|l| l.starts_with("lanes:"));
+                let has_coordination = text.lines().any(|l| l.starts_with("coordination:"));
+                if has_lanes && has_coordination {
+                    text
+                } else {
+                    let mut text = text;
+                    if !text.ends_with('\n') {
+                        text.push('\n');
+                    }
+                    if !has_lanes {
+                        text.push_str(&lanes_block);
+                        report.lanes_written = true;
+                    }
+                    if !has_coordination {
+                        text.push_str(&coordination_block);
+                        report.coordination_written = true;
+                    }
+                    text
+                }
+            }
+            Err(_) => {
+                report.schema_created = true;
+                report.lanes_written = true;
+                report.coordination_written = true;
+                // Seed the whole canonical file: the workspace gets a
+                // materialized workflow, not just the new blocks.
+                let mut seeded = dit_parse::write_workflow(&Workflow::default_workflow());
+                if !seeded.ends_with('\n') {
+                    seeded.push('\n');
+                }
+                seeded.push_str(&lanes_block);
+                seeded.push_str(&coordination_block);
+                seeded
+            }
+        };
+        if report.lanes_written || report.coordination_written || report.schema_created {
+            let parent = schema_path.parent().ok_or_else(|| {
+                DitError::Refuse("workflow.yaml must live inside a directory".into())
+            })?;
+            std::fs::create_dir_all(parent)?;
+            atomic::write(&schema_path, &text)?;
+        }
+
+        // 2. CLAUDE.md — only the marked protocol block is ever touched.
+        let claude = self.repo.root().join("CLAUDE.md");
+        let existing = std::fs::read_to_string(&claude).unwrap_or_default();
+        let updated = upsert_protocol_section(&existing, lanes);
+        if updated != existing {
+            atomic::write(&claude, &updated)?;
+            report.protocol_written = true;
+        }
+
+        self.reload_schema();
+
+        let root = self.repo.root().to_owned();
+        if report.lanes_written || report.coordination_written || report.schema_created {
+            let rel = rel_to_root(&root, &schema_path);
+            self.repo.add(&rel)?;
+        }
+        if report.protocol_written {
+            self.repo.add("CLAUDE.md")?;
+        }
+        if report.lanes_written
+            || report.coordination_written
+            || report.schema_created
+            || report.protocol_written
+        {
+            self.repo
+                .commit("init workflow coordination: lanes and peer protocol")?;
+        }
+        Ok(report)
     }
 
     /// The board: workflow columns in declaration order, issues sorted most
@@ -955,6 +1409,9 @@ impl Dit {
                     Err(_) => report.skipped += 1,
                 }
             }
+            // Where the state tier currently stands — the watcher's dedupe
+            // key (ADR 0017).
+            self.index.set_watermark("state", &head)?;
         }
         if matches!(mode, ReindexMode::Events | ReindexMode::All) {
             let watermark = self.index.watermark("events")?;
@@ -1026,6 +1483,14 @@ impl<'a> Transaction<'a> {
     /// `numbering: local` (ADR 0007) a missing number is assigned
     /// `max(existing) + 1` from the index; callers never choose it.
     pub fn create_issue(&mut self, mut draft: IssueDraft) -> Result<IssueId, DitError> {
+        if let Some(s) = &draft.status {
+            if !self.dit.workflow.contains_status(s) {
+                return Err(DitError::Refuse(format!(
+                    "`{s}` is not one of this workflow's statuses — create the issue, then \
+                     `dit issue set --force status={s}` if you truly mean it"
+                )));
+            }
+        }
         self.assign_number(&mut draft)?;
         if draft.body.trim().is_empty() {
             let kind = draft.kind.as_str().to_owned();
@@ -1081,6 +1546,34 @@ impl<'a> Transaction<'a> {
     }
 
     pub fn set_fields(&mut self, id: &IssueId, patch: FieldPatch) -> Result<(), DitError> {
+        self.set_fields_opts(id, patch, false)
+    }
+
+    /// [`Transaction::set_fields`] with the `--force` escape for the status
+    /// membership check (ADR 0015): today only a charset is validated and a
+    /// typo silently drops the issue off the board; from now on the value
+    /// must name a workflow status unless `force_status` says otherwise.
+    pub fn set_fields_opts(
+        &mut self,
+        id: &IssueId,
+        patch: FieldPatch,
+        force_status: bool,
+    ) -> Result<(), DitError> {
+        if let Some(s) = &patch.status {
+            if !force_status && !self.dit.workflow.contains_status(s) {
+                let legal: Vec<&str> = self
+                    .dit
+                    .workflow
+                    .board_columns()
+                    .map(|st| st.id.as_str())
+                    .collect();
+                return Err(DitError::Refuse(format!(
+                    "`{s}` is not one of this workflow's statuses ({}) — pass --force to write \
+                     it anyway",
+                    legal.join(", ")
+                )));
+            }
+        }
         Ok(self.store_tx.set_fields(id, patch)?)
     }
 
@@ -1302,6 +1795,10 @@ impl Dit {
         let events = dit_vcs::walk_field_events(&self.repo, prev_head, layout)?;
         self.index.record_field_events(&events)?;
         self.index.set_watermark("events", head)?;
+        // The state watermark is what the watcher (ADR 0017) compares HEAD
+        // against: own-process writes move it here, so the watcher no-ops
+        // and a write announces exactly once.
+        self.index.set_watermark("state", head)?;
         Ok(())
     }
 
@@ -1669,6 +2166,113 @@ fn folder_link(repo_path: &str) -> String {
         return rest.to_owned();
     };
     format!("{dir}/")
+}
+
+/// Build the ambiguity error (ADR 0018): every candidate named with its id
+/// and title, so the caller can restate the reference without a round trip.
+fn ambiguous(needle: &str, candidates: Vec<(String, String)>) -> DitError {
+    let listing = candidates
+        .iter()
+        .map(|(id, title)| format!("{id} ({title})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    DitError::Ambiguous {
+        needle: needle.to_owned(),
+        count: candidates.len(),
+        listing,
+    }
+}
+
+/// Split `write_workflow` output into (lanes block, coordination block) so
+/// `init_workflow` can append exactly those sections to an existing file.
+/// Blocks absent from the input come back empty.
+fn split_coordination_blocks(text: &str) -> (String, String) {
+    let mut lanes = String::new();
+    let mut coordination = String::new();
+    let mut target: Option<&mut String> = None;
+    for line in text.lines() {
+        if line.starts_with("lanes:") {
+            lanes.push_str("lanes:\n");
+            target = Some(&mut lanes);
+            continue;
+        }
+        if line.starts_with("coordination:") {
+            coordination.push_str("coordination:\n");
+            target = Some(&mut coordination);
+            continue;
+        }
+        if let Some(t) = target.as_deref_mut() {
+            if line.starts_with(' ') {
+                t.push_str(line);
+                t.push('\n');
+            } else {
+                target = None;
+            }
+        }
+    }
+    (lanes, coordination)
+}
+
+/// The coordination block `init_workflow` scaffolds when the workspace's
+/// settings are still the defaults. The canonical emitter skips a default
+/// block (byte-stable round-trips), but scaffolding exists to be read by
+/// humans — the knobs should be visible, not implied. Pinned to parse back
+/// to `Coordination::default()` by the core tests.
+const DEFAULT_COORDINATION_BLOCK: &str = "\
+coordination:
+  claim_ttl_minutes: 15
+  readiness:
+    pick_from: todo
+    gate: terminal
+";
+
+/// Replace (or append) the marked peer-protocol section in a workspace's
+/// CLAUDE.md. Only the text between the markers is ever touched; everything
+/// else — hand-written rules, other sections — survives byte-for-byte.
+fn upsert_protocol_section(existing: &str, lanes: &[LaneSpec]) -> String {
+    const START: &str = "<!-- dit:workflow-protocol -->";
+    const END: &str = "<!-- /dit:workflow-protocol -->";
+    let lane_ids: Vec<&str> = lanes.iter().map(|l| l.id.as_str()).collect();
+    let body = format!(
+        "{START}\n\n\
+         ## DIT peer protocol for parallel actors\n\n\
+         Each actor (human or AI session) works one lane. Identity: `export DIT_ME=<lane-owner>`\n\
+         (or `--me`) before any command; every claim, comment and commit is attributed to it.\n\n\
+         - Poll for work: `dit ready --lane <your-lane>` (add `--until review` to start against a\n\
+           blocker still in review). Empty output means wait.\n\
+         - Claim before you edit: `dit claim <issue>`; refresh with `dit claim <issue> --renew`\n\
+           when a session runs long; release with `dit claim <issue> --release` when you stop.\n\
+           A claim older than the TTL is takable by another actor.\n\
+         - Move the issue through statuses (`in_progress` before the first edit, `review` while a\n\
+           gate is pending, `done` only with evidence in a comment).\n\
+         - Blocked on another lane? Comment on the blocker issue with what you expected, what you\n\
+           got, and the evidence (request, response, error), then reply in-thread when it lands.\n\
+         - Never edit another lane's issue without claiming it first.\n\n\
+         Lanes: {}.\n\n\
+         {END}",
+        lane_ids.join(", ")
+    );
+    match (existing.find(START), existing.find(END)) {
+        (Some(a), Some(b)) if b > a => {
+            let mut out = String::with_capacity(existing.len());
+            out.push_str(&existing[..a]);
+            out.push_str(&body);
+            out.push_str(&existing[b + END.len()..]);
+            out
+        }
+        _ => {
+            let mut out = existing.to_owned();
+            if !out.is_empty() {
+                if !out.ends_with('\n') {
+                    out.push('\n');
+                }
+                out.push('\n');
+            }
+            out.push_str(&body);
+            out.push('\n');
+            out
+        }
+    }
 }
 
 /// This build's version, stamped into the generated index marker so a reader

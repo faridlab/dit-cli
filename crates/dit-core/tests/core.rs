@@ -1520,3 +1520,510 @@ fn deleting_an_issue_removes_its_files_but_keeps_its_history() {
     assert!(dit.get(doomed.as_str()).unwrap().is_none());
     assert_eq!(dit.query("", None).unwrap().len(), 1);
 }
+
+// -- ADR 0015/0018: the coordination plane -----------------------------------
+
+use dit_core::{spawn_watcher, ClaimOptions, LaneSpec, Readiness};
+
+fn issue_with(dit: &mut Dit, title: &str, patch: dit_core::FieldPatch) -> dit_core::IssueId {
+    let mut tx = dit.transaction("farid").unwrap();
+    let id = tx.create_issue(draft(title)).unwrap();
+    tx.set_fields(&id, patch).unwrap();
+    tx.commit("create").unwrap().unwrap();
+    id
+}
+
+#[test]
+fn resolve_rejects_duplicate_numbers_naming_both_candidates() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    let a = issue_with(
+        &mut dit,
+        "First holder of 285",
+        dit_core::FieldPatch {
+            number: Some(285),
+            ..Default::default()
+        },
+    );
+    let b = issue_with(
+        &mut dit,
+        "Second holder of 285",
+        dit_core::FieldPatch {
+            number: Some(285),
+            ..Default::default()
+        },
+    );
+    let err = dit.resolve("#285").unwrap_err();
+    match err {
+        DitError::Ambiguous { listing, .. } => {
+            assert!(listing.contains(a.as_str()), "{listing}");
+            assert!(listing.contains(b.as_str()), "{listing}");
+            assert!(listing.contains("Second holder"), "{listing}");
+        }
+        other => panic!("expected Ambiguous, got {other:?}"),
+    }
+    // The short ref stays unambiguous and resolves exactly.
+    assert_eq!(dit.resolve(a.short_ref().as_str()).unwrap(), a);
+    assert_eq!(dit.resolve(b.as_str()).unwrap(), b);
+    assert!(matches!(dit.resolve("#99"), Err(DitError::NotFound(_))));
+}
+
+#[test]
+fn claim_guards_readiness_exclusivity_and_renewal() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    let blocker = issue_with(&mut dit, "Backend endpoint", Default::default());
+    let waiter = issue_with(
+        &mut dit,
+        "Frontend integration",
+        dit_core::FieldPatch {
+            blocked_by: Some(vec![blocker]),
+            ..Default::default()
+        },
+    );
+
+    // Blocked: the waiter cannot claim while the blocker is not through the gate.
+    let err = dit
+        .claim(&waiter, "fe-1", ClaimOptions::default())
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("blockers not through the gate"),
+        "{err}"
+    );
+    assert!(
+        err.to_string().contains(blocker.short_ref().as_str()),
+        "{err}"
+    );
+
+    // Through the gate: claim lands as one commit and is readable back.
+    issue_with(
+        &mut dit,
+        "Backend endpoint",
+        dit_core::FieldPatch {
+            status: Some("done".into()),
+            ..Default::default()
+        },
+    );
+    // The patch above targeted the same issue? No: it created a new one.
+    // Mark the actual blocker done.
+    let mut tx = dit.transaction("be-1").unwrap();
+    tx.set_fields(
+        &blocker,
+        dit_core::FieldPatch {
+            status: Some("done".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    tx.commit("blocker done").unwrap();
+
+    dit.claim(&waiter, "fe-1", ClaimOptions::default()).unwrap();
+    let got = dit.get(waiter.as_str()).unwrap().unwrap();
+    assert_eq!(got.issue.claimed_by.as_deref(), Some("fe-1"));
+    assert!(got.issue.claimed_at.is_some());
+
+    // A foreign live claim is refused with the way out named.
+    let err = dit
+        .claim(&waiter, "be-1", ClaimOptions::default())
+        .unwrap_err();
+    assert!(err.to_string().contains("--takeover"), "{err}");
+
+    // Own live claim + plain claim again: nothing to write.
+    let again = dit.claim(&waiter, "fe-1", ClaimOptions::default()).unwrap();
+    assert!(!again.wrote, "{again:?}");
+
+    // Renewal refreshes silently.
+    let renew = dit
+        .claim(
+            &waiter,
+            "fe-1",
+            ClaimOptions {
+                renew: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(renew.wrote);
+
+    // Release clears the pair; then another actor can claim.
+    dit.claim(
+        &waiter,
+        "fe-1",
+        ClaimOptions {
+            release: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let got = dit.get(waiter.as_str()).unwrap().unwrap();
+    assert_eq!(got.issue.claimed_by, None);
+    dit.claim(&waiter, "be-1", ClaimOptions::default()).unwrap();
+}
+
+#[test]
+fn a_stale_claim_is_takable_and_renew_on_foreign_stale_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    let id = issue_with(&mut dit, "Abandoned claim", Default::default());
+    // Hand-age the claim far past any TTL.
+    let mut tx = dit.transaction("fe-1").unwrap();
+    tx.set_fields(
+        &id,
+        dit_core::FieldPatch {
+            claimed_by: Some("fe-1".into()),
+            claimed_at: Some("2020-01-01T00:00:00Z".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    tx.commit("old claim").unwrap();
+
+    // Plain claim by another actor takes the stale claim over.
+    dit.claim(&id, "be-1", ClaimOptions::default()).unwrap();
+    let got = dit.get(id.as_str()).unwrap().unwrap();
+    assert_eq!(got.issue.claimed_by.as_deref(), Some("be-1"));
+
+    // Re-age and try --renew from the foreign actor: refused, naming the move.
+    let mut tx = dit.transaction("be-1").unwrap();
+    tx.set_fields(
+        &id,
+        dit_core::FieldPatch {
+            claimed_at: Some("2020-01-01T00:00:00Z".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    tx.commit("re-age").unwrap();
+    let err = dit
+        .claim(
+            &id,
+            "fe-1",
+            ClaimOptions {
+                renew: true,
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("stale"), "{err}");
+}
+
+#[test]
+fn ready_admits_only_what_the_gate_admits() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    let blocker = issue_with(
+        &mut dit,
+        "Backend in review",
+        dit_core::FieldPatch {
+            status: Some("review".into()),
+            ..Default::default()
+        },
+    );
+    let waiter = issue_with(
+        &mut dit,
+        "Frontend waiting",
+        dit_core::FieldPatch {
+            blocked_by: Some(vec![blocker]),
+            lane: Some("frontend".into()),
+            ..Default::default()
+        },
+    );
+
+    // Default gate (terminal): the review blocker keeps the waiter out.
+    let ready = dit.ready(None, None).unwrap();
+    assert!(ready.iter().all(|r| r.issue.issue.id != waiter));
+
+    // --until review admits it for this call only.
+    let ready = dit.ready(None, Some("review")).unwrap();
+    assert!(ready.iter().any(|r| r.issue.issue.id == waiter));
+
+    // Lane filter narrows to the lane's issues.
+    let ready = dit.ready(Some("backend"), Some("review")).unwrap();
+    assert!(ready.is_empty(), "the blocker is not in the backend lane");
+
+    // An unknown status in --until is a refusal, not an empty answer.
+    assert!(dit.ready(None, Some("shipping")).is_err());
+}
+
+#[test]
+fn status_writes_validate_membership_unless_forced() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    let id = issue_with(&mut dit, "Charset was not enough", Default::default());
+
+    let mut tx = dit.transaction("farid").unwrap();
+    let err = tx
+        .set_fields(
+            &id,
+            dit_core::FieldPatch {
+                status: Some("doing".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    drop(tx);
+    assert!(err.to_string().contains("`doing` is not one of"), "{err}");
+    assert!(err.to_string().contains("backlog"), "{err}");
+
+    let mut tx = dit.transaction("farid").unwrap();
+    tx.set_fields_opts(
+        &id,
+        dit_core::FieldPatch {
+            status: Some("doing".into()),
+            ..Default::default()
+        },
+        true,
+    )
+    .unwrap();
+    tx.commit("forced write").unwrap();
+    assert_eq!(dit.get(id.as_str()).unwrap().unwrap().issue.status, "doing");
+}
+
+#[test]
+fn refresh_state_absorbs_an_external_commit_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    let id = issue_with(&mut dit, "Externally edited", Default::default());
+
+    // An external process commits a change to the issue file behind the
+    // facade's back: write, add, commit — no absorb happens.
+    let path = tmp.path().join(dit.get(id.as_str()).unwrap().unwrap().path);
+    let text = std::fs::read_to_string(&path).unwrap();
+    let edited = text.replace("status: todo", "status: in_progress");
+    std::fs::write(&path, edited).unwrap();
+    let repo = dit_vcs::Repo::open(tmp.path()).unwrap();
+    let rel = path
+        .strip_prefix(tmp.path())
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    repo.add(&rel).unwrap();
+    repo.commit("external edit").unwrap();
+
+    // The facade's index is stale; refresh_state brings it in, exactly once.
+    assert!(dit.refresh_state().unwrap(), "HEAD moved: rebuild expected");
+    assert_eq!(
+        dit.get(id.as_str()).unwrap().unwrap().issue.status,
+        "in_progress"
+    );
+    assert!(!dit.refresh_state().unwrap(), "second run: nothing to do");
+}
+
+#[test]
+fn workflow_init_scaffolds_and_is_idempotent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    let lanes = vec![
+        LaneSpec {
+            id: "backend".into(),
+            label: "Backend".into(),
+            owners: vec!["be-1".into()],
+        },
+        LaneSpec {
+            id: "frontend".into(),
+            label: "Frontend".into(),
+            owners: vec!["fe-1".into()],
+        },
+    ];
+    let first = dit.init_workflow(&lanes).unwrap();
+    assert!(first.lanes_written && first.protocol_written);
+
+    let yaml = std::fs::read_to_string(".dit/schema/workflow.yaml")
+        .or_else(|_| std::fs::read_to_string(tmp.path().join(".dit/schema/workflow.yaml")))
+        .unwrap();
+    assert!(yaml.contains("lanes:"), "{yaml}");
+    assert!(yaml.contains("id: backend"), "{yaml}");
+    assert!(yaml.contains("coordination:"), "{yaml}");
+
+    let claude = std::fs::read_to_string(tmp.path().join("CLAUDE.md")).unwrap();
+    assert!(
+        claude.contains("<!-- dit:workflow-protocol -->"),
+        "{claude}"
+    );
+    assert!(claude.contains("dit ready --lane"), "{claude}");
+
+    // Second run: nothing written, hand edits survive.
+    std::fs::write(
+        tmp.path().join("CLAUDE.md"),
+        format!("{claude}\nA hand rule stays.\n"),
+    )
+    .unwrap();
+    let second = dit.init_workflow(&lanes).unwrap();
+    assert_eq!(
+        second,
+        dit_core::WorkflowInitReport::default(),
+        "idempotent: nothing to do"
+    );
+    let claude_after = std::fs::read_to_string(tmp.path().join("CLAUDE.md")).unwrap();
+    assert!(
+        claude_after.contains("A hand rule stays."),
+        "{claude_after}"
+    );
+
+    // The registered lanes are live in the facade after reload.
+    let board = dit.workflow_board().unwrap();
+    let ids: Vec<Option<String>> = board.lanes.iter().map(|l| l.id.clone()).collect();
+    assert!(ids.contains(&Some("backend".into())), "{ids:?}");
+    assert!(ids.contains(&Some("frontend".into())), "{ids:?}");
+    assert!(
+        ids.contains(&None),
+        "the Unlaned row always exists: {ids:?}"
+    );
+}
+
+#[test]
+fn the_workflow_board_derives_blocker_and_claim_states() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    dit.init_workflow(&[
+        LaneSpec {
+            id: "backend".into(),
+            label: "Backend".into(),
+            owners: vec!["be-1".into()],
+        },
+        LaneSpec {
+            id: "frontend".into(),
+            label: "Frontend".into(),
+            owners: vec!["fe-1".into()],
+        },
+    ])
+    .unwrap();
+
+    let blocker = issue_with(
+        &mut dit,
+        "Endpoint returns 500",
+        dit_core::FieldPatch {
+            lane: Some("backend".into()),
+            ..Default::default()
+        },
+    );
+    let cancelled = issue_with(
+        &mut dit,
+        "Doomed dependency",
+        dit_core::FieldPatch {
+            lane: Some("backend".into()),
+            status: Some("cancelled".into()),
+            ..Default::default()
+        },
+    );
+    let waiter = issue_with(
+        &mut dit,
+        "Integrate the endpoint",
+        dit_core::FieldPatch {
+            lane: Some("frontend".into()),
+            blocked_by: Some(vec![blocker, cancelled]),
+            ..Default::default()
+        },
+    );
+
+    dit.claim(
+        &waiter,
+        "fe-1",
+        ClaimOptions {
+            force: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let board = dit.workflow_board().unwrap();
+    let frontend = board
+        .lanes
+        .iter()
+        .find(|l| l.id.as_deref() == Some("frontend"))
+        .unwrap();
+    let card = frontend
+        .cards
+        .iter()
+        .find(|c| c.id == waiter)
+        .expect("the waiter sits in its lane");
+    match &card.readiness {
+        Readiness::Blocked {
+            unsatisfied,
+            broken,
+        } => {
+            assert_eq!(unsatisfied, &vec![blocker]);
+            assert_eq!(broken, &vec![cancelled]);
+        }
+        other => panic!("expected Blocked, got {other:?}"),
+    }
+    let dispositions: Vec<_> = card.blockers.iter().map(|b| b.state).collect();
+    assert!(dispositions.contains(&dit_core::BlockerDisposition::Unsatisfied));
+    assert!(dispositions.contains(&dit_core::BlockerDisposition::Broken));
+    let claim = card.claim.as_ref().expect("the claim is on the card");
+    assert_eq!(claim.claimed_by, "fe-1");
+    assert!(!claim.stale);
+
+    // The backend row carries its own issues; the Unlaned row stays empty here.
+    let backend = board
+        .lanes
+        .iter()
+        .find(|l| l.id.as_deref() == Some("backend"))
+        .unwrap();
+    assert!(backend.cards.iter().any(|c| c.id == blocker));
+    let unlaned = board.lanes.iter().find(|l| l.id.is_none()).unwrap();
+    assert!(unlaned.cards.is_empty());
+}
+
+#[test]
+fn the_watcher_signals_external_commits_and_ignores_own_writes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    let id = issue_with(&mut dit, "Watched", Default::default());
+    let dit = std::sync::Arc::new(std::sync::Mutex::new(dit));
+    let rx = spawn_watcher(std::sync::Arc::clone(&dit));
+
+    // An external commit: the watcher must refresh and signal once.
+    let path = {
+        let dit = dit.lock().unwrap();
+        tmp.path().join(dit.get(id.as_str()).unwrap().unwrap().path)
+    };
+    let edited = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("status: todo", "status: review");
+    std::fs::write(&path, edited).unwrap();
+    let repo = dit_vcs::Repo::open(tmp.path()).unwrap();
+    let rel = path
+        .strip_prefix(tmp.path())
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    repo.add(&rel).unwrap();
+    repo.commit("external change").unwrap();
+
+    rx.recv_timeout(std::time::Duration::from_secs(10))
+        .expect("an external commit signals exactly once");
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_millis(750))
+            .is_err(),
+        "one commit, one signal"
+    );
+    {
+        let mut dit = dit.lock().unwrap();
+        assert_eq!(
+            dit.get(id.as_str()).unwrap().unwrap().issue.status,
+            "review",
+            "the watcher refreshed the index"
+        );
+
+        // An own-process write: the watermark already moved in absorb_commit,
+        // so the watcher has nothing to say.
+        let mut tx = dit.transaction("farid").unwrap();
+        tx.set_fields(
+            &id,
+            dit_core::FieldPatch {
+                status: Some("done".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        tx.commit("own write").unwrap();
+    }
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_millis(1500))
+            .is_err(),
+        "own writes announce once through the write path, never twice"
+    );
+}

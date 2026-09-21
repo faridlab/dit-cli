@@ -34,6 +34,16 @@ pub enum DitError {
     /// "you asked for something that isn't there" signal (404, exit 2).
     #[error("no issue matches `{0}`")]
     NotFound(String),
+    /// The reference matches more than one issue (ADR 0018). Duplicate
+    /// numbers exist in real workspaces; acting on a silently-chosen first
+    /// hit is a data-loss class of bug, so the caller must disambiguate.
+    /// Candidates are (id, title) pairs.
+    #[error("{needle} matches {count} issues: {listing} — name the short ref or the full id")]
+    Ambiguous {
+        needle: String,
+        count: usize,
+        listing: String,
+    },
     /// The action would take over something DIT does not own (e.g. `dit init`
     /// into a tree that already has an `issues/` directory). Nothing was
     /// written — the message names the way out.
