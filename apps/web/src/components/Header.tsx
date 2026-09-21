@@ -34,6 +34,8 @@ export function crumbsFor(route: Route, workspace: string, extra?: string | null
       return [workspace, "Plan", "Roadmap"];
     case "gantt":
       return [workspace, "Plan", "Gantt"];
+    case "workflow":
+      return [workspace, "Workflow"];
     case "settings":
       return [workspace, "Settings"];
     case "new-issue":

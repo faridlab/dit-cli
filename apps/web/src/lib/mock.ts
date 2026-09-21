@@ -561,6 +561,9 @@ const ISSUES: IssueDto[] = Array.from({ length: 36 }, (_, index) => {
     // and enough unscheduled work for the tray to be worth having.
     start: n % 3 === 0 ? isoDate((n % 17) - 4) : null,
     blocked_by: [],
+    lane: null,
+    claimed_by: null,
+    claimed_at: null,
     created,
     updated,
     body,
@@ -588,6 +591,9 @@ for (const [i, epic] of EPICS.entries()) {
     due: null,
     start: null,
     blocked_by: [],
+    lane: null,
+    claimed_by: null,
+    claimed_at: null,
     created: new Date(Date.now() - 24 * 24 * 3600_000).toISOString(),
     updated: new Date(Date.now() - 6 * 3600_000).toISOString(),
     body: "",
@@ -654,6 +660,7 @@ const COMMENTS = new Map<string, CommentDto[]>(
         issue_id: issue.id,
         author: "jane",
         created: new Date(Date.now() - 3600_000).toISOString(),
+        reply_to: null,
         body: "Reproduced on `main` — the merge driver keeps the marker.",
         body_html: "<p>Reproduced on <code>main</code> — the merge driver keeps the marker.</p>",
       },
@@ -853,6 +860,11 @@ export function installMockApi(): void {
           statuses: STATUSES,
           transitions: [{ from: ["todo"], to: "in_progress" }],
           derived: [],
+          lanes: [
+            { id: "backend", label: "Backend", owners: ["be-1"] },
+            { id: "frontend", label: "Frontend", owners: ["fe-1"] },
+          ],
+          coordination: { claim_ttl_minutes: 15 },
         },
       } satisfies SchemaDto);
     }
@@ -981,6 +993,9 @@ export function installMockApi(): void {
         due: null,
         start: null,
         blocked_by: [],
+        lane: (body.lane as string | null) ?? null,
+        claimed_by: null,
+        claimed_at: null,
         created: now,
         updated: now,
         body: (body.body as string) ?? "",
@@ -1042,6 +1057,7 @@ export function installMockApi(): void {
           issue_id: issue.id,
           author: ME,
           created: new Date().toISOString(),
+          reply_to: null,
           body: text,
           body_html: naiveRender(text),
         };

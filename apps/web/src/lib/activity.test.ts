@@ -35,6 +35,7 @@ function comment(id: string, created: string): CommentDto {
     issue_id: "Q2R7VN8",
     author: "budi",
     created,
+    reply_to: null,
     body: id,
     body_html: `<p>${id}</p>`,
   };

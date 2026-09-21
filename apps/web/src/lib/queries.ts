@@ -34,6 +34,7 @@ export const queryKeys = {
   markdownPreview: (text: string) => ["markdown-preview", text] as const,
   workspaceComments: (limit: number) => ["workspace-comments", limit] as const,
   releases: ["releases"] as const,
+  workflowBoard: ["workflow-board"] as const,
 };
 
 /** Mark everything a commit can change as stale. The schema is deliberately
@@ -46,6 +47,7 @@ export function invalidateWorkspaceData(client: QueryClient) {
     queryKeys.status,
     ["issues"],
     queryKeys.board,
+    queryKeys.workflowBoard,
     ["issue"],
     ["comments"],
     ["history"],
@@ -77,6 +79,16 @@ export function useSchema() {
 
 export function useBoard() {
   return useQuery({ queryKey: queryKeys.board, queryFn: api.getBoard, staleTime: STALE_TIME_MS });
+}
+
+/** The coordination board (ADR 0015): derived on the server per call, so a
+ *  short stale time plus the live event keeps it moving without polling. */
+export function useWorkflowBoard() {
+  return useQuery({
+    queryKey: queryKeys.workflowBoard,
+    queryFn: api.getWorkflowBoard,
+    staleTime: STALE_TIME_MS,
+  });
 }
 
 export function useSettings() {

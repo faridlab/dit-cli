@@ -1023,3 +1023,22 @@ mark{background:var(--mark);color:inherit;border-radius:2px;padding:0 1px}
 .menu .mi svg.i { color: var(--muted); }
 .menu .mi.danger svg.i { color: var(--crit); }
 }
+
+/* ---------- workflow (ADR 0015) ---------- */
+.wflow{display:flex;flex-direction:column;gap:18px;padding:16px 20px 20px;height:100%;overflow:auto}
+.wlane{display:flex;flex-direction:column;gap:8px}
+.wlhead{display:flex;align-items:center;gap:10px;padding:0 2px}
+.wlhead .wlname{font-weight:500;font-size:13px}
+.wlhead .wlowners{font:11px var(--mono);color:var(--muted)}
+.wlhead .wlmeta{font:11px var(--mono);color:var(--faint);margin-left:auto}
+.wlboard{display:flex;gap:12px;align-items:flex-start;overflow-x:auto;padding-bottom:4px}
+.wlboard .col{width:230px;flex:none}
+.wlboard .cards{min-height:28px}
+.card.wblocked{opacity:.92}
+.card .chip.unsatisfied{color:var(--warn);background:var(--warn-bg)}
+.card .chip.broken{color:var(--danger,var(--warn));background:transparent;text-decoration:line-through}
+.card .chip.satisfied{opacity:.6}
+.card .chip.claim{color:var(--accent-ink);background:var(--accent-soft)}
+.card .chip.claim.stale{opacity:.55;text-decoration:line-through}
+.card .i.ready{color:var(--ok,#3d9a50)}
+.wfoot .legend{font:11px var(--mono);color:var(--faint)}

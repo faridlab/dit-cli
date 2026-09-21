@@ -64,8 +64,13 @@ export interface SchemaDto extends WireSchemaDto {
     statuses: StatusDto[];
     transitions: TransitionDto[];
     derived: DerivedDto[];
+    lanes: LaneDtoWire[];
+    coordination: CoordinationDtoWire;
   };
 }
+
+export type LaneDtoWire = WireSchemaDto["workflow"]["lanes"][number];
+export type CoordinationDtoWire = WireSchemaDto["workflow"]["coordination"];
 
 export interface BoardIssueDto extends WireBoardIssueDto {
   type: IssueType;
@@ -127,3 +132,10 @@ export interface ReleaseDto extends WireReleaseDto {
 }
 
 export type ReleasePatchInput = ReleasePatchDto;
+
+// The coordination board (ADR 0015 wire types, verbatim from the server).
+export type { WorkflowBoardDto } from "./schema/WorkflowBoardDto";
+export type { BlockerDto } from "./schema/BlockerDto";
+export type { ClaimDto } from "./schema/ClaimDto";
+export type { WorkflowCardDto } from "./schema/WorkflowCardDto";
+export type { WorkflowLaneDto } from "./schema/WorkflowLaneDto";

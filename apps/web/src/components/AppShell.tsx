@@ -43,6 +43,7 @@ import { SettingsView } from "../views/SettingsView";
 import { GanttView } from "../views/GanttView";
 import { RoadmapView } from "../views/RoadmapView";
 import { TimelineView } from "../views/TimelineView";
+import { WorkflowView } from "../views/WorkflowView";
 
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -391,6 +392,13 @@ function Shell() {
         <HeaderHint>drag a bar to move · edges change start / due · ← → keys nudge</HeaderHint>
       </>
     );
+  } else if (route.name === "workflow") {
+    section = { title: "Workflow", node: null };
+    right = (
+      <HeaderHint>
+        lanes × statuses · readiness, blockers and claim age are derived · updates live on any write
+      </HeaderHint>
+    );
   } else if (route.name === "settings") {
     section = { title: "Settings", node: <SettingsPane /> };
   }
@@ -465,6 +473,7 @@ function Shell() {
             ) : null}
             {route.name === "roadmap" ? <RoadmapView onOpen={openIssue} /> : null}
             {route.name === "gantt" ? <GanttView onOpen={openIssue} /> : null}
+            {route.name === "workflow" ? <WorkflowView onOpen={openIssue} /> : null}
             {route.name === "issue" ? (
               <IssueDetailView
                 id={route.id}

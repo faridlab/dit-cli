@@ -21,6 +21,7 @@ import type {
   StatusInfo,
   ReleaseDto,
   ReleasePatchInput,
+  WorkflowBoardDto,
   WorkspaceCommentDto,
 } from "./types";
 
@@ -134,6 +135,12 @@ export function createIssue(input: NewIssueInput): Promise<IssueDto> {
 
 export function getBoard(): Promise<BoardDto> {
   return request<BoardDto>("/api/board");
+}
+
+/** The coordination board (ADR 0015): lanes × statuses with derived
+ *  readiness, blocker states and claim liveness. Read-only. */
+export function getWorkflowBoard(): Promise<WorkflowBoardDto> {
+  return request<WorkflowBoardDto>("/api/workflow");
 }
 
 // -- docs (ADR 0010) ----------------------------------------------------------
