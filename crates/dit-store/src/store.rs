@@ -397,6 +397,9 @@ impl Transaction {
         if let Some(s) = &draft.status {
             validate_value("status", s)?;
         }
+        if let Some(l) = &draft.lane {
+            validate_value("lane", l)?;
+        }
         let id = self.mint_id()?;
         let slug = dit_model::Slug::from_title(&draft.title);
         let contents = dit_parse::serialize_new_issue(&id, &draft, &format_rfc3339(self.now))?;
@@ -409,6 +412,9 @@ impl Transaction {
     pub fn set_fields(&mut self, id: &IssueId, patch: FieldPatch) -> Result<(), StoreError> {
         if let Some(s) = &patch.status {
             validate_value("status", s)?;
+        }
+        if let Some(l) = &patch.lane {
+            validate_value("lane", l)?;
         }
         let path = self.issue_body(id)?;
         let current = self.current_bytes(&path)?;

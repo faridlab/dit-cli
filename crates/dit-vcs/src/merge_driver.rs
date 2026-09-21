@@ -293,10 +293,8 @@ fn resolve_double_edit(
     }
 
     // Two different scalars (or scalar vs deletion): policy decides.
-    let policy = ctx
-        .policies
-        .get(key)
-        .copied()
+    let policy = builtin_policy(key)
+        .or_else(|| ctx.policies.get(key).copied())
         .unwrap_or(FieldPolicy::CommitOrder);
     let winner = match policy {
         FieldPolicy::CommitOrder => ctx.newer,
@@ -313,6 +311,18 @@ fn resolve_double_edit(
         return;
     }
     apply_value(merged, key, tv);
+}
+
+/// Field policies the driver carries in code, consulted before the
+/// `fields.yaml` map (ADR 0016). A claim is an assertion of exclusive intent:
+/// two actors claiming the same issue concurrently across branches is a fact
+/// both must see — commit order must not silently crown a winner, because the
+/// loser's intent would vanish without a trace.
+fn builtin_policy(key: &str) -> Option<FieldPolicy> {
+    match key {
+        "claimed_by" | "claimed_at" => Some(FieldPolicy::Conflict),
+        _ => None,
+    }
 }
 
 /// The coarse shape of a value, for the "did the field change kind" check.
@@ -836,6 +846,59 @@ mod tests {
         let out = merge_documents(&base, &ours, &theirs, &ctx()).unwrap();
         assert!(out.is_clean());
         assert!(out.contents.contains("status: review"));
+    }
+
+    #[test]
+    fn divergent_concurrent_claims_conflict_instead_of_crowning_a_winner() {
+        // ADR 0016: two actors claiming the same issue across branches is a
+        // fact both must see. Commit order picking a winner would erase the
+        // loser's exclusive intent without a trace.
+        let base = doc("status: todo\n", "x\n");
+        let ours = doc("status: todo\nclaimed_by: fe-1\n", "x\n");
+        let theirs = doc("status: todo\nclaimed_by: be-1\n", "x\n");
+        let out = merge_documents(&base, &ours, &theirs, &ctx()).unwrap();
+        assert!(!out.is_clean(), "{:?}", out.conflicts);
+        assert!(out.contents.contains("<<<<<<<"), "{}", out.contents);
+        assert!(out.conflicts.iter().any(|c| c.key == "claimed_by"));
+    }
+
+    #[test]
+    fn identical_same_actor_renews_stay_clean() {
+        // Both branches renewed the same actor's claim: nothing to fight over.
+        let base = doc("status: todo\nclaimed_by: fe-1\n", "x\n");
+        let ours = doc(
+            "status: todo\nclaimed_by: fe-1\nclaimed_at: \"2026-09-21T10:00:00Z\"\n",
+            "x\n",
+        );
+        let theirs = doc(
+            "status: todo\nclaimed_by: fe-1\nclaimed_at: \"2026-09-21T10:00:00Z\"\n",
+            "x\n",
+        );
+        let out = merge_documents(&base, &ours, &theirs, &ctx()).unwrap();
+        assert!(out.is_clean(), "{:?}", out.conflicts);
+        assert!(out.contents.contains("claimed_by: fe-1"));
+    }
+
+    #[test]
+    fn a_one_sided_claim_travels_without_conflict() {
+        let base = doc("status: todo\n", "x\n");
+        let ours = base.clone();
+        let theirs = doc("status: todo\nclaimed_by: be-1\n", "x\n");
+        let out = merge_documents(&base, &ours, &theirs, &ctx()).unwrap();
+        assert!(out.is_clean(), "{:?}", out.conflicts);
+        assert!(out.contents.contains("claimed_by: be-1"));
+    }
+
+    #[test]
+    fn lane_divergence_stays_on_commit_order() {
+        // A rare admin edit: the default scalar policy is fine (ADR 0016).
+        let base = doc("status: todo\n", "x\n");
+        let ours = doc("status: todo\nlane: backend\n", "x\n");
+        let theirs = doc("status: todo\nlane: frontend\n", "x\n");
+        let out = merge_documents(&base, &ours, &theirs, &ctx()).unwrap();
+        assert!(out.is_clean(), "{:?}", out.conflicts);
+        // ctx() says theirs is newer, so theirs wins.
+        assert!(out.contents.contains("lane: frontend"), "{}", out.contents);
     }
 
     #[test]

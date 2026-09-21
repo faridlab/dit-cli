@@ -63,8 +63,8 @@ the field named.
 
 ## Verification
 
-Pinned by the `ambiguous-number` fixture (two issues sharing `number: 285`)
-in `dit-core` tests: `resolve("#285")` returns `Ambiguous` naming both ULIDs
-and titles; `resolve` of the short ref picks the right issue when unique;
-`epic=#N` and `blocked_by=#N,#M` resolve end-to-end through the CLI patch
-path in the integration tests.
+Pinned by `dit-core` tests building a workspace with two issues sharing
+`number: 285`: `resolve("#285")` returns `Ambiguous` naming both ULIDs and
+titles; a unique short ref picks the right issue; `epic=#N` and
+`blocked_by=#N,#M` resolve end-to-end through the CLI patch path in the
+integration tests.

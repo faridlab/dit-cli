@@ -58,8 +58,9 @@ already distrusts for critical fields.
 
 ## Verification
 
-Pinned by `dit-vcs` merge-driver tests over the `concurrent-claims-merge`
-fixture (base without a claim; ours and theirs claiming different actors):
-the result carries conflict markers and exits the dirty path, while the
-same-actor variant merges clean, and a `blocked_by` union regression test
-guards the untouched SET behavior.
+Pinned by `dit-vcs` merge-driver tests constructing the three sides inline
+(base without a claim; ours and theirs claiming different actors): the
+result carries conflict markers on `claimed_by` and reports the field
+conflict, while the same-actor renew variant merges clean, a one-sided
+claim travels without conflict, and `lane` divergence still resolves by
+commit order.

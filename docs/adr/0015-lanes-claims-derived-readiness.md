@@ -114,9 +114,9 @@ edits and comments survive, the same policy as templates (§4.3).
 ## Verification
 
 `parse_workflow` skipping unknown top-level keys is what makes the
-forward-compatible claim safe; it is pinned by the `workflow-lanes-yaml`
-fixture (a legacy workflow.yaml without the new blocks parses to empty lanes
-and default coordination, and a new-blocks file round-trips). Claim liveness
-and gate semantics are pure functions with an injected clock, pinned in
-`dit-model` tests: a claim 20 minutes old at TTL 15 is stale; a cancelled
-blocker yields `broken`, not readiness.
+forward-compatible claim safe; it is pinned by `dit-parse` schema tests (a
+legacy workflow.yaml without the new blocks parses to empty lanes and
+default coordination, and a file with lanes and coordination round-trips).
+Claim liveness and gate semantics are pure functions with an injected clock,
+pinned in `dit-model` tests: a claim 20 minutes old at TTL 15 is stale; a
+cancelled blocker yields `broken`, not readiness.

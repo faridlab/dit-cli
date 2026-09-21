@@ -71,24 +71,27 @@ pub struct WorkspaceComment {
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS issues (
-  id        TEXT PRIMARY KEY,
-  number    INTEGER,
-  path      TEXT NOT NULL,
-  blob_sha  TEXT NOT NULL,
-  short_ref TEXT NOT NULL,
-  title     TEXT NOT NULL,
-  type      TEXT NOT NULL,
-  status    TEXT NOT NULL,
-  priority  TEXT,
-  reporter  TEXT,
-  epic      TEXT,
-  estimate  INTEGER,
-  sprint    TEXT,
-  due       TEXT,
-  start     TEXT,
-  created   TEXT NOT NULL,
-  updated   TEXT NOT NULL,
-  body      TEXT NOT NULL
+  id          TEXT PRIMARY KEY,
+  number      INTEGER,
+  path        TEXT NOT NULL,
+  blob_sha    TEXT NOT NULL,
+  short_ref   TEXT NOT NULL,
+  title       TEXT NOT NULL,
+  type        TEXT NOT NULL,
+  status      TEXT NOT NULL,
+  priority    TEXT,
+  reporter    TEXT,
+  epic        TEXT,
+  estimate    INTEGER,
+  sprint      TEXT,
+  due         TEXT,
+  start       TEXT,
+  lane        TEXT,
+  claimed_by  TEXT,
+  claimed_at  TEXT,
+  created     TEXT NOT NULL,
+  updated     TEXT NOT NULL,
+  body        TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS issue_assignees (
@@ -130,6 +133,7 @@ CREATE TABLE IF NOT EXISTS comments (
   issue_id TEXT NOT NULL,
   author   TEXT NOT NULL,
   at       TEXT NOT NULL,
+  reply_to TEXT,
   body     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_comments_issue ON comments(issue_id, at);
@@ -175,7 +179,13 @@ END;
 /// Bumped whenever the schema below changes shape. The index is disposable —
 /// an on-disk file stamped with an older version is dropped and rebuilt from
 /// git rather than migrated in place (§6: SQLite is only an index).
-const INDEX_VERSION: i64 = 4;
+const INDEX_VERSION: i64 = 5;
+
+/// The column list every issue SELECT shares, in a fixed order. Hand-written
+/// SELECTs drifting out of step with the schema is the known failure mode of
+/// this file, so there is exactly one list — pinned against `SCHEMA` by test.
+const ISSUE_SELECT: &str = "path, blob_sha, title, type, status, priority, reporter, epic, \
+     estimate, sprint, due, start, lane, claimed_by, claimed_at, created, updated, body, number";
 
 /// The default row cap when a query names no limit. A cap exists because the
 /// API serves people, not exports; a workspace that genuinely holds more
@@ -275,8 +285,9 @@ impl Index {
         )?;
         tx.execute(
             "INSERT INTO issues (id, number, path, blob_sha, short_ref, title, type, status, \
-             priority, reporter, epic, estimate, sprint, due, start, created, updated, body) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
+             priority, reporter, epic, estimate, sprint, due, start, lane, claimed_by, claimed_at, \
+             created, updated, body) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
             params![
                 issue.id.as_str(),
                 issue.number,
@@ -293,6 +304,9 @@ impl Index {
                 issue.sprint,
                 issue.due,
                 issue.start,
+                issue.lane,
+                issue.claimed_by,
+                issue.claimed_at,
                 issue.created,
                 issue.updated,
                 issue.body,
@@ -358,13 +372,15 @@ impl Index {
         comment: &Comment,
     ) -> Result<(), IndexError> {
         self.conn.execute(
-            "INSERT INTO comments (id, issue_id, author, at, body) VALUES (?1,?2,?3,?4,?5) \
-             ON CONFLICT(id) DO UPDATE SET author=?3, at=?4, body=?5",
+            "INSERT INTO comments (id, issue_id, author, at, reply_to, body) \
+             VALUES (?1,?2,?3,?4,?5,?6) \
+             ON CONFLICT(id) DO UPDATE SET author=?3, at=?4, reply_to=?5, body=?6",
             params![
                 comment.id.as_str(),
                 issue_id.as_str(),
                 comment.author,
                 comment.created,
+                comment.reply_to.map(|r| r.as_str().to_owned()),
                 comment.body
             ],
         )?;
@@ -517,8 +533,7 @@ impl Index {
         let Some(cols) = self
             .conn
             .query_row(
-                "SELECT path, blob_sha, title, type, status, priority, reporter, epic, estimate, \
-                 sprint, due, start, created, updated, body, number FROM issues WHERE id = ?1",
+                &format!("SELECT {ISSUE_SELECT} FROM issues WHERE id = ?1"),
                 params![id.as_str()],
                 issue_columns,
             )
@@ -537,8 +552,7 @@ impl Index {
     pub fn list_issues(&self, compiled: &Compiled) -> Result<Vec<IndexedIssue>, IndexError> {
         let limit = compiled.limit.unwrap_or(DEFAULT_LIMIT) as i64;
         let mut sql = format!(
-            "SELECT id, path, blob_sha, title, type, status, priority, reporter, epic, estimate, \
-             sprint, due, start, created, updated, body, number FROM issues WHERE {}",
+            "SELECT id, {ISSUE_SELECT} FROM issues WHERE {}",
             compiled.where_sql
         );
         if compiled.order_sql.is_empty() {
@@ -662,25 +676,33 @@ impl Index {
     /// All comments of one issue, oldest first.
     pub fn comments_for(&self, issue_id: &IssueId) -> Result<Vec<Comment>, IndexError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, author, at, body FROM comments WHERE issue_id = ?1 ORDER BY at, id",
+            "SELECT id, author, at, reply_to, body FROM comments WHERE issue_id = ?1 \
+             ORDER BY at, id",
         )?;
         let rows = stmt.query_map(params![issue_id.as_str()], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, String>(4)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (id, author, at, body) = row?;
+            let (id, author, at, reply_to, body) = row?;
             out.push(Comment {
                 id: IssueId::parse(&id)
                     .map_err(|e| IndexError::Corrupt(format!("comment id `{id}`: {e}")))?,
                 author,
                 created: at,
-                reply_to: None,
+                reply_to: reply_to
+                    .map(|r| {
+                        IssueId::parse(&r).map_err(|e| {
+                            IndexError::Corrupt(format!("comment `{id}` reply_to `{r}`: {e}"))
+                        })
+                    })
+                    .transpose()?,
                 body,
             });
         }
@@ -758,7 +780,7 @@ impl Index {
     /// is not indexed still appears, with an empty title.
     pub fn recent_comments(&self, limit: usize) -> Result<Vec<WorkspaceComment>, IndexError> {
         let mut stmt = self.conn.prepare(
-            "SELECT c.id, c.issue_id, c.author, c.at, c.body, i.number, i.title \
+            "SELECT c.id, c.issue_id, c.author, c.at, c.reply_to, c.body, i.number, i.title \
              FROM comments c LEFT JOIN issues i ON i.id = c.issue_id \
              ORDER BY c.at DESC, c.id DESC LIMIT ?1",
         )?;
@@ -768,21 +790,28 @@ impl Index {
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, Option<i64>>(5)?,
-                r.get::<_, Option<String>>(6)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, Option<i64>>(6)?,
+                r.get::<_, Option<String>>(7)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (id, issue_id, author, at, body, number, title) = row?;
+            let (id, issue_id, author, at, reply_to, body, number, title) = row?;
             out.push(WorkspaceComment {
                 comment: Comment {
                     id: IssueId::parse(&id)
                         .map_err(|e| IndexError::Corrupt(format!("comment id `{id}`: {e}")))?,
                     author,
                     created: at,
-                    reply_to: None,
+                    reply_to: reply_to
+                        .map(|r| {
+                            IssueId::parse(&r).map_err(|e| {
+                                IndexError::Corrupt(format!("comment `{id}` reply_to `{r}`: {e}"))
+                            })
+                        })
+                        .transpose()?,
                     body,
                 },
                 issue_id: IssueId::parse(&issue_id)
@@ -1128,6 +1157,9 @@ struct IssueCols {
     sprint: Option<String>,
     due: Option<String>,
     start: Option<String>,
+    lane: Option<String>,
+    claimed_by: Option<String>,
+    claimed_at: Option<String>,
     created: String,
     updated: String,
     body: String,
@@ -1150,10 +1182,13 @@ fn issue_columns(r: &rusqlite::Row<'_>) -> rusqlite::Result<IssueCols> {
         sprint: r.get(9)?,
         due: r.get(10)?,
         start: r.get(11)?,
-        created: r.get(12)?,
-        updated: r.get(13)?,
-        body: r.get(14)?,
-        number: r.get::<_, Option<i64>>(15)?.map(|n| n as u32),
+        lane: r.get(12)?,
+        claimed_by: r.get(13)?,
+        claimed_at: r.get(14)?,
+        created: r.get(15)?,
+        updated: r.get(16)?,
+        body: r.get(17)?,
+        number: r.get::<_, Option<i64>>(18)?.map(|n| n as u32),
     })
 }
 
@@ -1178,11 +1213,14 @@ fn issue_columns_with_skip(r: &rusqlite::Row<'_>, n: usize) -> IssueCols {
         sprint: get_opt(9).unwrap_or(None),
         due: get_opt(10).unwrap_or(None),
         start: get_opt(11).unwrap_or(None),
-        created: get(12).unwrap_or_default(),
-        updated: get(13).unwrap_or_default(),
-        body: get(14).unwrap_or_default(),
+        lane: get_opt(12).unwrap_or(None),
+        claimed_by: get_opt(13).unwrap_or(None),
+        claimed_at: get_opt(14).unwrap_or(None),
+        created: get(15).unwrap_or_default(),
+        updated: get(16).unwrap_or_default(),
+        body: get(17).unwrap_or_default(),
         number: r
-            .get::<_, Option<i64>>(n + 15)
+            .get::<_, Option<i64>>(n + 18)
             .unwrap_or(None)
             .map(|n| n as u32),
     }
@@ -1237,9 +1275,9 @@ fn hydrate(
             due: cols.due,
             start: cols.start,
             blocked_by,
-            lane: None,
-            claimed_by: None,
-            claimed_at: None,
+            lane: cols.lane,
+            claimed_by: cols.claimed_by,
+            claimed_at: cols.claimed_at,
             body: cols.body,
         },
         path: cols.path,
@@ -1281,6 +1319,91 @@ mod tests {
 
     fn dql(text: &str) -> Query {
         dit_query::parse(text).unwrap()
+    }
+
+    #[test]
+    fn every_selected_issue_column_exists_in_the_schema() {
+        // ISSUE_SELECT is the one shared column list; this pins it against the
+        // CREATE TABLE so adding a column without updating the list (or vice
+        // versa) fails here instead of as a runtime SQL error.
+        let table = SCHEMA
+            .split("CREATE TABLE IF NOT EXISTS issues (")
+            .nth(1)
+            .and_then(|rest| rest.split(");").next())
+            .expect("the issues CREATE TABLE is present");
+        for col in ISSUE_SELECT.split(", ") {
+            assert!(
+                table.contains(&format!(" {col} ")),
+                "ISSUE_SELECT names `{col}` but the issues table does not define it"
+            );
+        }
+    }
+
+    #[test]
+    fn lane_and_claims_round_trip_through_the_index() {
+        let mut idx = Index::in_memory().unwrap();
+        let mut issue = sample_issue(ID, "todo");
+        issue.lane = Some("frontend".into());
+        issue.claimed_by = Some("fe-1".into());
+        issue.claimed_at = Some("2026-08-16T11:38:00Z".into());
+        idx.upsert_issue(&issue, "p", "s").unwrap();
+
+        let got = idx.get_issue(&issue.id).unwrap().unwrap();
+        assert_eq!(got.issue.lane.as_deref(), Some("frontend"));
+        assert_eq!(got.issue.claimed_by.as_deref(), Some("fe-1"));
+        assert_eq!(
+            got.issue.claimed_at.as_deref(),
+            Some("2026-08-16T11:38:00Z")
+        );
+
+        // DQL filters on the lane column end to end.
+        let hits = idx
+            .search(&dql("lane = frontend"), None, OffsetDateTime::UNIX_EPOCH)
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        let none = idx
+            .search(&dql("lane = backend"), None, OffsetDateTime::UNIX_EPOCH)
+            .unwrap();
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn comment_threads_round_trip_through_the_index() {
+        let mut idx = Index::in_memory().unwrap();
+        let issue = sample_issue(ID, "todo");
+        idx.upsert_issue(&issue, "p", "s").unwrap();
+        let parent_id = IssueId::parse("01K3MA1F7XQW8N2V5RTGBCDEFH").unwrap();
+        idx.upsert_comment(
+            &issue.id,
+            &Comment {
+                id: parent_id,
+                author: "fe-1".into(),
+                created: "2026-08-16T10:00:00Z".into(),
+                reply_to: None,
+                body: "expected JSON, got HTML".into(),
+            },
+        )
+        .unwrap();
+        idx.upsert_comment(
+            &issue.id,
+            &Comment {
+                id: IssueId::parse("01K3MA9ZC2HJ5M8PQRTVWXYZK1").unwrap(),
+                author: "be-1".into(),
+                created: "2026-08-16T10:20:00Z".into(),
+                reply_to: Some(parent_id),
+                body: "payload hits the 500 path".into(),
+            },
+        )
+        .unwrap();
+
+        let comments = idx.comments_for(&issue.id).unwrap();
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0].reply_to, None);
+        assert_eq!(comments[1].reply_to, Some(parent_id));
+
+        let feed = idx.recent_comments(10).unwrap();
+        assert_eq!(feed.len(), 2);
+        assert_eq!(feed[0].comment.reply_to, Some(parent_id), "newest first");
     }
 
     fn event(
