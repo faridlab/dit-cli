@@ -7,4 +7,9 @@ import type { FieldPatchDto } from "./FieldPatchDto";
  * `due`, `start`) can also be cleared: send `null`, or `""` for the string
  * ones, and the key is removed from the file.
  */
-export type SetIssueDto = { set: FieldPatchDto, };
+export type SetIssueDto = { set: FieldPatchDto, 
+/**
+ * The `--force` escape (ADR 0015): write the status even when it is not
+ * one of the workflow's statuses. Absent = validated.
+ */
+force: boolean, };

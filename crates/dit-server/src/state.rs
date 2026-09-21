@@ -99,6 +99,36 @@ impl AppState {
     pub fn subscribe(&self) -> broadcast::Receiver<String> {
         self.events.subscribe()
     }
+
+    /// Bring the index current and start watching for writes made by other
+    /// processes (ADR 0017): each parallel actor's CLI. Every external
+    /// commit becomes one announce, so the UI refetches live; this process's
+    /// own writes already announce through the write path, and the watcher's
+    /// HEAD-watermark check keeps them from announcing twice. Called once by
+    /// both server constructors — standalone `dit-server` and `dit ui`.
+    pub fn start_live_updates(self: &Arc<Self>) {
+        {
+            let mut dit = match self.dit.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            if let Err(e) = dit.refresh_state() {
+                tracing::warn!("startup index refresh failed: {e}");
+            }
+        }
+        let rx = dit_core::watch::spawn(std::sync::Arc::clone(&self.dit));
+        let state = std::sync::Arc::clone(self);
+        let spawned = std::thread::Builder::new()
+            .name("dit-live-updates".into())
+            .spawn(move || {
+                while rx.recv().is_ok() {
+                    state.announce();
+                }
+            });
+        if let Err(e) = spawned {
+            tracing::warn!("live-update bridge could not start: {e}");
+        }
+    }
 }
 
 /// The hostnames that may appear in a local request's `Host` header.

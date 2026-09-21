@@ -55,6 +55,24 @@ pub struct WorkflowDto {
     pub statuses: Vec<StatusDto>,
     pub transitions: Vec<TransitionDto>,
     pub derived: Vec<DerivedDto>,
+    /// The lane registry (ADR 0015); empty when the workspace declares none.
+    pub lanes: Vec<LaneDto>,
+    /// The coordination knobs (ADR 0015) the UI needs to render claim age.
+    pub coordination: CoordinationDto,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct LaneDto {
+    pub id: String,
+    pub label: String,
+    pub owners: Vec<String>,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct CoordinationDto {
+    pub claim_ttl_minutes: u32,
 }
 
 #[derive(Debug, Serialize, TS)]
@@ -116,6 +134,13 @@ pub struct IssueDto {
     /// Ids of the issues this one waits on, in the file's order. Empty when
     /// nothing blocks it — always present so the client never has to guess.
     pub blocked_by: Vec<String>,
+    /// The lane this issue belongs to (ADR 0015); absent = Unlaned.
+    pub lane: Option<String>,
+    /// Who claims exclusive intent (ADR 0015); absent = unclaimed. Liveness
+    /// is derived client-side from `claimed_at` + the TTL in the schema.
+    pub claimed_by: Option<String>,
+    /// RFC3339, written by `claim` alongside `claimed_by`.
+    pub claimed_at: Option<String>,
     pub created: String,
     pub updated: String,
     pub body: String,
@@ -129,6 +154,8 @@ pub struct CommentDto {
     pub issue_id: String,
     pub author: String,
     pub created: String,
+    /// The parent comment this replies to (§4.4); absent = top-level.
+    pub reply_to: Option<String>,
     pub body: String,
     pub body_html: String,
 }
@@ -295,6 +322,10 @@ pub struct NewIssueDto {
     #[serde(default)]
     #[ts(optional)]
     pub estimate: Option<u32>,
+    /// The lane the issue is born into (ADR 0015); absent = Unlaned.
+    #[serde(default)]
+    #[ts(optional)]
+    pub lane: Option<String>,
     #[serde(default)]
     pub body: String,
 }
@@ -307,6 +338,10 @@ pub struct NewIssueDto {
 #[ts(export)]
 pub struct SetIssueDto {
     pub set: FieldPatchDto,
+    /// The `--force` escape (ADR 0015): write the status even when it is not
+    /// one of the workflow's statuses. Absent = validated.
+    #[serde(default)]
+    pub force: bool,
 }
 
 /// One issue patch. Three states per optional field: key absent — untouched;
@@ -363,6 +398,145 @@ pub struct FieldPatchDto {
     #[serde(default)]
     #[ts(optional)]
     pub blocked_by: Option<Vec<String>>,
+    /// The lane id (ADR 0015); `null` or `""` clears back to Unlaned.
+    #[serde(default, deserialize_with = "double_option")]
+    #[ts(optional)]
+    pub lane: Option<Option<String>>,
+}
+
+/// The claim request (ADR 0015): `{"action":"claim"}` plus the escape
+/// hatches. `action` defaults to `claim`.
+#[derive(Debug, Deserialize, TS)]
+#[ts(export)]
+pub struct ClaimRequestDto {
+    /// `claim` | `renew` | `takeover` | `release`.
+    #[serde(default)]
+    pub action: Option<String>,
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// What `claim` did — `wrote: false` means no commit was needed.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct ClaimReportDto {
+    pub wrote: bool,
+    pub note: String,
+}
+
+/// The coordination board (ADR 0015): one row per lane, Unlaned last, every
+/// card carrying its derived readiness, blocker states and claim liveness.
+/// Read-only — writes go through the issue and claim endpoints.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct WorkflowBoardDto {
+    pub lanes: Vec<WorkflowLaneDto>,
+    pub claim_ttl_minutes: u32,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct WorkflowLaneDto {
+    /// Absent for the Unlaned row.
+    pub id: Option<String>,
+    pub label: String,
+    pub owners: Vec<String>,
+    pub cards: Vec<WorkflowCardDto>,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct WorkflowCardDto {
+    pub id: String,
+    pub short_ref: String,
+    pub number: Option<u32>,
+    pub title: String,
+    pub status: String,
+    pub status_label: String,
+    pub category: Option<String>,
+    pub priority: Option<String>,
+    /// `ready` | `not_pickable` | `blocked`.
+    pub readiness: String,
+    /// The blockers keeping a card back, each with where it stands.
+    pub blockers: Vec<BlockerDto>,
+    pub claim: Option<ClaimDto>,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct BlockerDto {
+    pub id: String,
+    pub short_ref: String,
+    pub number: Option<u32>,
+    pub title: String,
+    pub status: String,
+    /// `satisfied` | `unsatisfied` | `broken` (cancelled or gone).
+    pub state: String,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct ClaimDto {
+    pub claimed_by: String,
+    pub claimed_at: String,
+    pub stale: bool,
+}
+
+pub fn workflow_board_dto(board: &dit_core::WorkflowBoard) -> WorkflowBoardDto {
+    WorkflowBoardDto {
+        claim_ttl_minutes: board.claim_ttl_minutes,
+        lanes: board
+            .lanes
+            .iter()
+            .map(|lane| WorkflowLaneDto {
+                id: lane.id.clone(),
+                label: lane.label.clone(),
+                owners: lane.owners.clone(),
+                cards: lane
+                    .cards
+                    .iter()
+                    .map(|card| WorkflowCardDto {
+                        id: card.id.as_str().to_owned(),
+                        short_ref: card.short_ref.clone(),
+                        number: card.number,
+                        title: card.title.clone(),
+                        status: card.status.clone(),
+                        status_label: card.status_label.clone(),
+                        category: card.category.map(|c| c.as_str().to_owned()),
+                        priority: card.priority.map(priority_str),
+                        readiness: match card.readiness {
+                            dit_core::Readiness::Ready => "ready".into(),
+                            dit_core::Readiness::NotPickable => "not_pickable".into(),
+                            dit_core::Readiness::Blocked { .. } => "blocked".into(),
+                        },
+                        blockers: card
+                            .blockers
+                            .iter()
+                            .map(|b| BlockerDto {
+                                id: b.id.as_str().to_owned(),
+                                short_ref: b.short_ref.clone(),
+                                number: b.number,
+                                title: b.title.clone(),
+                                status: b.status.clone(),
+                                state: match b.state {
+                                    dit_core::BlockerDisposition::Satisfied => "satisfied".into(),
+                                    dit_core::BlockerDisposition::Unsatisfied => {
+                                        "unsatisfied".into()
+                                    }
+                                    dit_core::BlockerDisposition::Broken => "broken".into(),
+                                },
+                            })
+                            .collect(),
+                        claim: card.claim.as_ref().map(|c| ClaimDto {
+                            claimed_by: c.claimed_by.clone(),
+                            claimed_at: c.claimed_at.clone(),
+                            stale: c.stale,
+                        }),
+                    })
+                    .collect(),
+            })
+            .collect(),
+    }
 }
 
 #[derive(Debug, Deserialize, TS)]
@@ -383,6 +557,11 @@ pub struct MoveDocDto {
 #[ts(export)]
 pub struct CommentInputDto {
     pub body: String,
+    /// The parent comment this replies to (§4.4): its id or 7-char short
+    /// form, resolved among this issue's comments. Absent = top-level.
+    #[serde(default)]
+    #[ts(optional)]
+    pub reply_to: Option<String>,
 }
 
 #[derive(Debug, Deserialize, TS)]
@@ -560,6 +739,9 @@ pub fn issue_dto(issue: &Issue) -> IssueDto {
             .iter()
             .map(|b| b.as_str().to_owned())
             .collect(),
+        lane: issue.lane.clone(),
+        claimed_by: issue.claimed_by.clone(),
+        claimed_at: issue.claimed_at.clone(),
         created: issue.created.clone(),
         updated: issue.updated.clone(),
         body: issue.body.clone(),
@@ -585,6 +767,7 @@ pub fn comment_dto(issue_id: &dit_core::IssueId, comment: &Comment) -> CommentDt
         issue_id: issue_id.as_str().to_owned(),
         author: comment.author.clone(),
         created: comment.created.clone(),
+        reply_to: comment.reply_to.as_ref().map(|r| r.as_str().to_owned()),
         body: comment.body.clone(),
         body_html: render_markdown(&comment.body),
     }
@@ -734,6 +917,18 @@ pub fn schema_dto(workflow: &Workflow) -> SchemaDto {
                     implies: d.implies.clone(),
                 })
                 .collect(),
+            lanes: workflow
+                .lanes
+                .iter()
+                .map(|l| LaneDto {
+                    id: l.id.clone(),
+                    label: l.label.clone(),
+                    owners: l.owners.clone(),
+                })
+                .collect(),
+            coordination: CoordinationDto {
+                claim_ttl_minutes: workflow.coordination.claim_ttl_minutes,
+            },
         },
     }
 }
@@ -788,6 +983,7 @@ pub fn to_field_patch(dto: FieldPatchDto) -> Result<FieldPatch, String> {
     let sprint = tri_state(ClearableField::Sprint, &dto.sprint, blank, &mut clear).cloned();
     let due = tri_state(ClearableField::Due, &dto.due, blank, &mut clear).cloned();
     let start = tri_state(ClearableField::Start, &dto.start, blank, &mut clear).cloned();
+    let lane = tri_state(ClearableField::Lane, &dto.lane, blank, &mut clear).cloned();
     let blocked_by = match &dto.blocked_by {
         Some(ids) => Some(
             ids.iter()
@@ -816,7 +1012,9 @@ pub fn to_field_patch(dto: FieldPatchDto) -> Result<FieldPatch, String> {
         due,
         start,
         blocked_by,
-        lane: None,
+        lane,
+        // Claims are `POST /api/issues/{id}/claim`'s to write (ADR 0015) —
+        // never a generic field edit.
         claimed_by: None,
         claimed_at: None,
         clear,

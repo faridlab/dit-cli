@@ -84,6 +84,8 @@ fn run(args: Args, workspace: PathBuf) -> Result<(), String> {
     };
 
     let state = dit_server::AppState::with_bind_host(dit, &me, &token, &args.host);
+    // Catch the index up, then watch for other processes' writes (ADR 0017).
+    state.start_live_updates();
     let app = dit_server::app(state);
 
     let display_host = if args.host == "0.0.0.0" {

@@ -13,8 +13,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 mod upgrade;
 use dit_core::{
-    DataLayout, DiagnosticLevel, Dit, DitError, FieldPatch, IndexedIssue, IssueDraft, IssueId,
-    IssueKind, Priority, ReindexMode,
+    ClaimOptions, DataLayout, DiagnosticLevel, Dit, DitError, FieldPatch, IndexedIssue, IssueDraft,
+    IssueId, IssueKind, LaneSpec, Priority, ReindexMode,
 };
 
 #[derive(Parser)]
@@ -102,6 +102,38 @@ enum Command {
     /// Backfill `#numbers` onto issues created before numbering (ADR 0009):
     /// append-only, one commit, existing numbers never move.
     Renumber,
+    /// The coordination plane (ADR 0015): scaffold lanes, list them.
+    Workflow {
+        #[command(subcommand)]
+        cmd: WorkflowCmd,
+    },
+    /// Claim an issue as your exclusive intent, renew, take over or release
+    /// (ADR 0015). Refuses protocol violations, naming the way out.
+    Claim {
+        reference: String,
+        /// Refresh your own claim's timestamp (no commit when still live).
+        #[arg(long)]
+        renew: bool,
+        /// Take the issue over from another actor's live claim.
+        #[arg(long)]
+        takeover: bool,
+        /// Clear the claim pair.
+        #[arg(long)]
+        release: bool,
+        /// Write the claim regardless of any guard.
+        #[arg(long)]
+        force: bool,
+    },
+    /// List issues pickable right now (ADR 0015): `pick_from` status, every
+    /// blocker through the gate. Empty output means wait.
+    Ready {
+        /// Only issues of this lane.
+        #[arg(long)]
+        lane: Option<String>,
+        /// Override the gate for this call: this status "or later".
+        #[arg(long)]
+        until: Option<String>,
+    },
     /// Called by git during merges; humans never type this.
     #[command(hide = true)]
     MergeDriver {
@@ -117,6 +149,19 @@ enum Command {
         #[arg(allow_hyphen_values = true)]
         label: String,
     },
+}
+
+#[derive(Subcommand)]
+enum WorkflowCmd {
+    /// Scaffold the coordination plane: lane registry + coordination block
+    /// in workflow.yaml, peer protocol section in CLAUDE.md. Idempotent.
+    Init {
+        /// Lane ids to register, comma-separated. Default: backend,frontend.
+        #[arg(long, value_delimiter = ',')]
+        lanes: Vec<String>,
+    },
+    /// List the registered lanes and the coordination knobs.
+    Lanes,
 }
 
 #[derive(Subcommand)]
@@ -142,6 +187,9 @@ enum Issue {
         /// Seed the body from `.dit/templates/<name>.md` instead of `--body`.
         #[arg(long)]
         template: Option<String>,
+        /// The lane this issue is born into (ADR 0015).
+        #[arg(long)]
+        lane: Option<String>,
     },
     /// Show one issue: fields, body, comments, field history.
     Show { reference: String },
@@ -150,6 +198,9 @@ enum Issue {
         reference: String,
         /// field=value pairs; list fields take comma-separated values.
         fields: Vec<String>,
+        /// Write a status the workflow does not declare (ADR 0015's escape).
+        #[arg(long)]
+        force: bool,
     },
     /// Add a comment, or a reply with `--reply <comment ref>`.
     Comment {
@@ -413,6 +464,9 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
             let token = dit_server::config::load_or_create_token(&dit.root().join(".dit-cache"))?;
             let me = me_for(&dit, explicit.as_deref());
             let state = dit_server::AppState::with_bind_host(dit, &me, &token, &host);
+            // Catch the index up, then watch for other processes' writes
+            // (ADR 0017) — `dit ui` must live-update just like the server.
+            state.start_live_updates();
             let app = dit_server::app(state);
             let display_host = if host == "0.0.0.0" {
                 "127.0.0.1"
@@ -506,6 +560,138 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
             }
             Ok(ExitCode::SUCCESS)
         }
+        Command::Workflow { cmd } => match cmd {
+            WorkflowCmd::Init { lanes } => {
+                let mut dit = open()?;
+                let specs: Vec<LaneSpec> = (if lanes.is_empty() {
+                    vec!["backend".to_owned(), "frontend".to_owned()]
+                } else {
+                    lanes
+                })
+                .into_iter()
+                .map(|id| LaneSpec {
+                    label: id[..1].to_uppercase() + &id[1..],
+                    id,
+                    owners: Vec::new(),
+                })
+                .collect();
+                let report = dit.init_workflow(&specs)?;
+                if report.schema_created {
+                    println!("wrote .dit/schema/workflow.yaml (statuses, lanes, coordination)");
+                } else {
+                    if report.lanes_written {
+                        println!("appended lanes: to .dit/schema/workflow.yaml");
+                    }
+                    if report.coordination_written {
+                        println!("appended coordination: to .dit/schema/workflow.yaml");
+                    }
+                }
+                if report.protocol_written {
+                    println!("wrote the peer protocol section into CLAUDE.md");
+                }
+                if !report.schema_created
+                    && !report.lanes_written
+                    && !report.coordination_written
+                    && !report.protocol_written
+                {
+                    println!("nothing to do — the coordination plane is already scaffolded");
+                }
+                Ok(ExitCode::SUCCESS)
+            }
+            WorkflowCmd::Lanes => {
+                let dit = open()?;
+                let board = dit.workflow_board()?;
+                if board
+                    .lanes
+                    .iter()
+                    .all(|l| l.cards.is_empty() && l.id.is_some())
+                {
+                    // Still worth listing: the registry exists even when empty.
+                }
+                for lane in &board.lanes {
+                    match &lane.id {
+                        Some(id) => println!(
+                            "{:<10} {:<12} owners: {}  issues: {}",
+                            id,
+                            lane.label,
+                            if lane.owners.is_empty() {
+                                "-".to_owned()
+                            } else {
+                                lane.owners.join(", ")
+                            },
+                            lane.cards.len()
+                        ),
+                        None => println!(
+                            "{:<10} {:<12} owners: -  issues: {}",
+                            "(none)",
+                            lane.label,
+                            lane.cards.len()
+                        ),
+                    }
+                }
+                println!("claim TTL: {} minutes", board.claim_ttl_minutes);
+                Ok(ExitCode::SUCCESS)
+            }
+        },
+        Command::Claim {
+            reference,
+            renew,
+            takeover,
+            release,
+            force,
+        } => {
+            let mut dit = open()?;
+            let id = resolve(&dit, &reference)?;
+            let me = me_for(&dit, explicit.as_deref());
+            let opts = ClaimOptions {
+                renew,
+                takeover,
+                release,
+                force,
+            };
+            match dit.claim(&id, &me, opts) {
+                Ok(report) => {
+                    if report.wrote {
+                        println!("{} {}", report.note, id.short_ref().as_str());
+                    } else {
+                        println!("{} ({})", report.note, id.short_ref().as_str());
+                    }
+                    Ok(ExitCode::SUCCESS)
+                }
+                Err(DitError::Refuse(why)) => {
+                    eprintln!("dit: {why}");
+                    Ok(ExitCode::from(2))
+                }
+                Err(e) => Err(e),
+            }
+        }
+        Command::Ready { lane, until } => {
+            let dit = open()?;
+            let ready = dit.ready(lane.as_deref(), until.as_deref())?;
+            if ready.is_empty() {
+                println!(
+                    "nothing ready{}",
+                    lane.as_deref()
+                        .map(|l| format!(" in lane {l}"))
+                        .unwrap_or_default()
+                );
+                return Ok(ExitCode::SUCCESS);
+            }
+            for hit in &ready {
+                let issue = &hit.issue.issue;
+                let handle = issue
+                    .number
+                    .map(|n| format!("#{n}"))
+                    .unwrap_or_else(|| issue.id.short_ref().as_str().to_owned());
+                println!(
+                    "{:<10} {:<9} {}",
+                    handle,
+                    issue.lane.as_deref().unwrap_or("(unlaned)"),
+                    issue.title
+                );
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         Command::MergeDriver {
             base,
             ours,
@@ -539,6 +725,7 @@ fn issue(cmd: Issue, explicit: Option<&str>) -> Result<ExitCode, DitError> {
             estimate,
             body,
             template,
+            lane,
         } => {
             let title = title.join(" ");
             if title.trim().is_empty() {
@@ -562,7 +749,7 @@ fn issue(cmd: Issue, explicit: Option<&str>) -> Result<ExitCode, DitError> {
                 due: None,
                 start: None,
                 blocked_by: vec![],
-                lane: None,
+                lane,
                 body: body.unwrap_or_default(),
                 // The number is facade-owned (ADR 0007): numbering policy
                 // assigns it inside the transaction, never the caller.
@@ -620,23 +807,34 @@ fn issue(cmd: Issue, explicit: Option<&str>) -> Result<ExitCode, DitError> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        Issue::Set { reference, fields } => {
-            let patch = match parse_patch(&fields) {
+        Issue::Set {
+            reference,
+            fields,
+            force,
+        } => {
+            let (mut patch, refs) = match parse_patch(&fields) {
                 Ok(p) => p,
                 Err(msg) => {
                     eprintln!("dit: {msg}");
                     return Ok(ExitCode::from(2));
                 }
             };
-            if patch.is_empty() {
+            if patch.is_empty() && refs.is_empty() {
                 eprintln!("dit: nothing to set");
                 return Ok(ExitCode::from(2));
             }
             let mut dit = open()?;
+            // Reference-typed values (`epic=`, `blocked_by=`) resolve through
+            // the workspace's index after open: `#N` and short refs work, and
+            // an ambiguous number is refused naming its candidates (ADR 0018).
+            if let Err(msg) = resolve_reference_fields(&dit, &mut patch, refs) {
+                eprintln!("dit: {msg}");
+                return Ok(ExitCode::from(2));
+            }
             let id = resolve(&dit, &reference)?;
             let me = me_for(&dit, explicit);
             let mut tx = dit.transaction(&me)?;
-            tx.set_fields(&id, patch)?;
+            tx.set_fields_opts(&id, patch, force)?;
             tx.commit(&format!("update {reference}"))?;
             println!("updated {}", id.short_ref().as_str());
             Ok(ExitCode::SUCCESS)
@@ -739,11 +937,18 @@ fn handle(i: &dit_core::Issue) -> String {
         None => i.id.short_ref().as_str().to_owned(),
     }
 }
-/// Turn `field=value` strings into a patch. Values are validated here so the
-/// user gets the name of the offending field, not a store error from deep
-/// inside the write path.
-fn parse_patch(fields: &[String]) -> Result<FieldPatch, String> {
+/// Turn `field=value` strings into a patch plus the reference-typed values
+/// that still need the workspace to resolve (`epic=`, comma-separated
+/// `blocked_by=`): `#N` and short refs are accepted there, and an ambiguous
+/// number is refused naming its candidates (ADR 0018). Values are validated
+/// here so the user gets the name of the offending field, not a store error
+/// from deep inside the write path.
+/// A reference-typed field value awaiting workspace resolution.
+type RefValue = (&'static str, String);
+
+fn parse_patch(fields: &[String]) -> Result<(FieldPatch, Vec<RefValue>), String> {
     let mut patch = FieldPatch::default();
+    let mut refs: Vec<(&'static str, String)> = Vec::new();
     for f in fields {
         let (key, value) = f
             .split_once('=')
@@ -758,6 +963,7 @@ fn parse_patch(fields: &[String]) -> Result<FieldPatch, String> {
                 "sprint" => dit_core::ClearableField::Sprint,
                 "due" => dit_core::ClearableField::Due,
                 "start" => dit_core::ClearableField::Start,
+                "lane" => dit_core::ClearableField::Lane,
                 other => return Err(format!("`{other}` cannot be cleared — give it a value")),
             };
             patch.clear.push(field);
@@ -787,17 +993,15 @@ fn parse_patch(fields: &[String]) -> Result<FieldPatch, String> {
                 });
             }
             "reporter" => patch.reporter = Some(value.to_owned()),
-            "epic" => {
-                patch.epic = Some(
-                    IssueId::parse(value)
-                        .map_err(|e| format!("`{value}` is not an issue id: {e}"))?,
-                );
-            }
+            // Reference-typed: resolve against the index after open.
+            "epic" => refs.push(("epic", value.to_owned())),
+            "blocked_by" => refs.push(("blocked_by", value.to_owned())),
             "assignees" => patch.assignees = Some(split_list(value)),
             "labels" => patch.labels = Some(split_list(value)),
             "sprint" => patch.sprint = Some(value.to_owned()),
             "due" => patch.due = Some(value.to_owned()),
             "start" => patch.start = Some(value.to_owned()),
+            "lane" => patch.lane = Some(value.to_owned()),
             "estimate" => {
                 patch.estimate = Some(
                     value
@@ -808,7 +1012,36 @@ fn parse_patch(fields: &[String]) -> Result<FieldPatch, String> {
             other => return Err(format!("unknown field `{other}`")),
         }
     }
-    Ok(patch)
+    Ok((patch, refs))
+}
+
+/// Fill the reference-typed patch fields from their raw `field=value`
+/// strings: each `#N`/short-ref/full-id resolves through the workspace.
+fn resolve_reference_fields(
+    dit: &Dit,
+    patch: &mut FieldPatch,
+    refs: Vec<(&'static str, String)>,
+) -> Result<(), String> {
+    for (key, raw) in refs {
+        match key {
+            "epic" => match dit.resolve(&raw) {
+                Ok(id) => patch.epic = Some(id),
+                Err(e) => return Err(e.to_string()),
+            },
+            "blocked_by" => {
+                let mut ids = Vec::new();
+                for one in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                    match dit.resolve(one) {
+                        Ok(id) => ids.push(id),
+                        Err(e) => return Err(e.to_string()),
+                    }
+                }
+                patch.blocked_by = Some(ids);
+            }
+            _ => unreachable!("parse_patch only emits epic and blocked_by refs"),
+        }
+    }
+    Ok(())
 }
 
 fn split_list(value: &str) -> Vec<String> {
@@ -820,12 +1053,10 @@ fn split_list(value: &str) -> Vec<String> {
         .collect()
 }
 
-/// A full id, or a short ref resolved through the index.
+/// Resolve a reference to exactly one issue (ADR 0018): full id, short ref
+/// or `#N`, with ambiguity rejected naming the candidates.
 fn resolve(dit: &Dit, reference: &str) -> Result<IssueId, DitError> {
-    match dit.get(reference)? {
-        Some(hit) => Ok(hit.issue.id),
-        None => Err(DitError::NotFound(reference.to_owned())),
-    }
+    dit.resolve(reference)
 }
 
 /// Ask the OS to open `url`. A failure here must not take the server down:

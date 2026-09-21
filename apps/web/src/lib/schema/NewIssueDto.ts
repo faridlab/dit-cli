@@ -4,4 +4,8 @@
  * The create request. Everything but the title is optional; the server
  * stamps reporter and timestamps.
  */
-export type NewIssueDto = { title: string, type?: string, status?: string, priority?: string, assignees?: Array<string>, labels?: Array<string>, estimate?: number, body: string, };
+export type NewIssueDto = { title: string, type?: string, status?: string, priority?: string, assignees?: Array<string>, labels?: Array<string>, estimate?: number, 
+/**
+ * The lane the issue is born into (ADR 0015); absent = Unlaned.
+ */
+lane?: string, body: string, };

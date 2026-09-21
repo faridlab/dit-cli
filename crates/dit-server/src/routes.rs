@@ -46,6 +46,7 @@ pub fn app(state: Arc<AppState>) -> Router {
             get(list_comments).post(post_comment),
         )
         .route("/api/issues/{id}/history", get(get_history))
+        .route("/api/issues/{id}/claim", post(post_claim))
         .route("/api/comments", get(list_recent_comments))
         .route("/api/releases", get(list_releases))
         .route(
@@ -53,6 +54,7 @@ pub fn app(state: Arc<AppState>) -> Router {
             axum::routing::patch(patch_release),
         )
         .route("/api/board", get(get_board))
+        .route("/api/workflow", get(get_workflow))
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/docs", get(list_docs))
         .route("/api/docs/move", post(move_doc))
@@ -147,6 +149,12 @@ impl From<ServerError> for ApiError {
             // A missing issue is the request naming something that isn't
             // there — the same 404 the resolver produces directly.
             ServerError::Dit(DitError::NotFound(m)) => ApiError::not_found(m),
+            // A reference matching several issues (ADR 0018): the client
+            // must restate it; the candidate list rides the message.
+            ServerError::Dit(err @ DitError::Ambiguous { .. }) => ApiError {
+                status: StatusCode::CONFLICT,
+                message: err.to_string(),
+            },
             // A page path that is not a legal location (wrong root,
             // traversal shape, not `.md`) is a malformed request the
             // editor can show inline — same class as a DQL parse error.
@@ -278,9 +286,12 @@ async fn list_issues(
     Ok(Json(IssueListDto { total, items }))
 }
 
-/// Resolve a path parameter against the workspace: full id or short ref.
+/// Resolve a path parameter against the workspace: full id, short ref or
+/// `#N` — ambiguity-rejecting (ADR 0018), so a duplicate number can never
+/// route an acting request to a silently chosen issue.
 fn resolve(dit: &Dit, needle: &str) -> CResult<dit_core::IndexedIssue> {
-    match dit.get(needle).map_err(ServerError::Dit)? {
+    let id = dit.resolve(needle).map_err(ServerError::Dit)?;
+    match dit.get(id.as_str()).map_err(ServerError::Dit)? {
         Some(hit) => Ok(hit),
         None => Err(ServerError::NotFound(format!(
             "no issue matches `{needle}`"
@@ -340,7 +351,7 @@ async fn create_issue(
             due: None,
             start: None,
             blocked_by: Vec::new(),
-            lane: None,
+            lane: input.lane,
             body: input.body,
         };
         let mut tx = dit.transaction(&me).map_err(ServerError::Dit)?;
@@ -361,6 +372,7 @@ async fn patch_issue(
     Json(input): Json<dto::SetIssueDto>,
 ) -> Result<Json<IssueDto>, ApiError> {
     let patch = dto::to_field_patch(input.set).map_err(ServerError::BadRequest)?;
+    let force = input.force;
     let me = state.me();
     let needle = id;
     let issue = write_dit(&state, move |dit| {
@@ -368,7 +380,8 @@ async fn patch_issue(
         let id = target.issue.id;
         let short = target.issue.id.short_ref().as_str().to_owned();
         let mut tx = dit.transaction(&me).map_err(ServerError::Dit)?;
-        tx.set_fields(&id, patch).map_err(ServerError::Dit)?;
+        tx.set_fields_opts(&id, patch, force)
+            .map_err(ServerError::Dit)?;
         tx.commit(&format!("update {short}"))
             .map_err(ServerError::Dit)?;
         let stored = resolve(dit, id.as_str())?;
@@ -536,8 +549,36 @@ async fn post_comment(
         let target = resolve(dit, &needle)?;
         let issue_id = target.issue.id;
         let short = target.issue.id.short_ref().as_str().to_owned();
+        // A reply must name a comment on this very issue — the thread lives
+        // on the issue under discussion, nowhere else (§4.4).
+        let parent = match &input.reply_to {
+            Some(needle) => {
+                let comments = dit.comments(&issue_id).map_err(ServerError::Dit)?;
+                let hits: Vec<_> = comments
+                    .iter()
+                    .filter(|c| {
+                        c.id.as_str() == needle || c.id.as_str().starts_with(needle.as_str())
+                    })
+                    .collect();
+                match hits.as_slice() {
+                    [one] => Some(one.id),
+                    [] => {
+                        return Err(ServerError::BadRequest(format!(
+                            "no comment on this issue matches `{needle}`"
+                        )))?;
+                    }
+                    many => {
+                        return Err(ServerError::BadRequest(format!(
+                            "`{needle}` matches {} comments — use more of the id",
+                            many.len()
+                        )))?;
+                    }
+                }
+            }
+            None => None,
+        };
         let mut tx = dit.transaction(&me).map_err(ServerError::Dit)?;
-        tx.comment(&issue_id, &me, None, &input.body)
+        tx.comment(&issue_id, &me, parent.as_ref(), &input.body)
             .map_err(ServerError::Dit)?;
         tx.commit(&format!("comment on {short}"))
             .map_err(ServerError::Dit)?;
@@ -552,6 +593,66 @@ async fn post_comment(
     })
     .await?;
     Ok((StatusCode::CREATED, Json(comment)))
+}
+
+/// The coordination board (ADR 0015): swimlanes × statuses, read-only.
+async fn get_workflow(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<dto::WorkflowBoardDto>, ApiError> {
+    let board = read_dit(&state, move |dit| {
+        let board = dit.workflow_board().map_err(ServerError::Dit)?;
+        Ok(dto::workflow_board_dto(&board))
+    })
+    .await?;
+    Ok(Json(board))
+}
+
+/// Claim, renew, take over or release (ADR 0015). The acting actor is the
+/// server's alias — identity is server-side state, never client input.
+async fn post_claim(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(input): Json<dto::ClaimRequestDto>,
+) -> Result<Json<dto::ClaimReportDto>, ApiError> {
+    let action = input.action.unwrap_or_else(|| "claim".into());
+    let opts = match action.as_str() {
+        "claim" => dit_core::ClaimOptions::default(),
+        "renew" => dit_core::ClaimOptions {
+            renew: true,
+            ..Default::default()
+        },
+        "takeover" => dit_core::ClaimOptions {
+            takeover: true,
+            ..Default::default()
+        },
+        "release" => dit_core::ClaimOptions {
+            release: true,
+            ..Default::default()
+        },
+        other => {
+            return Err(ApiError::bad_request(format!(
+                "`{other}` is not a claim action (claim, renew, takeover, release)"
+            )))?;
+        }
+    };
+    let opts = dit_core::ClaimOptions {
+        force: input.force,
+        ..opts
+    };
+    let me = state.me();
+    let needle = id;
+    let report = write_dit(&state, move |dit| {
+        let target = resolve(dit, &needle)?;
+        let report = dit
+            .claim(&target.issue.id, &me, opts)
+            .map_err(ServerError::Dit)?;
+        Ok(dto::ClaimReportDto {
+            wrote: report.wrote,
+            note: report.note,
+        })
+    })
+    .await?;
+    Ok(Json(report))
 }
 
 #[derive(Deserialize)]

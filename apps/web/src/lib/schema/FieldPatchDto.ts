@@ -35,4 +35,8 @@ start?: string | null,
  * Replaces the whole list, like `assignees` and `labels`. Each entry is
  * a full 26-character issue id.
  */
-blocked_by?: Array<string>, };
+blocked_by?: Array<string>, 
+/**
+ * The lane id (ADR 0015); `null` or `""` clears back to Unlaned.
+ */
+lane?: string | null, };

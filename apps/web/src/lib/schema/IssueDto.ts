@@ -16,4 +16,17 @@ start: string | null,
  * Ids of the issues this one waits on, in the file's order. Empty when
  * nothing blocks it — always present so the client never has to guess.
  */
-blocked_by: Array<string>, created: string, updated: string, body: string, body_html: string, };
+blocked_by: Array<string>, 
+/**
+ * The lane this issue belongs to (ADR 0015); absent = Unlaned.
+ */
+lane: string | null, 
+/**
+ * Who claims exclusive intent (ADR 0015); absent = unclaimed. Liveness
+ * is derived client-side from `claimed_at` + the TTL in the schema.
+ */
+claimed_by: string | null, 
+/**
+ * RFC3339, written by `claim` alongside `claimed_by`.
+ */
+claimed_at: string | null, created: string, updated: string, body: string, body_html: string, };
