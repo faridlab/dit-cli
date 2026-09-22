@@ -21,6 +21,7 @@ mod flowshape;
 mod ids;
 mod issue;
 mod layout;
+mod openapi;
 mod readiness;
 mod release;
 mod status;
@@ -41,6 +42,7 @@ pub use layout::{
     looks_like_issue_body, release_version_from_path, DataLayout, CONTENT_ROOTS,
     GENERATED_INDEX_MARKER, ISSUE_BODY_FILE, LEGACY_ISSUE_BODY_FILE, RELEASES_DIR, RELEASE_FILE,
 };
+pub use openapi::{OpenApiSpec, SpecOperation, SpecServer};
 pub use readiness::{claim_liveness, readiness, ClaimLiveness, Readiness};
 pub use release::{
     validate_release_version, Release, ReleasePatch, ReleaseStatus, ReleaseVersionError,

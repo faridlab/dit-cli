@@ -19,6 +19,7 @@ pub mod frontmatter;
 pub mod html;
 pub mod issue;
 pub mod json;
+pub mod openapi;
 pub mod prosemirror;
 pub mod release;
 pub mod schema;
@@ -32,6 +33,7 @@ pub use issue::{
     apply_patch, issue_from_document, parse_issue, serialize_new_issue, IssueParseError,
 };
 pub use json::{parse as parse_json, JsonError};
+pub use openapi::{parse_openapi, OpenApiError};
 pub use prosemirror::{doc_to_markdown, markdown_to_doc, ProseMirrorError};
 pub use release::{
     apply_release_patch, parse_release, release_from_document, serialize_new_release,
