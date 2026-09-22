@@ -15,6 +15,7 @@ import type {
   IssueDto,
   IssueListDto,
   MorseReportDto,
+  MorseRunDto,
   NewIssueInput,
   SchemaDto,
   SetSettingsInput,
@@ -147,6 +148,15 @@ export function getBoard(): Promise<BoardDto> {
  *  verdict. A read — the server answers from the index and sends nothing. */
 export function getMorse(): Promise<MorseReportDto> {
   return request<MorseReportDto>("/api/morse");
+}
+
+/** Fire one scenario. The one call in the UI that reaches the network, and
+ *  it only ever reaches a host this machine already allows — the allowlist
+ *  is not editable from the browser (§20.5). */
+export function runMorse(scenario: string): Promise<MorseRunDto> {
+  return request<MorseRunDto>(`/api/morse/run/${encodeURIComponent(scenario)}`, {
+    method: "POST",
+  });
 }
 
 /** Every flow with its member count (ADR 0019). */

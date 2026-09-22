@@ -1371,3 +1371,19 @@ html[data-present] .fcanvas{border-radius:8px}
 .morse-note{color:var(--faint)}
 .morse-problem{display:flex;align-items:flex-start;gap:6px;font-size:11.5px;color:var(--todo);line-height:1.5}
 .morse-problem .i{flex:none;margin-top:2px}
+
+/* Morse 2: the one control on this screen that reaches the network, and what
+   it reports back. The refusal is deliberately not a form — a host becomes
+   trusted in the terminal, never from a page (§20.5). */
+.morse-run{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 9px;border-radius:5px;
+  border:1px solid var(--edge-2);background:var(--surface);color:var(--ink);font-size:11.5px;font-weight:500}
+.morse-run:hover:not(:disabled){border-color:var(--accent);color:var(--accent-ink);background:var(--accent-soft)}
+.morse-run:disabled{color:var(--muted);cursor:progress}
+.morse-run-out{display:flex;flex-direction:column;gap:3px;margin-top:4px;border-top:1px solid var(--edge);padding-top:8px}
+.morse-run-step{display:flex;align-items:center;gap:8px;font-size:11.5px;min-width:0}
+.morse-run-step.bad{color:var(--todo)}
+.morse-step-id{font-size:11.5px;color:var(--ink-2)}
+.morse-refused{display:flex;flex-direction:column;gap:6px;margin-top:4px}
+.morse-copy{display:inline-flex;align-items:center;gap:6px;align-self:flex-start;height:24px;padding:0 9px;
+  border-radius:5px;border:1px dashed var(--edge-2);background:var(--sunken);color:var(--ink-2);font-size:11.5px}
+.morse-copy:hover{border-color:var(--accent);color:var(--accent-ink)}

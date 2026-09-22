@@ -96,6 +96,16 @@ export function useMorse() {
   });
 }
 
+/** Fire one scenario, then refresh the report so its verdict and its last
+ *  run come from the same place the CLI reads. */
+export function useRunMorse() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (scenario: string) => api.runMorse(scenario),
+    onSettled: () => client.invalidateQueries({ queryKey: queryKeys.morse }),
+  });
+}
+
 /** Every flow with its member count (ADR 0019). */
 export function useFlows() {
   return useQuery({

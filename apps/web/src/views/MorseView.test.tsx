@@ -49,6 +49,7 @@ const REPORT: MorseReportDto = {
       health: "fresh",
       stale_by: null,
       reasons: [],
+      last_run: null,
     },
     {
       scenario: "checkout",
@@ -62,6 +63,7 @@ const REPORT: MorseReportDto = {
       health: "stale",
       stale_by: 7,
       reasons: [],
+      last_run: null,
     },
     {
       scenario: "renamed",
@@ -75,6 +77,7 @@ const REPORT: MorseReportDto = {
       health: "broken",
       stale_by: null,
       reasons: ["step `login` calls `auth/loginUser`, which the spec no longer describes"],
+      last_run: null,
     },
     {
       scenario: "half-written",
@@ -88,12 +91,15 @@ const REPORT: MorseReportDto = {
       health: "unreadable",
       stale_by: null,
       reasons: ["`spec:` must name a registered spec and the commit it was checked against"],
+      last_run: null,
     },
   ],
 };
 
 let report: MorseReportDto | undefined = REPORT;
 let pending = false;
+
+let ran: string[] = [];
 
 vi.mock("../lib/queries", () => ({
   useMorse: () => ({
@@ -102,6 +108,11 @@ vi.mock("../lib/queries", () => ({
     isError: false,
     error: null,
     refetch: () => undefined,
+  }),
+  useRunMorse: () => ({
+    mutate: (scenario: string) => ran.push(scenario),
+    isPending: false,
+    variables: undefined,
   }),
 }));
 
@@ -123,6 +134,13 @@ function click(element: Element | null | undefined) {
   });
 }
 
+/** The Run button inside one scenario's row, if it has one. */
+function runButton(name: string): HTMLButtonElement | undefined {
+  return [...scenarioRow(name).querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+    (b.textContent ?? "").toLowerCase().includes("run"),
+  );
+}
+
 /** The row whose scenario name is this. */
 function scenarioRow(name: string): HTMLElement {
   const found = [...container.querySelectorAll<HTMLElement>(".morse-row")].find((r) =>
@@ -136,6 +154,7 @@ beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   report = REPORT;
   pending = false;
+  ran = [];
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -208,12 +227,72 @@ describe("MorseView", () => {
     expect(text).toContain("dit-morse");
   });
 
-  it("has no Run control, because Morse 1 sends nothing", () => {
-    // A button that did nothing would be worse than none.
+  it("offers Run only where there is something that could be sent", () => {
     render();
+    // fresh and stale can be run; broken and unreadable have nothing to send,
+    // and a button that could only fail is worse than no button.
+    expect(runButton("register")).toBeTruthy();
+    expect(runButton("checkout")).toBeTruthy();
+    expect(runButton("renamed")).toBeUndefined();
+    expect(runButton("half-written")).toBeUndefined();
+
+    click(runButton("register"));
+    expect(ran).toEqual(["register"]);
+  });
+
+  it("names a host this machine never trusted, and hands over the command", () => {
+    report = {
+      ...REPORT,
+      scenarios: [
+        {
+          ...REPORT.scenarios[0]!,
+          last_run: {
+            scenario: "register",
+            ran_at: 0,
+            passed: false,
+            refused:
+              "api.staging.acme.com is not allowed on this machine, so nothing was sent. If you trust it, run:  dit morse allow api.staging.acme.com",
+            steps: [],
+          },
+        },
+      ],
+    };
+    render();
+    const text = scenarioRow("register").textContent ?? "";
+    expect(text).toContain("api.staging.acme.com");
+    expect(text).toContain("dit morse allow api.staging.acme.com");
+    // The page hands over the command; it must not offer to do it.
     const labels = [...container.querySelectorAll("button")].map((b) =>
       (b.textContent ?? "").toLowerCase(),
     );
-    expect(labels.some((l) => l.includes("run") || l.includes("send"))).toBe(false);
+    expect(labels.some((l) => l.includes("allow this host") || l.includes("trust"))).toBe(false);
+  });
+
+  it("shows what the last run did, step by step", () => {
+    report = {
+      ...REPORT,
+      scenarios: [
+        {
+          ...REPORT.scenarios[0]!,
+          last_run: {
+            scenario: "register",
+            ran_at: 0,
+            passed: false,
+            refused: null,
+            steps: [
+              { id: "create", method: "POST", status: 201, duration_ms: 12, passed: true, detail: "captured user_id" },
+              { id: "login", method: "POST", status: 500, duration_ms: 4, passed: false, detail: "expected status 200, got 500" },
+            ],
+          },
+        },
+      ],
+    };
+    render();
+    const text = scenarioRow("register").textContent ?? "";
+    expect(text).toContain("captured user_id");
+    expect(text).toContain("expected status 200, got 500");
+    expect(text, "and that it is disposable, so nobody reads it as a record").toContain(
+      "gone at the next reindex",
+    );
   });
 });
