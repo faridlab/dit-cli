@@ -3003,3 +3003,31 @@ fn an_unknown_tool_is_named_rather_than_silently_doing_nothing() {
     // Nothing was written: a refused call does half of nothing.
     assert!(!tmp.path().join("CLAUDE.md").exists());
 }
+
+#[test]
+fn the_agent_spec_teaches_the_flow_as_the_place_sessions_read_each_other() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dit = workspace(tmp.path());
+    let spec = dit.agent_spec();
+
+    // The mechanism was always complete — `dit flow show` prints who holds
+    // what — but the guide never said so, which left every session
+    // coordinating one issue at a time with no view of the whole.
+    assert!(spec.contains("dit flow show"), "{spec}");
+    assert!(
+        spec.contains("[alias]") && spec.contains("stale"),
+        "it must say the claim holder is visible there: {spec}"
+    );
+    // Work outside the flow is invisible to everyone reading the flow.
+    assert!(spec.contains("flows="), "{spec}");
+    // The handoff is `fed_by`, precisely because it cannot block anyone.
+    assert!(spec.contains("fed_by="), "{spec}");
+    assert!(spec.contains("dit claim"), "{spec}");
+    assert!(spec.contains("dit ready"), "{spec}");
+    assert!(spec.contains("dit inbox"), "{spec}");
+
+    // Still nothing a checkout would execute (I7).
+    for banned in ["run:", "command:", "exec:", "hook:", "url:"] {
+        assert!(!spec.contains(banned), "{banned} appears in the spec");
+    }
+}

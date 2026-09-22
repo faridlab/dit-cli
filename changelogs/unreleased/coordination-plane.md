@@ -88,7 +88,11 @@ per work stream) without out-of-band coordination:
   the binary. It covers what an AI session cannot guess: the data model, the
   fence grammar, and the rules that carry consequences — never edit an issue
   file directly, never store a derived fact, a merge conflict is a state and
-  not a failure. `dit doctor` reports a guide written by an older version.
+  not a failure — and the loop several sessions share: read `dit flow show` to see who
+  holds what before picking anything, claim it, join the flow so the work is visible,
+  move the status as you go, and declare a handoff with `fed_by` rather than borrowing
+  `blocked_by`, which decides what everyone else is allowed to start. `dit doctor`
+  reports a guide written by an older version.
   This replaces the protocol block `dit workflow init` used to write into
   `CLAUDE.md`, whose text shipped with stray indentation and a mangled dash.
 

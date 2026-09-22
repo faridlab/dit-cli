@@ -183,19 +183,41 @@ Anything else is outside the vocabulary and will fail the invariant tests.
 - **`labels`** is free-form except for prefixes DIT owns. `phase/<id>` states which phase
   of a flow diagram an issue sits in.
 
-## Coordination between parallel actors
+## Working alongside other sessions
 
-Set your identity once — `export DIT_ME=<alias>` — so claims, comments and commits are
-attributed. Then:
+Several sessions — human or AI — work one repository at the same time, one lane each.
+The flow is where you find out what the others are doing before you start, and how you
+tell them what you are doing without interrupting anybody.
 
-- `dit ready --lane <your-lane>` lists what is pickable right now. Empty output means wait.
-- `dit claim <issue>` takes exclusive intent before you edit; `--renew` during a long
-  session, `--release` when you stop. A claim older than the TTL is takable by someone else.
-- Move the issue as you go: `in_progress` before the first edit, `review` while a gate is
-  pending, `done` only with evidence in a comment.
-- Blocked on another actor? Comment on the blocker with what you expected, what you got,
-  and the evidence. Reply in-thread when it lands. `dit inbox` shows what is waiting on you.
-- Never edit an issue another actor has claimed without claiming it first.
+Set your identity once — `export DIT_ME=<alias>` — so every claim, comment and commit is
+attributed to you. Then work this loop:
+
+1. **Look before you pick.** `dit flow show <flow>` prints the whole orchestration: every
+   issue by phase and lane, whether it is `ready`, `blocked`, `in-flight` or `done`, a `*`
+   on the critical path, and `[alias]` beside anything another session already holds —
+   `[alias stale]` when their claim has expired and the work is takable again. That one
+   command answers "who is doing what, and what is waiting on whom", without asking.
+2. **Take something nobody holds.** `dit ready --lane <your-lane>` narrows it to what is
+   pickable right now. Empty output means wait, not look harder.
+3. **Claim it before the first edit.** `dit claim <issue>`, `--renew` if the session runs
+   long, `--release` when you stop. Never edit an issue another session holds.
+4. **Join the orchestration.** `dit issue set <issue> flows=<flow>` when it is not a
+   member yet. Work outside the flow is invisible to everyone reading the flow.
+5. **Move the status as you go**, so the others see it without asking: `in_progress`
+   before the first edit, `review` while a gate is pending, `done` only with evidence in
+   a comment.
+6. **Declare the handoff.** When your work produces something another issue consumes, say
+   so on the receiving issue: `dit issue set <theirs> fed_by=<yours>`. That draws the
+   arrow and changes nothing about readiness, so it cannot block anyone by accident. Use
+   `blocked_by` only when the other work genuinely cannot start until yours is through
+   the gate — it decides what every other session is allowed to pick up.
+7. **Say so when you are stuck.** Comment on the blocker with what you expected, what you
+   got, and the evidence. `dit inbox` lists the threads waiting on your lane; answer them
+   in-thread.
+
+The loop exists so nobody has to be asked. Another session reads the same flow and sees
+your claim, your status and your arrows — which is also why skipping steps 3 to 6 is not
+a shortcut: it makes your work invisible to people who are deciding what to touch next.
 
 ## Shaping a flow diagram
 
