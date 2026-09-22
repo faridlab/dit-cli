@@ -13,6 +13,7 @@
 //! [`fmt`] is `dit fmt`: canonical markdown formatting over the body only.
 
 pub mod comment;
+pub mod flowshape;
 pub mod fmt;
 pub mod frontmatter;
 pub mod html;
@@ -23,6 +24,7 @@ pub mod schema;
 pub mod yaml;
 
 pub use comment::{parse_comment, serialize_comment, CommentError};
+pub use flowshape::{fences, flow_fences, parse_flow_shape, Fence, FlowShapeError, FLOW_FENCE};
 pub use frontmatter::{serialize_scalar, serialize_seq, Document, FrontmatterError, Value};
 pub use html::render_html;
 pub use issue::{

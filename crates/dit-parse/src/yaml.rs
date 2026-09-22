@@ -10,7 +10,7 @@
 //! purpose: anchors/aliases (exponential-expansion inputs), multi-document
 //! streams, block scalars (`|`, `>`).
 
-#[derive(Debug, thiserror::Error, PartialEq)]
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum YamlError {
     #[error("line {line}: expected `key: value`, a `- item`, or a comment — found `{text}`")]
     BadLine { line: usize, text: String },

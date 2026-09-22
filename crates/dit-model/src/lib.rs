@@ -17,6 +17,7 @@ mod comment;
 mod config;
 mod doc;
 mod events;
+mod flowshape;
 mod ids;
 mod issue;
 mod layout;
@@ -30,6 +31,9 @@ pub use comment::{Author, Comment};
 pub use config::{Config, Numbering, RepoLink, SCHEMA_MAX};
 pub use doc::{DocEntry, DocPath, DocPathError, DOC_ROOTS};
 pub use events::{ChangeSummary, DayCount, EventSource, FieldEvent, StoredFieldEvent};
+pub use flowshape::{
+    phase_of_label, phases_of, FlowArrowLabel, FlowGroup, FlowPhase, FlowShape, PHASE_LABEL_PREFIX,
+};
 pub use ids::{IdError, IssueId, Seq, ShortRef, Slug};
 pub use issue::{ClearableField, FieldPatch, Issue, IssueDraft, IssueKind, Priority};
 pub use layout::{
