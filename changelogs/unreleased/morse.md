@@ -37,6 +37,30 @@ sends a request.
   same information and no Run control — running a scenario comes later, and
   a button that did nothing would be worse than none.
 
+Running a scenario:
+
+- **`dit morse run <scenario>`** sends the chain against the environment the
+  spec and this machine name between them, carrying each captured value into
+  the next request. It prints each step with its status, its timing and what
+  it bound, and exits non-zero on the first step that does not hold.
+- **`dit morse sync <scenario>`** does the same and then, only if every step
+  passed, moves the `commit:` pin to where the spec stands now — one commit,
+  one changed line, the rest of the document untouched. A red run leaves the
+  pin exactly where it was.
+- **`dit morse allow <host>`** is the only way a host becomes reachable, and
+  it writes to the gitignored local file. Nothing is allowed implicitly: not
+  localhost, not a suffix, not the machine the spec happens to name. A
+  scenario arriving in a pull request cannot bring its own permission.
+- **The Morse screen gained a Run control** and shows what the last run did.
+  It cannot add a host — it names the refused one and hands over the command,
+  because a browser that could grant trust would turn an XSS into arbitrary
+  outbound requests.
+- **CI** supplies hosts and values through `DIT_MORSE_ALLOW_HOSTS` and
+  `DIT_MORSE_VARS`, so a pipeline can run scenarios by naming what it means in
+  a reviewed workflow file. `sync` still cannot run there.
+- Redirects are never followed and 4xx/5xx are not errors: a scenario
+  asserting `status: 404` is asserting something true about the API.
+
 Supporting changes:
 
 - The YAML reader understands block scalars (`|`, `>`, with chomping), which
@@ -45,4 +69,5 @@ Supporting changes:
   alongside it, so `openapi.json` is read as readily as `openapi.yaml`.
 - A new invariant, **I11**: only `dit-morse` may make an outbound request
   whose destination came from repo content, and no read path can reach it.
-  Its containment test ships now, before the crate it guards exists.
+  The crate takes a resolved plan and returns what happened — it cannot be
+  handed a workspace, so there is no route to the network through it.

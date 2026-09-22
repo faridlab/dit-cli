@@ -405,7 +405,7 @@ One command that runs every gate. Contributors and AI only have to remember this
 
 The binding rule: **every invariant I1–I11 has a check that runs in `just check`.** If an invariant is only guarded by a nightly fuzz run or by human review, it isn't really guarded — the violation will land in `main` first and only be noticed later.
 
-> **I11 is guarded before the crate it guards exists.** `i11_egress_is_contained` runs in `just check` today: it asserts that no crate outside `dit-morse` reaches an HTTP client, that the self-updater's host is still a compile-time constant (the one exemption, and the reason it is exempt), and that no read-path crate depends on `dit-morse`. A containment test costs almost nothing while there is nothing to contain, and a great deal afterwards.
+> **I11's guard was written before the crate it guards.** `i11_egress_is_contained` asserts that no crate outside `dit-morse` reaches an HTTP client, that the self-updater's host is still a compile-time constant (the one exemption, and the reason it is exempt), and that no read-path crate depends on `dit-morse`. `dit-morse` itself takes a resolved plan and returns what happened: it cannot be handed a workspace, an index or a repo, so there is no route to the network through it even from code that wanted one.
 
 ```make
 check: fmt clippy test arch wasm deny web-license invariants

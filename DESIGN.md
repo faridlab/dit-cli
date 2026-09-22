@@ -1635,8 +1635,10 @@ Down from 8–12 weeks because choosing the browser over Tauri removes code sign
     yet — and the part no other API client has, staleness against the spec's
     commit, ships first.
   - **Morse 2 — the network.** The `dit-morse` adapter crate and I11's containment
-    tests, the local host allowlist and environment storage, `dit morse run`, and
-    `dit morse sync` moving the pin only on green.
+    tests, the local host allowlist and environment storage, `dit morse run`,
+    `dit morse allow`, and `dit morse sync` moving the pin only on green. The
+    browser fires runs but never grants trust; CI supplies hosts and values
+    through two environment variables rather than through a file.
 - Time tracking, insights & reports (this is where DuckDB starts to make sense).
 
 ---
@@ -2847,15 +2849,44 @@ list is in ADR 0022 and repeated here because it is load-bearing:
 | `dit reindex`, the file watcher, the indexer, the merge driver | `dit morse run <scenario>` |
 | `dit doctor`, `dit validate`, `dit ready` | The Run control on the Morse screen |
 | `dit morse check` — it reads and reports, never sends | `dit morse sync <scenario>`, which runs the chain before moving the pin (§20.4) |
-| CI, which is why it may run `check` and never `sync` | |
 | Opening the document, hovering a step, rendering the fence's NodeView | |
 
 Parsing is not fetching. Beyond that: a host must be present in the **local,
 gitignored** allowlist before it can be reached — a scenario arriving in a pull
-request against an unfamiliar host prints the host and stops. `http` and
-`https` only. A redirect leaving the allowlist is not followed. Egress is
-confined to one adapter crate, `dit-morse`, the way I3 confines git to
-`dit-vcs`, and no read path can reach it.
+request against an unfamiliar host stops the run and prints the host, with the
+`dit morse allow` line that would change that. `http` and `https` only, no
+credentials in the URL, and **no redirect is ever followed**: a 3xx comes back
+as the response it is, for the scenario's own `expect` to see, because
+following one would mean deciding mid-flight that a second host is as trusted
+as the first. Egress is confined to one adapter crate, `dit-morse`, the way I3
+confines git to `dit-vcs`, and no read path can reach it.
+
+**The browser may fire a run; it may not decide what to trust.** The Morse
+screen's Run control posts to the server, which runs the scenario exactly as
+the CLI would — against hosts this machine already allows. It cannot add one.
+§17.2 makes XSS the primary threat against a local server with full filesystem
+authority, and a page that could grant a host would turn one injection into
+"send arbitrary requests from the maintainer's machine". So the page names the
+refused host and hands over the command; the decision stays in a terminal.
+
+**CI runs scenarios through the environment, not through a file.**
+`DIT_MORSE_ALLOW_HOSTS` and `DIT_MORSE_VARS` overlay the local file, so a
+pipeline step can say which hosts it means and which values it supplies, in a
+workflow file a person reviews:
+
+```yaml
+- run: dit morse check                    # never sends anything
+- run: dit morse run register
+  env:
+    DIT_MORSE_ALLOW_HOSTS: staging.acme.com
+    DIT_MORSE_VARS: email=ci@acme.test,password=${{ secrets.API_PASSWORD }}
+```
+
+This does not weaken the line above: what §20.5 forbids is DIT reaching the
+network *of its own accord*, and a CI step invoking `dit morse run` is someone
+asking, in a file a reviewer reads. `dit morse sync` still cannot run there —
+it moves a pin, and a pin that advances without a person behind it can never
+report staleness again.
 
 ### 20.6 Secrets and environments
 
@@ -2920,8 +2951,13 @@ unbuilt command is not a guard.
 
 ### 20.7 Runs are derived
 
-A run's response bodies, timings and pass/fail land in the index and are gone
-at the next reindex. Nothing about a run is committed. Two reasons, and the
+A run's timings and pass/fail land in the index and are gone at the next
+reindex — one row per scenario, because a scenario's history is its git
+history and keeping every run would be keeping a log of one machine's
+afternoons. **Response bodies and captured values are not kept at all**, not
+even in the index: the run prints them to the terminal that asked, because a
+run is a debugging session, and stores only *that* a capture happened. Nothing
+about a run is committed. Two reasons, and the
 first is sufficient on its own: a response body is the likeliest place in the
 entire product for a real token or real personal data to appear, and git
 history does not forget. The second is that a run is a fact about one machine

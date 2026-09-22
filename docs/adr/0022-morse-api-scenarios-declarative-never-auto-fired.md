@@ -278,6 +278,23 @@ crate with I11's tests, the allowlist and environment storage, `run`, and
 `sync`. The ordering is deliberate: the half that carries the security surface
 is built against a data model that is already settled and already has users.
 
+**Two refinements the build settled**, both narrowing rather than widening:
+
+- **The browser fires runs; it never grants trust.** The Morse screen posts to
+  the server, which runs the scenario against hosts this machine already
+  allows, and the allowlist is reachable only from `dit morse allow` or a hand
+  edit. §17.2 makes XSS the primary threat against a local server holding full
+  filesystem authority; a page able to add a host would turn one injection into
+  arbitrary outbound requests from the maintainer's machine. The page names the
+  refused host and hands over the command.
+- **CI supplies hosts and values through the environment, not a file.**
+  `DIT_MORSE_ALLOW_HOSTS` and `DIT_MORSE_VARS` overlay the local file, so a
+  pipeline can run a scenario by naming, in a reviewed workflow file, what it
+  means. This is consistent with the line above rather than an exception to it:
+  what is forbidden is DIT reaching the network of its own accord. `sync` is
+  still refused there, because a pin that moves without a person behind it can
+  never report staleness again.
+
 ## Consequences
 
 **Easier.** The scenario that proves registration works is reviewed in the pull
