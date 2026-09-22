@@ -32,10 +32,11 @@ These matter more than any methodology in this document. Methodology makes code 
 | **I4** | `dit-model`, `dit-parse`, `dit-query` compile to `wasm32-unknown-unknown` with **zero I/O dependencies**. | §6.4. This is what makes WASM work rather than an aspiration. | CI job `cargo check --target wasm32-unknown-unknown -p dit-model -p dit-parse -p dit-query` |
 | **I5** | Derived data is never written to the source of truth. | Principle 3. Stored derived data = conflicts + lies. | `test_frontmatter_has_no_derived_fields` (list of forbidden fields) |
 | **I6** | The merge driver **never** leaves `%A` as-is when it fails. Even a panic must write diff3 conflict markers. | Risk #0 — the only path that can silently erase someone's work. | `test_merge_driver_failsafe` — **mandatory in `just check`**, not nightly. Table of injected failures: missing binary, panic, corrupt `fields.yaml`, unparseable YAML, OOM, timeout. Assert: `%A` always contains markers. Fuzz `merge_driver_never_silently_resolves` as a second layer. |
-| **I7** | Not one field in a DIT file names an executable, a shell command, a binary path, or a URL that gets fetched automatically. | RCE via pull request. §17.3 | `test_no_executable_fields_in_schema` |
+| **I7** | Not one field in a DIT file names anything DIT executes or fetches **of its own accord** — an executable, a shell command, a binary path, or a URL it would reach without being asked. A URL a person selects and fires, against a host allowed in local gitignored config, is on the other side of the line (§20, ADR 0022). | RCE via pull request. §17.3 | `test_no_executable_fields_in_schema` — note its reach: it inspects the strings `write_workflow` and `write_config` emit, and nothing else. Any new writer has to be added to it. |
 | **I8** | Unknown frontmatter fields are **preserved as-is** across a round-trip. | Cross-version compatibility. An old client must not delete a new client's data. §18.2 | Property test `unknown_fields_survive_roundtrip` |
 | **I9** | `field_events` is ordered by `seq` (topological), never by `ts` (wall clock). | `ts` produces contradictory duplicate rows — verified. §14.1 | `test_no_order_by_ts` (grep SQL) + backward-clock fixture |
 | **I10** | comrak's `render.unsafe_` is never enabled; strict CSP in `dit-server`. | XSS → CSRF against a local API that has full filesystem access. §17.2 | `test_comrak_unsafe_disabled` + `test_csp_header_present` |
+| **I11** | Only `dit-morse` makes an outbound request whose destination came from repo content, and no read path can reach it — not reindex, the watcher, `doctor`, `validate`, or a server read handler. | §20.5. Morse is the first egress DIT does not choose at compile time; a request fired by indexing is RCE-adjacent and, unlike I7, cannot be caught by reading a file. | `test_egress_is_contained` (crate containment, mirroring I3) + `test_no_read_path_reaches_egress` |
 
 **If a change needs to violate one of these invariants, it isn't a code change — it's a design change.** Write an ADR, change `DESIGN.md` first.
 
@@ -323,7 +324,7 @@ The same applies to humans and to AI.
       merge, history, or AI — read §9 (risks) too.
 
 2. CHECK THE INVARIANTS
-   └─ Does this change touch any of I1–I10?
+   └─ Does this change touch any of I1–I11?
       If yes → stop. Write an ADR, change DESIGN.md first.
 
 3. TEST FIRST
@@ -348,7 +349,7 @@ The same applies to humans and to AI.
 
 ### When an ADR is mandatory
 
-- Violating or changing one of invariants I1–I10
+- Violating or changing one of invariants I1–I11
 - Adding a dependency on the critical path
 - Adding a cross-crate dependency edge
 - Changing the format in the source of truth (triggers §18 versioning)
@@ -365,7 +366,7 @@ A change is done when **all** of these hold:
 - [ ] `just check` is green
 - [ ] Tests written first (for the crates that require it)
 - [ ] The bug fix has a fixture that reproduces it
-- [ ] No invariant I1–I10 violated without an ADR
+- [ ] No invariant I1–I11 violated without an ADR
 - [ ] New terms added to the `DESIGN.md` glossary
 - [ ] User-visible changes added to `changelogs/unreleased/`
 - [ ] If it touches the schema: `schema_version` considered (§18.1)
@@ -389,6 +390,8 @@ This list exists because every one of them looked reasonable at the moment it wa
 | `ORDER BY ts` on `field_events` | I9 — contradictory duplicate results, verified |
 | An internal event bus | §3.2 — git is already the event log |
 | Config that can name a command | I7 — RCE via PR |
+| A scenario step that runs a script or an expression | I7 — chaining is declarative selectors only (§20.3) |
+| An HTTP client outside `dit-morse` reachable from a read path | I11 — indexing must never fetch |
 | Enabling `render.unsafe_` "so the HTML works" | I10 |
 | Adding an editor block with no markdown equivalent | Principle 1 — files must stay useful outside DIT |
 | Coverage as a CI gate | §6.5 |
@@ -400,12 +403,14 @@ This list exists because every one of them looked reasonable at the moment it wa
 
 One command that runs every gate. Contributors and AI only have to remember this one.
 
-The binding rule: **every invariant I1–I10 has a check that runs in `just check`.** If an invariant is only guarded by a nightly fuzz run or by human review, it isn't really guarded — the violation will land in `main` first and only be noticed later.
+The binding rule: **every invariant I1–I11 has a check that runs in `just check`.** If an invariant is only guarded by a nightly fuzz run or by human review, it isn't really guarded — the violation will land in `main` first and only be noticed later.
+
+> **I11 is guarded before the crate it guards exists.** `i11_egress_is_contained` runs in `just check` today: it asserts that no crate outside `dit-morse` reaches an HTTP client, that the self-updater's host is still a compile-time constant (the one exemption, and the reason it is exempt), and that no read-path crate depends on `dit-morse`. A containment test costs almost nothing while there is nothing to contain, and a great deal afterwards.
 
 ```make
 check: fmt clippy test arch wasm deny web-license invariants
 
-invariants:   cargo test --test invariants          # I1–I10, deterministic & fast
+invariants:   cargo test --test invariants          # I1–I11, deterministic & fast
 
 fmt:          cargo fmt --all -- --check
 clippy:       cargo clippy --workspace --all-targets -- -D warnings

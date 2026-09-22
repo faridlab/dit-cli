@@ -362,6 +362,12 @@ const KNOWN_SCHEMA_KEYS: &[&str] = &[
     "name",
     "remote",
     "branches",
+    // The Morse spec registry (§20.2, ADR 0022). `path` is a path inside a
+    // repository and `repo` names an entry in `repos:` — neither is fetched,
+    // and `parse_config` refuses a `path` that is an address at all.
+    "specs",
+    "path",
+    "repo",
 ];
 
 /// Pull the key tokens out of the YAML the schema writers emit — keys sit at
@@ -390,7 +396,21 @@ fn schema_keys(text: &str) -> Vec<String> {
 #[test]
 fn i7_no_executable_fields_in_schema() {
     let workflow = dit_parse::write_workflow(&dit_model::Workflow::default_workflow());
-    let config = dit_parse::write_config(&dit_model::Config::default());
+    // A config carrying every optional block, so the guard inspects the keys
+    // a real workspace writes rather than only the ones a default one does.
+    let config = dit_parse::write_config(&dit_model::Config {
+        repos: vec![dit_model::RepoLink {
+            name: "backend".into(),
+            remote: "git@github.com:acme/backend.git".into(),
+            branches: vec!["main".into()],
+        }],
+        specs: vec![dit_model::SpecEntry {
+            id: "auth".into(),
+            repo: Some("backend".into()),
+            path: "services/auth/openapi.yaml".into(),
+        }],
+        ..Default::default()
+    });
 
     let keys: Vec<String> = schema_keys(&workflow)
         .into_iter()
@@ -419,6 +439,80 @@ fn i7_no_executable_fields_in_schema() {
         assert!(
             !keys.iter().any(|k| k == banned),
             "schema key `{banned}` is forbidden"
+        );
+    }
+
+    // The other half of I7 since ADR 0022: a `dit-morse` fence names a URL by
+    // design, so the grammar itself has to refuse every key that would make
+    // the fence *do* something. A checkout must never execute what it pulled.
+    for bad in [
+        "script: doThing()",
+        "command: sh -c x",
+        "url: \"http://evil.example\"",
+        "hook: ./run.sh",
+        "pre_request: eval(x)",
+    ] {
+        let fence = format!("scenario: a\nspec: {{ id: x, commit: y }}\n{bad}\n");
+        let err = dit_parse::parse_morse_scenario(&fence)
+            .expect_err("a fence naming something to run must be refused");
+        assert!(
+            matches!(err, dit_parse::MorseError::Forbidden(_)),
+            "`{bad}` must be refused as a forbidden key, got: {err}"
+        );
+    }
+
+    // And a spec whose `path` is an address is refused before it is stored:
+    // a file DIT could fetch of its own accord is the thing I7 exists for.
+    let err = dit_parse::parse_config(
+        "schema_version: 1\nspecs:\n  - { id: a, path: \"https://example.com/openapi.yaml\" }\n",
+    )
+    .expect_err("a spec URL must be refused");
+    assert!(err.to_string().contains("never a URL"), "{err}");
+}
+
+/// I11 — only `dit-morse` makes an outbound request whose destination came
+/// from repo content, and no read path can reach it (§20.5, ADR 0022).
+///
+/// Written before `dit-morse` exists, on purpose: a containment test costs
+/// almost nothing while there is nothing to contain, and a great deal once
+/// there is. The one allowed caller today is the self-updater, whose address
+/// is a compile-time constant and therefore not repo content at all.
+#[test]
+fn i11_egress_is_contained() {
+    let bad = offenders(
+        &["ureq::", "reqwest::", "hyper::Client"],
+        &["crates/dit-morse/", "crates/dit-cli/src/upgrade.rs"],
+    );
+    assert!(
+        bad.is_empty(),
+        "I11 violated — an outbound request whose destination can come from a \
+         pulled file belongs in dit-morse, and nothing else may call out:\n  {}",
+        bad.join("\n  ")
+    );
+
+    // The self-updater is exempt because it cannot be steered. If its address
+    // ever stops being a constant, the exemption above stops being true.
+    let upgrade = fs::read_to_string("crates/dit-cli/src/upgrade.rs").unwrap_or_default();
+    assert!(
+        upgrade.contains("const REPO_API: &str = \"https://api.github.com/"),
+        "the updater's host must stay a compile-time constant — the moment it is \
+         read from a file, it is repo content choosing where DIT connects"
+    );
+
+    // And the read path must not be able to reach egress even once the crate
+    // exists: reindexing, watching or serving a page never sends a request.
+    for crate_name in [
+        "dit-index",
+        "dit-query",
+        "dit-model",
+        "dit-parse",
+        "dit-store",
+    ] {
+        let manifest =
+            fs::read_to_string(format!("crates/{crate_name}/Cargo.toml")).unwrap_or_default();
+        assert!(
+            !manifest.contains("dit-morse"),
+            "{crate_name} must not depend on dit-morse — parsing a scenario is never fetching it"
         );
     }
 }

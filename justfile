@@ -19,7 +19,7 @@ test:
 arch:
     cargo test --test architecture
 
-# ARCHITECTURE.md §1 — invariants I1–I10.
+# ARCHITECTURE.md §1 — invariants I1–I11.
 invariants:
     cargo test --test invariants
 

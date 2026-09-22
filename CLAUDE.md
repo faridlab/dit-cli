@@ -22,7 +22,7 @@ One command, every gate: fmt, clippy, test, architecture check, wasm32 target, `
 
 ---
 
-## Ten invariants — violating these breaks the product
+## Eleven invariants — violating these breaks the product
 
 Before writing code, check whether the change touches any of these:
 
@@ -36,6 +36,7 @@ Before writing code, check whether the change touches any of these:
 8. **Unknown frontmatter fields are preserved as-is** across round-trips.
 9. **`field_events` is ordered by `seq`, never `ts`.** `ORDER BY ts` produces contradictory duplicate rows.
 10. **comrak's `render.unsafe_` is never enabled.** Strict CSP in `dit-server`.
+11. **Only `dit-morse` sends a request whose destination came from repo content**, and no read path can reach it. Parsing a scenario is never fetching it.
 
 **If a task requires violating any of them: stop and tell the user.** That is a design change, not a code change — it needs an ADR and a `DESIGN.md` update first. Do not do it on your own.
 

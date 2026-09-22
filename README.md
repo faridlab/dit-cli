@@ -104,10 +104,10 @@ Git already provides, for free, what Jira built from scratch and sells:
 | File | What it is |
 |---|---|
 | [`DESIGN.md`](DESIGN.md) | What is being built and why. 19 sections, with a table of contents and glossary. |
-| [`ARCHITECTURE.md`](ARCHITECTURE.md) | How code is written and changed. Ten invariants, dependency rules, TDD policy. |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | How code is written and changed. Eleven invariants, dependency rules, TDD policy. |
 | [`CLAUDE.md`](CLAUDE.md) | Operating instructions for AI coding agents. |
 
-**Read `ARCHITECTURE.md` §1 before your first PR.** Ten invariants are
+**Read `ARCHITECTURE.md` §1 before your first PR.** Eleven invariants are
 non-negotiable, and each one is enforced by a test in `tests/invariants.rs`.
 For development: `rustup target add wasm32-unknown-unknown`, `cargo install
 just wasm-pack`, then `just check` runs every gate — fmt, clippy, tests,
@@ -137,7 +137,7 @@ crates/
   dit-cli    dit-server  dit-wasm       delivery
 tests/
   architecture.rs   dependency direction
-  invariants.rs     invariants I1–I10
+  invariants.rs     invariants I1–I11
 apps/web/                               React + TypeScript UI
 scripts/
   install.sh                           the curl | bash installer
