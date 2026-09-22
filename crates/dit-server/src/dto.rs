@@ -470,6 +470,34 @@ pub struct MorseSpecDto {
     pub problem: Option<String>,
 }
 
+/// One step of a run, as a screen shows it. No response body and no captured
+/// value: a response is the likeliest place in the product for a real token
+/// to appear, so what crosses this boundary is that a capture happened, not
+/// what it was (§20.7).
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct MorseRunStepDto {
+    pub id: String,
+    pub method: String,
+    pub status: Option<u16>,
+    pub duration_ms: u64,
+    pub passed: bool,
+    pub detail: String,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct MorseRunDto {
+    pub scenario: String,
+    /// Seconds since the epoch.
+    pub ran_at: i64,
+    pub passed: bool,
+    /// Set when this machine does not allow the host, carrying the command
+    /// that would change that. The browser never changes it itself.
+    pub refused: Option<String>,
+    pub steps: Vec<MorseRunStepDto>,
+}
+
 #[derive(Debug, Serialize, TS)]
 #[ts(export)]
 pub struct MorseScenarioDto {
@@ -488,6 +516,8 @@ pub struct MorseScenarioDto {
     pub stale_by: Option<usize>,
     /// Why it cannot be run as written, or why the fence did not parse.
     pub reasons: Vec<String>,
+    /// The most recent run in this workspace, gone at the next reindex.
+    pub last_run: Option<MorseRunDto>,
 }
 
 #[derive(Debug, Serialize, TS)]
@@ -547,7 +577,60 @@ pub fn morse_report_dto(report: &dit_core::MorseReport) -> MorseReportDto {
                     health: s.health.label().to_owned(),
                     stale_by,
                     reasons,
+                    last_run: s.last_run.as_ref().map(|run| MorseRunDto {
+                        scenario: s.scenario.clone(),
+                        ran_at: run.ran_at,
+                        passed: run.passed,
+                        refused: run.refused.clone(),
+                        steps: run.steps.iter().map(run_step_dto).collect(),
+                    }),
                 }
+            })
+            .collect(),
+    }
+}
+
+fn run_step_dto(step: &dit_core::RunStepLine) -> MorseRunStepDto {
+    MorseRunStepDto {
+        id: step.id.clone(),
+        method: step.method.clone(),
+        status: step.status,
+        duration_ms: step.duration_ms,
+        passed: step.passed,
+        detail: step.detail.clone(),
+    }
+}
+
+/// What a run the browser asked for did.
+pub fn morse_run_dto(outcome: &dit_core::RunOutcome) -> MorseRunDto {
+    MorseRunDto {
+        scenario: outcome.scenario.clone(),
+        ran_at: 0,
+        passed: outcome.passed(),
+        refused: outcome.refused.clone(),
+        steps: outcome
+            .steps
+            .iter()
+            .map(|s| MorseRunStepDto {
+                id: s.id.clone(),
+                method: s.method.clone(),
+                status: s.status,
+                duration_ms: s.duration_ms,
+                passed: s.passed(),
+                detail: if s.failures.is_empty() && s.error.is_none() {
+                    s.captured
+                        .iter()
+                        .map(|(n, _)| format!("captured {n}"))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                } else {
+                    s.error
+                        .clone()
+                        .into_iter()
+                        .chain(s.failures.iter().cloned())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                },
             })
             .collect(),
     }

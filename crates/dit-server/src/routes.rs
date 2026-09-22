@@ -55,6 +55,11 @@ pub fn app(state: Arc<AppState>) -> Router {
         )
         .route("/api/board", get(get_board))
         .route("/api/morse", get(get_morse))
+        // A run is a write: it sends, and it records what happened. It is
+        // also the one place the browser reaches the network, and it can
+        // only reach a host this machine already allows — the allowlist is
+        // never editable from here (§20.5).
+        .route("/api/morse/run/{scenario}", post(run_morse))
         .route("/api/flow", get(list_flows))
         .route("/api/flow/{name}", get(get_flow))
         .route("/api/settings", get(get_settings).put(put_settings))
@@ -610,6 +615,21 @@ async fn get_morse(
     })
     .await?;
     Ok(Json(report))
+}
+
+/// Fire one scenario. Refused hosts come back as a result, not an error:
+/// the screen has to be able to say which host and what to run, and a 4xx
+/// with a bare message would lose the shape of the run.
+async fn run_morse(
+    State(state): State<Arc<AppState>>,
+    Path(scenario): Path<String>,
+) -> Result<Json<dto::MorseRunDto>, ApiError> {
+    let outcome = write_dit(&state, move |dit| {
+        let outcome = dit.morse_run(&scenario, None).map_err(ServerError::Dit)?;
+        Ok(dto::morse_run_dto(&outcome))
+    })
+    .await?;
+    Ok(Json(outcome))
 }
 
 /// Every flow in the workspace with its member count (ADR 0019).
