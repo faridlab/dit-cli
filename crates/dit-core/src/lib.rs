@@ -18,6 +18,11 @@ pub mod board;
 pub mod diagnostics;
 pub mod error;
 pub mod flow;
+pub mod morse;
+
+/// Where Morse keeps environment values, server overrides and the host
+/// allowlist — this machine only, gitignored from `dit init` onwards.
+pub const MORSE_LOCAL_PATH: &str = ".dit/morse.local.yaml";
 pub mod watch;
 pub mod workflow;
 
@@ -55,6 +60,7 @@ pub use flow::{
     EdgeDisposition, FlowBoard, FlowClaim, FlowEdge, FlowLane, FlowNode, FlowOutsideBlocker,
     FlowSummary,
 };
+pub use morse::{MorseReport, MorseScenarioView, MorseSpecView, ScenarioHealth};
 pub use watch::spawn as spawn_watcher;
 pub use workflow::InboxItem;
 
@@ -300,17 +306,41 @@ impl Dit {
             DataLayout::DotDir => dit_dir.join(name),
         };
         let ignore = path.join(".gitignore");
+        // Two entries, for two different reasons. `.dit-cache/` is
+        // disposable. `.dit/morse.local.yaml` holds environment values and
+        // secrets (§20.6), and a secret that reaches git history cannot be
+        // taken back by deleting the file — so the guard is here, at init,
+        // and not at review time.
+        let wanted = [
+            ("# DIT's disposable index — never committed.", ".dit-cache/"),
+            (
+                "# Morse environments and their secrets — this machine only.",
+                MORSE_LOCAL_PATH,
+            ),
+        ];
         if ignore.exists() {
             let mut text = std::fs::read_to_string(&ignore)?;
-            if !text.lines().any(|l| l.trim() == ".dit-cache/") {
+            let mut changed = false;
+            for (why, entry) in wanted {
+                if text.lines().any(|l| l.trim() == entry) {
+                    continue;
+                }
                 if !text.is_empty() && !text.ends_with('\n') {
                     text.push('\n');
                 }
-                text.push_str("\n# DIT's disposable index — never committed.\n.dit-cache/\n");
+                text.push_str(&format!("\n{why}\n{entry}\n"));
+                changed = true;
+            }
+            if changed {
                 dit_store::atomic::write(&ignore, &text)?;
             }
         } else {
-            dit_store::atomic::write(&ignore, ".dit-cache/\n")?;
+            let text = wanted
+                .iter()
+                .map(|(why, entry)| format!("{why}\n{entry}\n"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            dit_store::atomic::write(&ignore, &text)?;
         }
         let readme = path.join("README.md");
         let wrote_readme = !readme.exists();
@@ -1455,6 +1485,78 @@ impl Dit {
                 ".gitignore does not list .dit-cache — the index database would get committed",
             ));
         }
+        out.extend(self.morse_diagnostics());
+        out
+    }
+
+    /// Morse's two health questions (§20.6), both about secrets rather than
+    /// about scenarios — `dit morse check` answers the rest.
+    fn morse_diagnostics(&self) -> Vec<Diagnostic> {
+        let mut out = Vec::new();
+        // The environment file must never be tracked. This is an error, not
+        // a warning: by the time it is in a commit the secret is in history
+        // and deleting the file does not remove it.
+        let tracked = self
+            .repo
+            .ls_tree(MORSE_LOCAL_PATH)
+            .map(|files| !files.is_empty())
+            .unwrap_or(false);
+        if tracked {
+            out.push(Diagnostic::error(
+                "morse-env",
+                format!(
+                    "{MORSE_LOCAL_PATH} is tracked by git — it holds environment values and                      secrets. Remove it from the index (`git rm --cached {MORSE_LOCAL_PATH}`)                      and treat anything it held as leaked"
+                ),
+            ));
+        } else {
+            let ignored = std::fs::read_to_string(self.repo.root().join(".gitignore"))
+                .map(|text| text.lines().any(|l| l.trim() == MORSE_LOCAL_PATH))
+                .unwrap_or(false);
+            if ignored {
+                out.push(Diagnostic::ok(
+                    "morse-env",
+                    "the Morse environment file is gitignored",
+                ));
+            } else if self.repo.root().join(MORSE_LOCAL_PATH).exists() {
+                out.push(Diagnostic::error(
+                    "morse-env",
+                    format!(
+                        "{MORSE_LOCAL_PATH} exists but .gitignore does not list it — one                          `git add .` away from committing a secret"
+                    ),
+                ));
+            }
+        }
+        // And a scenario that wrote a credential into the repository rather
+        // than naming it.
+        let scenarios = self.index.morse_scenarios().unwrap_or_default();
+        let mut leaks = Vec::new();
+        for row in &scenarios {
+            let Ok(scenario) = dit_parse::parse_morse_scenario(&row.body) else {
+                continue;
+            };
+            for found in scenario.suspected_secrets() {
+                leaks.push(format!(
+                    "{}:{} — scenario `{}`, step `{}`, field `{}`: {}",
+                    row.path, row.line, row.scenario, found.step, found.field, found.reason
+                ));
+            }
+        }
+        if leaks.is_empty() {
+            if !scenarios.is_empty() {
+                out.push(Diagnostic::ok(
+                    "morse-secrets",
+                    "no scenario writes a credential into the repository",
+                ));
+            }
+        } else {
+            out.push(Diagnostic::error(
+                "morse-secrets",
+                format!(
+                    "a scenario carries what looks like a real credential — a fence states                      variable names, never values:\n  {}",
+                    leaks.join("\n  ")
+                ),
+            ));
+        }
         out
     }
 
@@ -1558,7 +1660,14 @@ impl Dit {
             // in any document. Only the fences are read — this is not the
             // document index ADR 0010 deferred — and the result lands in
             // the index so the read path never walks the tree (I2).
+            //
+            // Morse scenarios (§20, ADR 0022) ride the same walk: both are
+            // fences in a document, and reading either one is reading, never
+            // fetching (I11). The catalogue is rebuilt first, because a
+            // scenario is judged against it.
             self.index.clear_flow_shapes()?;
+            self.index.clear_morse_scenarios()?;
+            self.refresh_morse_specs()?;
             for root in dit_model::DOC_ROOTS {
                 let rel = self.store.layout().content_root_rel(root);
                 for (path, _) in self.repo.ls_tree(&rel)? {
@@ -1569,8 +1678,10 @@ impl Dit {
                         continue;
                     };
                     report.skipped += self.absorb_flow_fences(&path, &text)?;
+                    report.skipped += self.absorb_morse_fences(&path, &text)?;
                 }
             }
+            self.judge_morse_scenarios()?;
             // Release plans (§15.2) live under `.dit/releases/` in every
             // layout. A workspace without the directory lists nothing —
             // `ls-tree` over a missing prefix is empty, not an error.
@@ -1994,6 +2105,7 @@ impl Dit {
                 } else if is_doc_path(new_path) {
                     // A deleted document takes its flow shapes with it.
                     self.index.clear_flow_shapes_at(new_path)?;
+                    self.index.clear_morse_scenarios_at(new_path)?;
                 } else if new_path.contains("/comments/") {
                     if let Ok(comment) = dit_parse::parse_comment(&old_text) {
                         self.index.remove_comment(&comment.id)?;
@@ -2028,6 +2140,9 @@ impl Dit {
                 // shaping a flow is a write like any other.
                 self.index.clear_flow_shapes_at(new_path)?;
                 self.absorb_flow_fences(new_path, &text)?;
+                self.index.clear_morse_scenarios_at(new_path)?;
+                self.absorb_morse_fences(new_path, &text)?;
+                self.judge_morse_scenarios()?;
             }
         }
         let events = dit_vcs::walk_field_events(&self.repo, prev_head, layout)?;

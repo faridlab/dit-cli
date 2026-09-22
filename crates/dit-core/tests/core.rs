@@ -3031,3 +3031,390 @@ fn the_agent_spec_teaches_the_flow_as_the_place_sessions_read_each_other() {
         assert!(!spec.contains(banned), "{banned} appears in the spec");
     }
 }
+
+// ---- Morse (§20, ADR 0022) -------------------------------------------------
+
+const SPEC_V1: &str = r#"openapi: 3.0.3
+info:
+  title: Acme Auth
+  version: "1.0.0"
+  description: |
+    A description that wraps, the way real documents do — and the way that
+    used to stop the parser dead.
+servers:
+  - url: "http://localhost:3000"
+    description: local
+paths:
+  /users:
+    post:
+      operationId: createUser
+      summary: Register a user
+  /sessions:
+    post:
+      operationId: loginUser
+  /me:
+    get:
+      operationId: getCurrentUser
+"#;
+
+const SCENARIO: &str = r#"# Register
+
+```dit-morse
+scenario: register
+spec: { id: auth, commit: PIN }
+env: local
+requires: [email, password]
+steps:
+  - id: create
+    operation: auth/createUser
+    body: { email: "{{email}}", password: "{{password}}" }
+    expect:
+      status: 201
+    capture: { user_id: $.data.id }
+  - id: login
+    operation: auth/loginUser
+    body: { email: "{{email}}" }
+    expect:
+      status: 200
+    capture: { token: $.token }
+  - id: me
+    operation: auth/getCurrentUser
+    headers: { Authorization: "Bearer {{token}}" }
+    expect:
+      status: 200
+      jsonpath:
+        $.id: "{{user_id}}"
+```
+"#;
+
+/// A workspace with one spec registered and committed, returning the commit
+/// the spec was written at — what a scenario pins itself to.
+fn morse_workspace(path: &Path) -> (Dit, String) {
+    let mut dit = workspace(path);
+    dit.init_workflow(&[]).unwrap();
+    std::fs::create_dir_all(path.join("api")).unwrap();
+    std::fs::write(path.join("api/openapi.yaml"), SPEC_V1).unwrap();
+    std::fs::create_dir_all(path.join(".dit")).unwrap();
+    std::fs::write(
+        path.join(".dit/config.yaml"),
+        "schema_version: 1\nlayout: root\nnumbering: local\nspecs:\n  - { id: auth, path: api/openapi.yaml }\n",
+    )
+    .unwrap();
+    let repo = Repo::open(path).unwrap();
+    repo.add(".").unwrap();
+    repo.commit("add the API spec and register it").unwrap();
+    let pin = repo.head().unwrap();
+    // Reopen so the freshly committed config is the one in force.
+    let mut dit = Dit::open(path).unwrap();
+    dit.reindex(ReindexMode::All).unwrap();
+    (dit, pin)
+}
+
+#[test]
+fn a_registered_spec_becomes_a_catalogue_without_being_copied() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (dit, _) = morse_workspace(tmp.path());
+
+    let report = dit.morse_report().unwrap();
+    assert_eq!(report.specs.len(), 1);
+    let spec = &report.specs[0];
+    assert_eq!(spec.id, "auth");
+    assert_eq!(spec.title.as_deref(), Some("Acme Auth"));
+    assert_eq!(spec.problem, None);
+    assert_eq!(
+        spec.operations
+            .iter()
+            .map(|o| o.operation_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["getCurrentUser", "loginUser", "createUser"],
+        "ordered by path then method, which is how a person reads a catalogue"
+    );
+
+    // I5: the catalogue exists only in the index. Nothing was written back.
+    assert!(
+        !tmp.path().join(".dit/morse").exists(),
+        "endpoints are derived from the document, never copied into a DIT file"
+    );
+}
+
+#[test]
+fn a_scenario_pinned_to_the_current_spec_is_fresh() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, pin) = morse_workspace(tmp.path());
+    write_doc(
+        &mut dit,
+        "docs/api/register.md",
+        &SCENARIO.replace("PIN", &pin),
+    );
+
+    let report = dit.morse_report().unwrap();
+    assert_eq!(report.scenarios.len(), 1);
+    let s = &report.scenarios[0];
+    assert_eq!(s.scenario, "register");
+    assert_eq!(s.path, "docs/api/register.md");
+    assert_eq!(s.line, 3, "the fence's opening line, so an error can point");
+    assert_eq!(s.steps, vec!["create", "login", "me"]);
+    assert_eq!(s.requires, vec!["email", "password"]);
+    assert_eq!(s.health, dit_core::ScenarioHealth::Fresh);
+    assert!(report.is_clean());
+}
+
+#[test]
+fn moving_the_spec_makes_every_scenario_pinned_to_it_stale() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, pin) = morse_workspace(tmp.path());
+    write_doc(
+        &mut dit,
+        "docs/api/register.md",
+        &SCENARIO.replace("PIN", &pin),
+    );
+    assert_eq!(
+        dit.morse_report().unwrap().scenarios[0].health,
+        dit_core::ScenarioHealth::Fresh
+    );
+
+    // The API gains an endpoint — two commits touching the document.
+    let repo = Repo::open(tmp.path()).unwrap();
+    for (n, extra) in [
+        (1, "  /a:\n    get:\n      operationId: a\n"),
+        (2, "  /b:\n    get:\n      operationId: b\n"),
+    ] {
+        let text = format!(
+            "{}{extra}",
+            std::fs::read_to_string(tmp.path().join("api/openapi.yaml")).unwrap()
+        );
+        std::fs::write(tmp.path().join("api/openapi.yaml"), text).unwrap();
+        repo.add(".").unwrap();
+        repo.commit(&format!("extend the API, part {n}")).unwrap();
+    }
+    dit.reindex(ReindexMode::All).unwrap();
+
+    let report = dit.morse_report().unwrap();
+    assert_eq!(
+        report.scenarios[0].health,
+        dit_core::ScenarioHealth::Stale { commits: 2 },
+        "the count is what makes the report actionable, not just the flag"
+    );
+    assert!(
+        report.is_clean(),
+        "stale is a fact about the world, not a failure"
+    );
+    assert_eq!(
+        report.specs[0].operations.len(),
+        5,
+        "and the catalogue followed the document without anyone re-importing"
+    );
+}
+
+#[test]
+fn an_operation_the_spec_dropped_makes_the_scenario_broken_by_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, pin) = morse_workspace(tmp.path());
+    write_doc(
+        &mut dit,
+        "docs/api/register.md",
+        &SCENARIO.replace("PIN", &pin),
+    );
+
+    // `loginUser` is renamed, which is what actually happens to APIs.
+    let repo = Repo::open(tmp.path()).unwrap();
+    std::fs::write(
+        tmp.path().join("api/openapi.yaml"),
+        SPEC_V1.replace("operationId: loginUser", "operationId: startSession"),
+    )
+    .unwrap();
+    repo.add(".").unwrap();
+    repo.commit("rename the login operation").unwrap();
+    dit.reindex(ReindexMode::All).unwrap();
+
+    let report = dit.morse_report().unwrap();
+    match &report.scenarios[0].health {
+        dit_core::ScenarioHealth::Broken { reasons } => {
+            assert_eq!(reasons.len(), 1, "{reasons:?}");
+            assert!(reasons[0].contains("login"), "{}", reasons[0]);
+            assert!(reasons[0].contains("auth/loginUser"), "{}", reasons[0]);
+        }
+        other => panic!("expected broken, got {other:?}"),
+    }
+    assert!(!report.is_clean(), "a check command has to fail on this");
+}
+
+#[test]
+fn a_chain_that_reads_a_value_before_it_is_captured_is_reported_as_broken() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, pin) = morse_workspace(tmp.path());
+    let out_of_order = format!(
+        "```dit-morse\nscenario: backwards\nspec: {{ id: auth, commit: {pin} }}\nsteps:\n  - id: me\n    operation: auth/getCurrentUser\n    headers: {{ Authorization: \"Bearer {{{{token}}}}\" }}\n  - id: login\n    operation: auth/loginUser\n    capture: {{ token: $.token }}\n```\n"
+    );
+    write_doc(&mut dit, "docs/api/backwards.md", &out_of_order);
+
+    let report = dit.morse_report().unwrap();
+    match &report.scenarios[0].health {
+        dit_core::ScenarioHealth::Broken { reasons } => {
+            assert!(
+                reasons[0].contains("wrong order"),
+                "the fix is reordering, not adding a variable: {}",
+                reasons[0]
+            );
+        }
+        other => panic!("expected broken, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_fence_that_does_not_parse_still_says_which_document_and_line() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, _) = morse_workspace(tmp.path());
+    write_doc(
+        &mut dit,
+        "docs/api/broken.md",
+        "# Notes\n\nsome prose\n\n```dit-morse\nscenario: half-written\nspec: { id: auth }\n```\n",
+    );
+
+    let report = dit.morse_report().unwrap();
+    assert_eq!(report.scenarios.len(), 1);
+    let s = &report.scenarios[0];
+    assert_eq!(s.scenario, "half-written");
+    assert_eq!(s.path, "docs/api/broken.md");
+    assert_eq!(s.line, 5);
+    assert!(matches!(
+        s.health,
+        dit_core::ScenarioHealth::Unreadable { .. }
+    ));
+    assert!(!report.is_clean());
+}
+
+#[test]
+fn a_scenario_naming_an_unregistered_spec_says_so_rather_than_vanishing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, _) = morse_workspace(tmp.path());
+    write_doc(
+        &mut dit,
+        "docs/api/other.md",
+        "```dit-morse\nscenario: elsewhere\nspec: { id: billing, commit: abc1234 }\nsteps:\n  - id: s\n    operation: billing/charge\n```\n",
+    );
+
+    let report = dit.morse_report().unwrap();
+    match &report.scenarios[0].health {
+        dit_core::ScenarioHealth::Broken { reasons } => {
+            assert!(
+                reasons.iter().any(|r| r.contains("not registered")),
+                "{reasons:?}"
+            );
+        }
+        other => panic!("expected broken, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_spec_registered_but_missing_is_reported_instead_of_failing_the_reindex() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    dit.init_workflow(&[]).unwrap();
+    std::fs::create_dir_all(tmp.path().join(".dit")).unwrap();
+    std::fs::write(
+        tmp.path().join(".dit/config.yaml"),
+        "schema_version: 1\nlayout: root\nnumbering: local\nspecs:\n  - { id: auth, path: api/gone.yaml }\n",
+    )
+    .unwrap();
+    let repo = Repo::open(tmp.path()).unwrap();
+    repo.add(".").unwrap();
+    repo.commit("register a spec that is not there").unwrap();
+
+    let mut dit = Dit::open(tmp.path()).unwrap();
+    dit.reindex(ReindexMode::All)
+        .expect("one unreadable spec must not cost the workspace its reindex");
+    let report = dit.morse_report().unwrap();
+    assert_eq!(report.specs.len(), 1);
+    assert!(report.specs[0]
+        .problem
+        .as_deref()
+        .is_some_and(|p| p.contains("api/gone.yaml")));
+    assert!(!report.is_clean());
+}
+
+#[test]
+fn an_endpoint_no_document_describes_can_still_be_part_of_a_chain() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, pin) = morse_workspace(tmp.path());
+    let with_inline = format!(
+        "```dit-morse\nscenario: legacy\nspec: {{ id: auth, commit: {pin} }}\nrequests:\n  - {{ id: legacyPing, method: get, path: /internal/ping, summary: Undocumented }}\nsteps:\n  - id: ping\n    request: legacyPing\n    expect: {{ status: 200 }}\n  - id: me\n    operation: auth/getCurrentUser\n```\n"
+    );
+    write_doc(&mut dit, "docs/api/legacy.md", &with_inline);
+
+    let report = dit.morse_report().unwrap();
+    let s = report
+        .scenarios
+        .iter()
+        .find(|s| s.scenario == "legacy")
+        .unwrap();
+    assert_eq!(
+        s.health,
+        dit_core::ScenarioHealth::Fresh,
+        "an inline request has no catalogue to be missing from — only the \
+         operation step is checked against the spec"
+    );
+    assert_eq!(s.steps, vec!["ping", "me"]);
+    assert!(report.is_clean());
+}
+
+#[test]
+fn doctor_refuses_to_let_a_credential_sit_in_a_fence() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, pin) = morse_workspace(tmp.path());
+    let leaky = format!(
+        "```dit-morse\nscenario: leaky\nspec: {{ id: auth, commit: {pin} }}\nsteps:\n  - id: me\n    operation: auth/getCurrentUser\n    headers: {{ Authorization: \"Bearer eyJhbGciOiJIUzI1NiJ9.abc.def\" }}\n```\n"
+    );
+    write_doc(&mut dit, "docs/api/leaky.md", &leaky);
+
+    let found = dit
+        .doctor()
+        .into_iter()
+        .find(|d| d.code == "morse-secrets")
+        .expect("doctor must have something to say about this");
+    assert_eq!(found.level, DiagnosticLevel::Error);
+    assert!(
+        found.message.contains("docs/api/leaky.md"),
+        "{}",
+        found.message
+    );
+    assert!(found.message.contains("Authorization"), "{}", found.message);
+
+    // And the shape the design asks for passes silently.
+    let proper = format!(
+        "```dit-morse\nscenario: proper\nspec: {{ id: auth, commit: {pin} }}\nrequires: [token]\nsteps:\n  - id: me\n    operation: auth/getCurrentUser\n    headers: {{ Authorization: \"Bearer {{{{token}}}}\" }}\n```\n"
+    );
+    write_doc(&mut dit, "docs/api/leaky.md", &proper);
+    let found = dit
+        .doctor()
+        .into_iter()
+        .find(|d| d.code == "morse-secrets")
+        .unwrap();
+    assert_eq!(found.level, DiagnosticLevel::Ok, "{}", found.message);
+}
+
+#[test]
+fn init_gitignores_the_morse_environment_file_before_it_can_exist() {
+    let tmp = tempfile::tempdir().unwrap();
+    let driver = tmp.path().join("dit-bin");
+    std::fs::write(&driver, "").unwrap();
+    let dit = Dit::init(&tmp.path().join("ws"), &driver).unwrap();
+
+    let ignore = std::fs::read_to_string(dit.root().join(".gitignore")).unwrap();
+    assert!(
+        ignore
+            .lines()
+            .any(|l| l.trim() == dit_core::MORSE_LOCAL_PATH),
+        "a secret that reaches git history cannot be taken back: {ignore}"
+    );
+
+    // A file that exists but is not ignored is an error, not a warning.
+    std::fs::write(dit.root().join(".gitignore"), ".dit-cache/\n").unwrap();
+    std::fs::write(dit.root().join(dit_core::MORSE_LOCAL_PATH), "envs: {}\n").unwrap();
+    let found = dit
+        .doctor()
+        .into_iter()
+        .find(|d| d.code == "morse-env")
+        .expect("doctor must notice");
+    assert_eq!(found.level, DiagnosticLevel::Error, "{}", found.message);
+}
