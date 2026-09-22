@@ -1025,23 +1025,6 @@ mark{background:var(--mark);color:inherit;border-radius:2px;padding:0 1px}
 }
 
 /* ---------- workflow (ADR 0015) ---------- */
-.wflow{display:flex;flex-direction:column;gap:18px;padding:16px 20px 20px;height:100%;overflow:auto}
-.wlane{display:flex;flex-direction:column;gap:8px}
-.wlhead{display:flex;align-items:center;gap:10px;padding:0 2px}
-.wlhead .wlname{font-weight:500;font-size:13px}
-.wlhead .wlowners{font:11px var(--mono);color:var(--muted)}
-.wlhead .wlmeta{font:11px var(--mono);color:var(--faint);margin-left:auto}
-.wlboard{display:flex;gap:12px;align-items:flex-start;overflow-x:auto;padding-bottom:4px}
-.wlboard .col{width:230px;flex:none}
-.wlboard .cards{min-height:28px}
-.card.wblocked{opacity:.92}
-.card .chip.unsatisfied{color:var(--warn);background:var(--warn-bg)}
-.card .chip.broken{color:var(--danger,var(--warn));background:transparent;text-decoration:line-through}
-.card .chip.satisfied{opacity:.6}
-.card .chip.claim{color:var(--accent-ink);background:var(--accent-soft)}
-.card .chip.claim.stale{opacity:.55;text-decoration:line-through}
-.card .i.ready{color:var(--ok,#3d9a50)}
-.wfoot .legend{font:11px var(--mono);color:var(--faint)}
 
 /* threaded replies in the activity stream (§4.4, ADR 0015) */
 .ev.reply{margin-left:26px;border-left:2px solid var(--edge);padding-left:10px}
@@ -1052,3 +1035,94 @@ mark{background:var(--mark);color:inherit;border-radius:2px;padding:0 1px}
    a mature lane holds a hundred cards; the page must not become a wall */
 .wlboard .col{max-height:420px}
 .wlboard .cards{overflow-y:auto}
+
+/* ---------- flow diagram (ADR 0019) ----------
+   Ported token-for-token from archify's generated workflow artifacts
+   (github.com/tt-a1i/archify): theme variable pairs, the c-/t-/a- class
+   grammar, the two-rect node (opaque mask under a semantic fill), lane
+   bands with numbered dashed borders, phase headers over mask chips,
+   per-variant arrowheads, a dotted grid, and mono typography. */
+
+:root, [data-theme="light"] {
+  --wf-bg: #f8fafc;
+  --wf-grid: #e2e8f0;
+  --wf-text: #0f172a;
+  --wf-text-muted: #64748b;
+  --wf-text-dim: #94a3b8;
+  --wf-lane-fill: rgba(248, 250, 252, 0.65);
+  --wf-lane-stroke: #cbd5e1;
+  --wf-arrow: #94a3b8;
+  --wf-arrow-emphasis: #059669;
+  --wf-mask: #ffffff;
+  --wf-ready-fill: rgba(52, 211, 153, 0.18);
+  --wf-ready-stroke: #059669;
+  --wf-doing-fill: rgba(34, 211, 238, 0.15);
+  --wf-doing-stroke: #0891b2;
+  --wf-blocked-fill: rgba(251, 113, 133, 0.15);
+  --wf-blocked-stroke: #e11d48;
+  --wf-done-fill: rgba(148, 163, 184, 0.18);
+  --wf-done-stroke: #64748b;
+}
+
+[data-theme="dark"] {
+  --wf-bg: #020617;
+  --wf-grid: #1e293b;
+  --wf-text: #ffffff;
+  --wf-text-muted: #94a3b8;
+  --wf-text-dim: #475569;
+  --wf-lane-fill: rgba(15, 23, 42, 0.22);
+  --wf-lane-stroke: #334155;
+  --wf-arrow: #64748b;
+  --wf-arrow-emphasis: #34d399;
+  --wf-mask: #0f172a;
+  --wf-ready-fill: rgba(6, 78, 59, 0.4);
+  --wf-ready-stroke: #34d399;
+  --wf-doing-fill: rgba(8, 51, 68, 0.4);
+  --wf-doing-stroke: #22d3ee;
+  --wf-blocked-fill: rgba(136, 19, 55, 0.4);
+  --wf-blocked-stroke: #fb7185;
+  --wf-done-fill: rgba(30, 41, 59, 0.5);
+  --wf-done-stroke: #94a3b8;
+}
+
+.wflow{display:flex;flex-direction:column;gap:12px;padding:14px 18px 18px;height:100%;min-height:0}
+.fhead{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.fhead .fmeta{font:11px var(--mono);color:var(--faint);margin-left:auto}
+.fhead .cnt{font:10px var(--mono);color:var(--muted);margin-left:5px}
+.ftitle{display:flex;align-items:baseline;gap:10px;font:600 13px var(--sans);color:var(--ink)}
+.ftitle .sub{font:11px var(--mono);color:var(--muted);font-weight:400}
+.fscroll{flex:1;min-height:0;overflow:auto;border-radius:12px;background:var(--wf-bg);border:1px solid var(--edge)}
+
+/* SVG grammar, mirroring archify's classes */
+.wf-c-grid{stroke:var(--wf-grid);stroke-width:1;stroke-dasharray:1 4;fill:none;opacity:.48}
+.wf-c-lane{fill:var(--wf-lane-fill);stroke:var(--wf-lane-stroke);stroke-width:1;stroke-dasharray:6 6}
+.wf-c-mask{fill:var(--wf-mask);stroke:none}
+.wf-t-dim{fill:var(--wf-text-dim)}
+.wf-t-muted{fill:var(--wf-text-muted)}
+.wf-t-primary{fill:var(--wf-text)}
+.wf-c-ready{fill:var(--wf-ready-fill);stroke:var(--wf-ready-stroke)}
+.wf-c-doing{fill:var(--wf-doing-fill);stroke:var(--wf-doing-stroke)}
+.wf-c-blocked{fill:var(--wf-blocked-fill);stroke:var(--wf-blocked-stroke)}
+.wf-c-done{fill:var(--wf-done-fill);stroke:var(--wf-done-stroke)}
+.wf-a-default{stroke:var(--wf-arrow);fill:none}
+.wf-a-emph{stroke:var(--wf-arrow-emphasis);fill:none}
+.wf-a-dashed{stroke:var(--wf-done-stroke);fill:none;stroke-dasharray:4 4}
+.wf-a-broken{stroke:var(--wf-blocked-stroke);fill:none;stroke-dasharray:5 5}
+.wf-m-default{fill:var(--wf-arrow)}
+.wf-m-emph{fill:var(--wf-arrow-emphasis)}
+.wf-m-dashed{fill:var(--wf-done-stroke)}
+.wf-m-broken{fill:var(--wf-blocked-stroke)}
+.fnode{cursor:pointer}
+.fnode .wf-node-frame{transition:stroke-width .1s}
+.fnode:hover .wf-node-frame,.fnode:focus .wf-node-frame{stroke-width:2.2}
+.fnode:focus{outline:none}
+.wfoot .legend{font:11px var(--mono);color:var(--faint)}
+.wfoot .sw{display:inline-block;width:22px;height:0;border-top:2px solid var(--wf-arrow);vertical-align:middle;margin:0 6px 0 12px}
+.wfoot .sw.emph{border-color:var(--wf-arrow-emphasis);border-top-width:3px}
+.wfoot .sw.dashed{border-color:var(--wf-done-stroke);border-top-style:dashed}
+.wfoot .sw.broken{border-color:var(--wf-blocked-stroke);border-top-style:dashed}
+.wfoot .nd{display:inline-block;width:11px;height:11px;border-radius:3px;vertical-align:middle;margin:0 5px 0 12px}
+.wfoot .nd.ready{background:var(--wf-ready-fill);border:1.5px solid var(--wf-ready-stroke)}
+.wfoot .nd.doing{background:var(--wf-doing-fill);border:1.5px solid var(--wf-doing-stroke)}
+.wfoot .nd.blocked{background:var(--wf-blocked-fill);border:1.5px solid var(--wf-blocked-stroke)}
+.wfoot .nd.done{background:var(--wf-done-fill);border:1.5px solid var(--wf-done-stroke)}
