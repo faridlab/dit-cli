@@ -134,6 +134,8 @@ pub struct IssueDto {
     /// Ids of the issues this one waits on, in the file's order. Empty when
     /// nothing blocks it — always present so the client never has to guess.
     pub blocked_by: Vec<String>,
+    /// Non-gating relations (ADR 0020): what feeds this issue.
+    pub fed_by: Vec<String>,
     /// The lane this issue belongs to (ADR 0015); absent = Unlaned.
     pub lane: Option<String>,
     /// The orchestrations this issue belongs to (ADR 0019), by name.
@@ -406,6 +408,10 @@ pub struct FieldPatchDto {
     #[serde(default)]
     #[ts(optional)]
     pub blocked_by: Option<Vec<String>>,
+    /// The non-gating relation (ADR 0020). Replaces the whole list.
+    #[serde(default)]
+    #[ts(optional)]
+    pub fed_by: Option<Vec<String>>,
     /// The lane id (ADR 0015); `null` or `""` clears back to Unlaned.
     #[serde(default, deserialize_with = "double_option")]
     #[ts(optional)]
@@ -452,11 +458,44 @@ pub struct FlowBoardDto {
     /// Absent for the union of every flow.
     pub name: Option<String>,
     pub lanes: Vec<FlowLaneDto>,
+    /// The authored columns (ADR 0020); empty when this flow has no fence.
+    pub phases: Vec<FlowPhaseDto>,
+    pub groups: Vec<FlowGroupDto>,
+    /// A trailing "Unphased" column is drawn.
+    pub unphased: bool,
+    /// Why the fence could not be used, when there is one and it could not.
+    pub shape_problem: Option<FlowShapeProblemDto>,
     pub stages: usize,
     pub nodes: Vec<FlowNodeDto>,
     pub edges: Vec<FlowEdgeDto>,
     /// The critical path, root first, as issue ids.
     pub main_path: Vec<String>,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct FlowPhaseDto {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct FlowGroupDto {
+    pub id: String,
+    pub label: String,
+    /// `null` is the unlaned band.
+    pub lane: Option<String>,
+    /// Phase ids the frame covers.
+    pub phases: Vec<String>,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct FlowShapeProblemDto {
+    pub path: String,
+    pub line: usize,
+    pub detail: String,
 }
 
 #[derive(Debug, Serialize, TS)]
@@ -474,6 +513,8 @@ pub struct FlowNodeDto {
     pub short_ref: String,
     pub number: Option<u32>,
     pub title: String,
+    /// `task` | `bug` | `story` | `spike` | `chore`.
+    pub kind: String,
     pub status: String,
     pub status_label: String,
     pub category: Option<String>,
@@ -483,11 +524,31 @@ pub struct FlowNodeDto {
     pub stage: usize,
     /// Draw order within the (lane, stage) cell.
     pub row: usize,
+    /// Every phase this issue's labels claim; more than one is legal and is
+    /// shown rather than hidden.
+    pub phases: Vec<String>,
     /// `ready` | `not_pickable` | `blocked`.
     pub readiness: String,
-    /// Blockers outside this board, summarized as a count.
-    pub outside_blockers: usize,
+    /// Blockers that are not members of this board: they gate the node but
+    /// cannot be drawn, so they travel with it by name.
+    pub outside_blockers: Vec<FlowOutsideBlockerDto>,
     pub claim: Option<FlowClaimDto>,
+    /// Commits that have touched this issue — derived, never authored.
+    pub commits: usize,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct FlowOutsideBlockerDto {
+    pub id: String,
+    pub short_ref: String,
+    pub number: Option<u32>,
+    pub title: String,
+    pub status_label: String,
+    /// Through the gate already — it no longer holds the node.
+    pub satisfied: bool,
+    /// Not in the index at all: a dangling reference.
+    pub gone: bool,
 }
 
 #[derive(Debug, Serialize, TS)]
@@ -505,6 +566,12 @@ pub struct FlowEdgeDto {
     pub to: String,
     /// `satisfied` | `unsatisfied` | `broken`.
     pub disposition: String,
+    /// True for `blocked_by`, false for the non-gating `fed_by`.
+    pub gating: bool,
+    /// The blocker sits in a later column than what it blocks.
+    pub backward: bool,
+    /// What the fence says this arrow means.
+    pub label: Option<String>,
 }
 
 pub fn flow_summary_dto(s: &dit_core::FlowSummary) -> FlowSummaryDto {
@@ -531,6 +598,30 @@ pub fn flow_board_dto(board: &dit_core::FlowBoard) -> FlowBoardDto {
                 label: lane.label.clone(),
             })
             .collect(),
+        phases: board
+            .phases
+            .iter()
+            .map(|p| FlowPhaseDto {
+                id: p.id.clone(),
+                label: p.label.clone(),
+            })
+            .collect(),
+        groups: board
+            .groups
+            .iter()
+            .map(|g| FlowGroupDto {
+                id: g.id.clone(),
+                label: g.label.clone(),
+                lane: g.lane.clone(),
+                phases: g.phases.clone(),
+            })
+            .collect(),
+        unphased: board.unphased,
+        shape_problem: board.shape_problem.as_ref().map(|p| FlowShapeProblemDto {
+            path: p.path.clone(),
+            line: p.line,
+            detail: p.detail.clone(),
+        }),
         nodes: board
             .nodes
             .iter()
@@ -539,6 +630,7 @@ pub fn flow_board_dto(board: &dit_core::FlowBoard) -> FlowBoardDto {
                 short_ref: n.short_ref.clone(),
                 number: n.number,
                 title: n.title.clone(),
+                kind: n.kind.as_str().to_owned(),
                 status: n.status.clone(),
                 status_label: n.status_label.clone(),
                 category: n.category.map(|c| c.as_str().to_owned()),
@@ -546,12 +638,26 @@ pub fn flow_board_dto(board: &dit_core::FlowBoard) -> FlowBoardDto {
                 lane: n.lane.clone(),
                 stage: n.stage,
                 row: n.row,
+                phases: n.phases.clone(),
                 readiness: match n.readiness {
                     dit_core::Readiness::Ready => "ready".into(),
                     dit_core::Readiness::NotPickable => "not_pickable".into(),
                     dit_core::Readiness::Blocked { .. } => "blocked".into(),
                 },
-                outside_blockers: n.outside_blockers,
+                outside_blockers: n
+                    .outside_blockers
+                    .iter()
+                    .map(|o| FlowOutsideBlockerDto {
+                        id: o.id.as_str().to_owned(),
+                        short_ref: o.short_ref.clone(),
+                        number: o.number,
+                        title: o.title.clone(),
+                        status_label: o.status_label.clone(),
+                        satisfied: o.satisfied,
+                        gone: o.gone,
+                    })
+                    .collect(),
+                commits: n.commits,
                 claim: n.claim.as_ref().map(|c| FlowClaimDto {
                     claimed_by: c.claimed_by.clone(),
                     claimed_at: c.claimed_at.clone(),
@@ -565,6 +671,9 @@ pub fn flow_board_dto(board: &dit_core::FlowBoard) -> FlowBoardDto {
             .map(|e| FlowEdgeDto {
                 from: e.from.as_str().to_owned(),
                 to: e.to.as_str().to_owned(),
+                gating: e.gating,
+                backward: e.backward,
+                label: e.label.clone(),
                 disposition: match e.disposition {
                     dit_core::EdgeDisposition::Satisfied => "satisfied".into(),
                     dit_core::EdgeDisposition::Unsatisfied => "unsatisfied".into(),
@@ -775,6 +884,7 @@ pub fn issue_dto(issue: &Issue) -> IssueDto {
             .iter()
             .map(|b| b.as_str().to_owned())
             .collect(),
+        fed_by: issue.fed_by.iter().map(|b| b.as_str().to_owned()).collect(),
         lane: issue.lane.clone(),
         flows: issue.flows.clone(),
         claimed_by: issue.claimed_by.clone(),
@@ -1022,17 +1132,21 @@ pub fn to_field_patch(dto: FieldPatchDto) -> Result<FieldPatch, String> {
     let start = tri_state(ClearableField::Start, &dto.start, blank, &mut clear).cloned();
     let lane = tri_state(ClearableField::Lane, &dto.lane, blank, &mut clear).cloned();
     let flows = dto.flows.clone();
-    let blocked_by = match &dto.blocked_by {
-        Some(ids) => Some(
-            ids.iter()
-                .map(|text| {
-                    dit_core::IssueId::parse(text)
-                        .map_err(|e| format!("`{text}` is not an issue id: {e}"))
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-        ),
-        None => None,
+    let ids = |field: &Option<Vec<String>>| -> Result<Option<Vec<dit_core::IssueId>>, String> {
+        match field {
+            Some(ids) => Ok(Some(
+                ids.iter()
+                    .map(|text| {
+                        dit_core::IssueId::parse(text)
+                            .map_err(|e| format!("`{text}` is not an issue id: {e}"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            )),
+            None => Ok(None),
+        }
     };
+    let blocked_by = ids(&dto.blocked_by)?;
+    let fed_by = ids(&dto.fed_by)?;
     Ok(FieldPatch {
         title: dto.title,
         kind,
@@ -1050,6 +1164,7 @@ pub fn to_field_patch(dto: FieldPatchDto) -> Result<FieldPatch, String> {
         due,
         start,
         blocked_by,
+        fed_by,
         lane,
         flows,
         // Claims are `POST /api/issues/{id}/claim`'s to write (ADR 0015) —

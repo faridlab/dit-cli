@@ -352,6 +352,7 @@ async fn create_issue(
             due: None,
             start: None,
             blocked_by: Vec::new(),
+            fed_by: Vec::new(),
             lane: input.lane,
             flows: input.flows.unwrap_or_default(),
             body: input.body,
