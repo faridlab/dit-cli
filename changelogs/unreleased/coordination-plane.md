@@ -81,7 +81,9 @@ per work stream) without out-of-band coordination:
   not — and marks the nodes that have real commits behind them, read from
   history rather than authored.
 - **`dit ai`** — one command installs `docs/dit-for-agents.md` and points
-  `AGENTS.md`, and every agent file the repo already has, at it; `dit ai spec`
+  `AGENTS.md`, and every agent file the repo already has, at it, while
+  `dit ai add claude` (or `cursor`, or `copilot`) points one named tool and
+  creates its file, because naming a tool is the whole request; `dit ai spec`
   prints the same specification from the binary, so it can never disagree with
   the binary. It covers what an AI session cannot guess: the data model, the
   fence grammar, and the rules that carry consequences — never edit an issue

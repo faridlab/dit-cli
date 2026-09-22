@@ -1001,6 +1001,14 @@ impl Dit {
     /// `changed: false`. Only the marked blocks are ever touched, so
     /// hand-written rules in the same files survive byte-for-byte.
     pub fn write_agent_docs(&mut self, opts: &AgentDocOptions) -> Result<AgentDocReport, DitError> {
+        let unknown = agent::unknown_tools(opts);
+        if !unknown.is_empty() {
+            return Err(DitError::Refuse(format!(
+                "no agent file is known for {} — the tools DIT can point are {}",
+                unknown.join(", "),
+                agent::tool_keys().join(", ")
+            )));
+        }
         let mut report = AgentDocReport::default();
         let root = self.repo.root().to_owned();
 

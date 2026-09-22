@@ -2962,3 +2962,44 @@ fn a_dependency_inside_one_phase_is_ordinary_and_never_flagged() {
         "same phase is not a violation — flagging it would bury the real ones"
     );
 }
+
+#[test]
+fn naming_a_tool_creates_its_file_because_naming_it_is_the_intent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+
+    let report = dit
+        .write_agent_docs(&dit_core::AgentDocOptions {
+            all: false,
+            only: vec!["claude".into()],
+        })
+        .unwrap();
+
+    // The guard against littering a repo with files for tools nobody uses
+    // must not fire on a tool the caller asked for by name.
+    let claude = std::fs::read_to_string(tmp.path().join("CLAUDE.md")).unwrap();
+    assert!(claude.contains("docs/dit-for-agents.md"), "{claude}");
+    assert_eq!(report.pointers, vec!["CLAUDE.md"], "{report:?}");
+    // And only that one: naming claude is not naming everything.
+    assert!(!tmp.path().join("AGENTS.md").exists());
+    assert!(!tmp.path().join(".cursor/rules").exists());
+}
+
+#[test]
+fn an_unknown_tool_is_named_rather_than_silently_doing_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+
+    let err = dit
+        .write_agent_docs(&dit_core::AgentDocOptions {
+            all: false,
+            only: vec!["claude".into(), "emacs".into()],
+        })
+        .unwrap_err();
+    let message = err.to_string();
+    assert!(message.contains("emacs"), "{message}");
+    // The way out is named, not left to be guessed.
+    assert!(message.contains("claude"), "{message}");
+    // Nothing was written: a refused call does half of nothing.
+    assert!(!tmp.path().join("CLAUDE.md").exists());
+}

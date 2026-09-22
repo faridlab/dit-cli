@@ -27,13 +27,30 @@ const LEGACY_END: &str = "<!-- /dit:workflow-protocol -->";
 
 /// Agent files DIT knows how to point. `AGENTS.md` is written even when
 /// absent — it is the cross-tool convention, and it is the one file worth
-/// creating. The rest are only touched when the team already uses them.
+/// creating. The rest are only touched when the team already uses them, or
+/// when the caller names them.
 const TOOL_FILES: &[(&str, &str)] = &[
     ("agents", "AGENTS.md"),
     ("claude", "CLAUDE.md"),
     ("cursor", ".cursor/rules"),
     ("copilot", ".github/copilot-instructions.md"),
 ];
+
+/// The tool keys `--only` accepts, for naming them back in a refusal.
+pub fn tool_keys() -> Vec<&'static str> {
+    TOOL_FILES.iter().map(|(key, _)| *key).collect()
+}
+
+/// Tool keys the caller named that DIT does not know. A silent no-op here
+/// would answer a request with nothing, which is the one outcome that leaves
+/// someone unable to tell whether it worked.
+pub(crate) fn unknown_tools(opts: &AgentDocOptions) -> Vec<String> {
+    opts.only
+        .iter()
+        .filter(|k| !TOOL_FILES.iter().any(|(key, _)| *key == k.as_str()))
+        .cloned()
+        .collect()
+}
 
 /// Which agent files to point at the canonical document.
 #[derive(Debug, Clone, Default)]
@@ -232,11 +249,16 @@ pub(crate) fn targets(root: &Path, opts: &AgentDocOptions) -> Vec<String> {
         .iter()
         .filter(|(key, _)| opts.only.is_empty() || opts.only.iter().any(|k| k == key))
         .filter(|(key, path)| {
-            // AGENTS.md is the convention, so it is created rather than
-            // waited for. Everything else is only pointed when the team
-            // already uses it — DIT never litters a repo with files for
-            // tools nobody here runs.
-            opts.all || *key == "agents" || root.join(path).exists()
+            // Naming a tool is the clearest statement of intent there is, so
+            // a named tool's file is created. AGENTS.md is the cross-tool
+            // convention and is created too. Everything else is only pointed
+            // when the team already uses it — the guard exists to keep DIT
+            // from littering a repo with files for tools nobody here runs,
+            // not to second-guess someone who asked.
+            opts.only.iter().any(|k| k == key)
+                || opts.all
+                || *key == "agents"
+                || root.join(path).exists()
         })
         .map(|(_, path)| (*path).to_owned())
         .collect()
