@@ -240,6 +240,29 @@ enum MorseCmd {
     /// Exits non-zero when anything is broken or unreadable — stale is a
     /// fact about the world, not a failure, so it does not fail the check.
     Check,
+    /// Fire one scenario against a live environment. This is one of the two
+    /// things in DIT that sends a request, and it only ever sends to a host
+    /// this machine allows (§20.5).
+    Run {
+        scenario: String,
+        /// The environment to use, overriding the fence's own `env:`.
+        #[arg(long)]
+        env: Option<String>,
+    },
+    /// Run a scenario and, only if every step passes, move its `commit:` pin
+    /// to where the spec stands now — the pin then means "proven to work at
+    /// this commit". Needs a live environment, so it cannot run in CI; CI
+    /// runs `check`, which only reads.
+    Sync {
+        scenario: String,
+        #[arg(long)]
+        env: Option<String>,
+    },
+    /// Trust a host on this machine. Written to `.dit/morse.local.yaml`,
+    /// which is gitignored: a scenario arriving in a pull request cannot
+    /// bring its own permission with it. With no host, lists what is
+    /// allowed.
+    Allow { host: Option<String> },
 }
 
 #[derive(Subcommand)]
@@ -911,6 +934,60 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
                 }
                 Ok(ExitCode::SUCCESS)
             }
+            MorseCmd::Allow { host } => {
+                let dit = open()?;
+                let Some(host) = host else {
+                    let hosts = dit.morse_allowed_hosts()?;
+                    if hosts.is_empty() {
+                        println!(
+                            "no hosts allowed on this machine — nothing can be run until one is. \
+                             `dit morse allow <host>` adds it"
+                        );
+                    }
+                    for host in hosts {
+                        println!("{host}");
+                    }
+                    return Ok(ExitCode::SUCCESS);
+                };
+                if dit.morse_allow(&host)? {
+                    println!("{host} is now allowed on this machine, and nowhere else");
+                } else {
+                    println!("{host} was already allowed");
+                }
+                Ok(ExitCode::SUCCESS)
+            }
+            MorseCmd::Run { scenario, env } => {
+                let mut dit = open()?;
+                let outcome = dit.morse_run(&scenario, env.as_deref())?;
+                print_run(&outcome);
+                Ok(if outcome.passed() {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                })
+            }
+            MorseCmd::Sync { scenario, env } => {
+                let mut dit = open()?;
+                let me = me_for(&dit, explicit.as_deref());
+                let synced = dit.morse_sync(&scenario, env.as_deref(), &me)?;
+                print_run(&synced.run);
+                match &synced.moved_to {
+                    Some(commit) => println!(
+                        "\npinned {scenario} to {} in {}",
+                        &commit[..7.min(commit.len())],
+                        synced.path
+                    ),
+                    None => println!(
+                        "\nthe pin was left where it was — it moves only on a green run, \
+                         because it is a claim that this was proven"
+                    ),
+                }
+                Ok(if synced.moved_to.is_some() {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                })
+            }
             MorseCmd::Check => {
                 let dit = open()?;
                 let report = dit.morse_report()?;
@@ -1551,6 +1628,41 @@ fn me_for(dit: &Dit, explicit: Option<&str>) -> String {
         .or_else(|| dit.me())
         .or_else(|| std::env::var("USER").ok())
         .unwrap_or_else(|| "unknown".to_owned())
+}
+
+/// One run, step by step. A red step says what it wanted and what it got,
+/// because "failed" on its own sends someone back to the terminal to guess.
+fn print_run(outcome: &dit_core::RunOutcome) {
+    if let Some(refused) = &outcome.refused {
+        eprintln!("{refused}");
+        return;
+    }
+    for step in &outcome.steps {
+        let status = step
+            .status
+            .map_or_else(|| "---".to_owned(), |s| s.to_string());
+        println!(
+            "{}  {:<6} {status:<4} {:>5}ms  {}",
+            if step.passed() { "ok  " } else { "FAIL" },
+            step.method,
+            step.duration_ms,
+            step.url
+        );
+        if let Some(error) = &step.error {
+            println!("      {error}");
+        }
+        for failure in &step.failures {
+            println!("      {failure}");
+        }
+        for (name, value) in &step.captured {
+            // Captured values are printed: a run is a debugging session, and
+            // hiding what was carried forward is what makes one long.
+            println!("      captured {name} = {value}");
+        }
+    }
+    if outcome.passed() {
+        println!("\n{} step(s), all green", outcome.steps.len());
+    }
 }
 
 fn print_list(hits: &[IndexedIssue]) {
