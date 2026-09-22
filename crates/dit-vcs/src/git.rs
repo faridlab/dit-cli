@@ -232,6 +232,27 @@ impl Repo {
         })
     }
 
+    /// Whether a revision exists in this repository. A scenario pinned to a
+    /// commit the spec's repo has never seen is a different problem from a
+    /// stale one, and the two must not be reported as the same thing.
+    pub fn has_commit(&self, rev: &str) -> bool {
+        self.run(&["cat-file", "-e", &format!("{rev}^{{commit}}")])
+            .is_ok()
+    }
+
+    /// How many commits have touched `path` since `since`, exclusive. This
+    /// is the staleness question Morse asks of a spec (§20.4) and the same
+    /// one `dit docs check` asks of a source: has the thing I was written
+    /// against moved, and by how much?
+    pub fn commits_touching_since(&self, since: &str, path: &str) -> Result<usize, VcsError> {
+        let range = format!("{since}..HEAD");
+        let out = self.run(&["rev-list", "--count", &range, "--", path])?;
+        out.parse::<usize>().map_err(|_| VcsError::Git {
+            args: format!("rev-list --count {range} -- {path}"),
+            stderr: format!("unexpected output: {out:?}"),
+        })
+    }
+
     /// Commit time of a revision, in seconds since the epoch — used to work
     /// out which side of a merge git considers newer.
     pub fn commit_timestamp(&self, rev: &str) -> Option<i64> {
