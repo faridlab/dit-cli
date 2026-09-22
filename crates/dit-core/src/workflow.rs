@@ -112,6 +112,15 @@ impl Dit {
 
         for hit in sorted {
             let issue = &hit.issue;
+            // The coordination board shows work that can still move.
+            // Terminal issues (done, cancelled) are the classic board's
+            // business — on a mature workspace they would otherwise stack
+            // into a wall of hundreds of cards that never change again.
+            // They stay resolvable as blockers above (`by_id` holds them),
+            // so a satisfied dependency still shows its chip.
+            if self.workflow.is_terminal(&issue.status) {
+                continue;
+            }
             let mut blockers = Vec::new();
             let mut unsatisfied = Vec::new();
             let mut broken = Vec::new();

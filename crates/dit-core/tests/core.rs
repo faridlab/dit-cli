@@ -1967,6 +1967,16 @@ fn the_workflow_board_derives_blocker_and_claim_states() {
     assert!(backend.cards.iter().any(|c| c.id == blocker));
     let unlaned = board.lanes.iter().find(|l| l.id.is_none()).unwrap();
     assert!(unlaned.cards.is_empty());
+
+    // Terminal work leaves the coordination board — it can no longer move —
+    // but stays resolvable: the cancelled dependency above still shows as a
+    // broken chip with its title.
+    let cancelled = board
+        .lanes
+        .iter()
+        .flat_map(|l| l.cards.iter())
+        .find(|c| c.title == "Doomed dependency");
+    assert!(cancelled.is_none(), "terminal issues carry no card");
 }
 
 #[test]

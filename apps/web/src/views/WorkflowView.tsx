@@ -21,7 +21,10 @@ export function WorkflowView({ onOpen }: { onOpen: (id: string) => void }) {
   const schema = useSchema();
 
   const statuses = useMemo(
-    () => schema.data?.workflow.statuses.map((status) => ({ id: status.id, label: status.label })) ?? [],
+    () =>
+      (schema.data?.workflow.statuses ?? [])
+        .filter((status) => !status.terminal)
+        .map((status) => ({ id: status.id, label: status.label })),
     [schema.data],
   );
 
@@ -108,8 +111,9 @@ export function WorkflowView({ onOpen }: { onOpen: (id: string) => void }) {
       })}
       <footer className="wfoot">
         <span className="legend">
-          claim TTL {data.claim_ttl_minutes} min · readiness, blocker states and claim age are derived,
-          never stored
+          in-flight work only — done and cancelled live on the classic board · claim TTL{" "}
+          {data.claim_ttl_minutes} min · readiness, blocker states and claim age are derived, never
+          stored
         </span>
       </footer>
     </div>

@@ -1048,3 +1048,7 @@ mark{background:var(--mark);color:inherit;border-radius:2px;padding:0 1px}
 .replyBtn{display:inline-flex;align-items:center;gap:4px;margin-top:2px;border:0;background:transparent;padding:2px 4px;border-radius:4px;font:11px var(--sans);color:var(--muted);cursor:pointer;opacity:0;transition:opacity .12s}
 .ev:hover .replyBtn{opacity:1}
 .replyBtn:hover{color:var(--ink);background:var(--hover)}
+/* a lane's columns scroll internally instead of stretching the page —
+   a mature lane holds a hundred cards; the page must not become a wall */
+.wlboard .col{max-height:420px}
+.wlboard .cards{overflow-y:auto}
