@@ -69,6 +69,17 @@ pub struct WorkspaceComment {
     pub title: String,
 }
 
+/// One flow's authored shape as the index holds it: the fence's own bytes,
+/// where they were found, and why they could not be used if they could not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredFlowShape {
+    pub flow: String,
+    pub path: String,
+    pub line: usize,
+    pub shape: String,
+    pub problem: Option<String>,
+}
+
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS issues (
   id          TEXT PRIMARY KEY,
@@ -111,6 +122,12 @@ CREATE TABLE IF NOT EXISTS issue_blocked_by (
   pos           INTEGER NOT NULL,
   blocked_by_id TEXT NOT NULL,
   PRIMARY KEY (issue_id, blocked_by_id)
+);
+CREATE TABLE IF NOT EXISTS issue_fed_by (
+  issue_id  TEXT NOT NULL,
+  pos       INTEGER NOT NULL,
+  fed_by_id TEXT NOT NULL,
+  PRIMARY KEY (issue_id, fed_by_id)
 );
 CREATE TABLE IF NOT EXISTS issue_flows (
   issue_id TEXT NOT NULL,
@@ -158,6 +175,19 @@ CREATE TABLE IF NOT EXISTS field_events (
   UNIQUE (commit_sha, parent_sha, issue_id, field, source)
 );
 CREATE INDEX IF NOT EXISTS idx_events_issue_field ON field_events(issue_id, field, seq);
+
+-- The authored half of a flow diagram (ADR 0020), parsed from a `dit-flow`
+-- fence at reindex. Stored so the read path still answers from the index
+-- (I2) instead of walking the document tree every time a diagram is drawn.
+-- `problem` is set when the fence did not parse: the flow still draws, under
+-- a banner naming the document and line.
+CREATE TABLE IF NOT EXISTS flow_shapes (
+  flow     TEXT PRIMARY KEY,
+  path     TEXT NOT NULL,
+  line     INTEGER NOT NULL,
+  shape    TEXT NOT NULL,
+  problem  TEXT
+);
 
 CREATE TABLE IF NOT EXISTS state (
   key   TEXT PRIMARY KEY,
@@ -256,6 +286,7 @@ impl Index {
                  DROP TABLE IF EXISTS issue_assignees;
                  DROP TABLE IF EXISTS issue_labels;
                  DROP TABLE IF EXISTS issue_blocked_by;
+                 DROP TABLE IF EXISTS issue_fed_by;
                  DROP TABLE IF EXISTS releases;
                  DROP TABLE IF EXISTS release_includes;
                  DROP TABLE IF EXISTS comments;
@@ -344,6 +375,14 @@ impl Index {
             issue.id.as_str(),
             &blockers,
         )?;
+        let feeders: Vec<String> = issue.fed_by.iter().map(|b| b.as_str().to_owned()).collect();
+        replace_set(
+            &tx,
+            "issue_fed_by",
+            "fed_by_id",
+            issue.id.as_str(),
+            &feeders,
+        )?;
         replace_set(&tx, "issue_flows", "flow", issue.id.as_str(), &issue.flows)?;
         tx.commit()?;
         Ok(())
@@ -363,6 +402,10 @@ impl Index {
         )?;
         tx.execute(
             "DELETE FROM issue_blocked_by WHERE issue_id = ?1",
+            params![id.as_str()],
+        )?;
+        tx.execute(
+            "DELETE FROM issue_fed_by WHERE issue_id = ?1",
             params![id.as_str()],
         )?;
         tx.execute(
@@ -396,6 +439,91 @@ impl Index {
             ],
         )?;
         Ok(())
+    }
+
+    /// Record one flow's authored shape, or the reason its fence could not
+    /// be read. The first fence for a flow wins: a second one is a warning,
+    /// not a merge, because two shapes for one diagram have no defined
+    /// resolution and guessing would be worse than saying so.
+    pub fn upsert_flow_shape(
+        &mut self,
+        flow: &str,
+        path: &str,
+        line: usize,
+        shape: &str,
+        problem: Option<&str>,
+    ) -> Result<bool, IndexError> {
+        let taken: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT path FROM flow_shapes WHERE flow = ?1",
+                params![flow],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(taken) = taken {
+            if taken != path {
+                return Ok(false);
+            }
+        }
+        self.conn.execute(
+            "INSERT OR REPLACE INTO flow_shapes (flow, path, line, shape, problem) \
+             VALUES (?1,?2,?3,?4,?5)",
+            params![flow, path, line as i64, shape, problem],
+        )?;
+        Ok(true)
+    }
+
+    /// How many distinct commits have touched each issue, by id. Derived
+    /// from the recorded field events — the same walk the history layer
+    /// already does — so the diagram can mark which nodes have real work
+    /// behind them without anyone authoring a link (ADR 0021).
+    pub fn commit_counts(&self) -> Result<std::collections::HashMap<String, usize>, IndexError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT issue_id, COUNT(DISTINCT commit_sha) FROM field_events GROUP BY issue_id",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        let mut out = std::collections::HashMap::new();
+        for row in rows {
+            let (id, count) = row?;
+            out.insert(id, count as usize);
+        }
+        Ok(out)
+    }
+
+    /// Forget every shape, ahead of a rebuild.
+    pub fn clear_flow_shapes(&mut self) -> Result<(), IndexError> {
+        self.conn.execute("DELETE FROM flow_shapes", [])?;
+        Ok(())
+    }
+
+    /// Forget the shapes one document declared — what a document being
+    /// edited or deleted means, before its current fences are re-read.
+    pub fn clear_flow_shapes_at(&mut self, path: &str) -> Result<(), IndexError> {
+        self.conn
+            .execute("DELETE FROM flow_shapes WHERE path = ?1", params![path])?;
+        Ok(())
+    }
+
+    /// One flow's stored shape: the fence's text, where it came from, and
+    /// the problem if it did not parse.
+    pub fn flow_shape(&self, flow: &str) -> Result<Option<StoredFlowShape>, IndexError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT flow, path, line, shape, problem FROM flow_shapes WHERE flow = ?1",
+                params![flow],
+                |r| {
+                    Ok(StoredFlowShape {
+                        flow: r.get(0)?,
+                        path: r.get(1)?,
+                        line: r.get::<_, i64>(2)? as usize,
+                        shape: r.get(3)?,
+                        problem: r.get(4)?,
+                    })
+                },
+            )
+            .optional()?)
     }
 
     /// Insert or replace one release plan, keeping `release_includes` in
@@ -504,6 +632,7 @@ impl Index {
             "issue_assignees",
             "issue_labels",
             "issue_blocked_by",
+            "issue_fed_by",
             "releases",
             "release_includes",
             "comments",
@@ -527,6 +656,7 @@ impl Index {
             "issue_assignees",
             "issue_labels",
             "issue_blocked_by",
+            "issue_fed_by",
             "releases",
             "release_includes",
             "comments",
@@ -555,9 +685,10 @@ impl Index {
         let assignees = self.set_for("issue_assignees", "alias", id)?;
         let labels = self.set_for("issue_labels", "label", id)?;
         let blocked_by = self.set_for("issue_blocked_by", "blocked_by_id", id)?;
+        let fed_by = self.set_for("issue_fed_by", "fed_by_id", id)?;
         let flows = self.set_for("issue_flows", "flow", id)?;
         Ok(Some(hydrate(
-            id, cols, assignees, labels, blocked_by, flows,
+            id, cols, assignees, labels, blocked_by, fed_by, flows,
         )?))
     }
 
@@ -595,8 +726,11 @@ impl Index {
             let assignees = self.set_for("issue_assignees", "alias", &id)?;
             let labels = self.set_for("issue_labels", "label", &id)?;
             let blocked_by = self.set_for("issue_blocked_by", "blocked_by_id", &id)?;
+            let fed_by = self.set_for("issue_fed_by", "fed_by_id", &id)?;
             let flows = self.set_for("issue_flows", "flow", &id)?;
-            found.push(hydrate(&id, cols, assignees, labels, blocked_by, flows)?);
+            found.push(hydrate(
+                &id, cols, assignees, labels, blocked_by, fed_by, flows,
+            )?);
         }
         Ok(found)
     }
@@ -1250,6 +1384,7 @@ fn hydrate(
     assignees: Vec<String>,
     labels: Vec<String>,
     blocked_by: Vec<String>,
+    fed_by: Vec<String>,
     flows: Vec<String>,
 ) -> Result<IndexedIssue, IndexError> {
     let corrupt =
@@ -1259,6 +1394,10 @@ fn hydrate(
         .map(|b| {
             IssueId::parse(b).map_err(|e| IndexError::Corrupt(format!("field `blocked_by`: {e}")))
         })
+        .collect::<Result<Vec<_>, _>>()?;
+    let fed_by = fed_by
+        .iter()
+        .map(|b| IssueId::parse(b).map_err(|e| IndexError::Corrupt(format!("field `fed_by`: {e}"))))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(IndexedIssue {
         issue: Issue {
@@ -1291,6 +1430,7 @@ fn hydrate(
             due: cols.due,
             start: cols.start,
             blocked_by,
+            fed_by,
             lane: cols.lane,
             flows,
             claimed_by: cols.claimed_by,
@@ -1327,6 +1467,7 @@ mod tests {
             due: None,
             start: None,
             blocked_by: vec![],
+            fed_by: vec![],
             lane: None,
             flows: Vec::new(),
             claimed_by: None,
@@ -1446,6 +1587,61 @@ mod tests {
 
     const ID: &str = "01K3M9ZXQ2R7VN8P4TDBCEFGHJ";
     const OTHER: &str = "01K3M9ZXQ2ZZZZZZZZZZZZZZZZ";
+
+    #[test]
+    fn the_first_fence_for_a_flow_wins_and_a_second_document_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut index = Index::open(&tmp.path().join("index.sqlite")).unwrap();
+        assert!(index
+            .upsert_flow_shape("register", "docs/a.md", 3, "flow: register", None)
+            .unwrap());
+        // A second document claiming the same flow is refused rather than
+        // merged: two shapes for one diagram have no defined resolution.
+        assert!(!index
+            .upsert_flow_shape("register", "docs/b.md", 1, "flow: register", None)
+            .unwrap());
+        let stored = index.flow_shape("register").unwrap().unwrap();
+        assert_eq!(stored.path, "docs/a.md");
+        assert_eq!(stored.line, 3);
+        assert_eq!(stored.problem, None);
+
+        // The same document may change its mind as often as it likes.
+        assert!(index
+            .upsert_flow_shape(
+                "register",
+                "docs/a.md",
+                9,
+                "flow: register\nphases: []",
+                None
+            )
+            .unwrap());
+        assert_eq!(index.flow_shape("register").unwrap().unwrap().line, 9);
+
+        // A fence that did not parse is stored with its reason, so the
+        // screen can name the file and line instead of drawing nothing.
+        index
+            .upsert_flow_shape(
+                "broken",
+                "docs/c.md",
+                2,
+                "flow: broken",
+                Some("line 4: bad"),
+            )
+            .unwrap();
+        assert_eq!(
+            index
+                .flow_shape("broken")
+                .unwrap()
+                .unwrap()
+                .problem
+                .as_deref(),
+            Some("line 4: bad")
+        );
+
+        assert_eq!(index.flow_shape("never-written").unwrap(), None);
+        index.clear_flow_shapes().unwrap();
+        assert_eq!(index.flow_shape("register").unwrap(), None);
+    }
 
     #[test]
     fn upsert_then_read_round_trips_every_column() {

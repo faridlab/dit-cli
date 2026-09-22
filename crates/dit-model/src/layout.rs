@@ -74,10 +74,20 @@ impl DataLayout {
     }
 
     /// Pathspecs limiting a git diff to files DIT owns. Root layout must name
-    /// the visible roots too, or field events from issue edits vanish.
+    /// the visible roots too, or field events from issue edits vanish — and
+    /// the document roots with them, since a `dit-flow` fence (ADR 0020)
+    /// lives in a document and reaches the diagram on the write that saved
+    /// it. Under DotDir every root is already inside `.dit/`.
     pub fn diff_pathspecs(self) -> &'static [&'static str] {
         match self {
-            DataLayout::Root => &["issues/", ".dit/"],
+            DataLayout::Root => &[
+                "issues/",
+                "docs/",
+                "notes/",
+                "epics/",
+                "changelogs/",
+                ".dit/",
+            ],
             DataLayout::DotDir => &[".dit/"],
         }
     }
@@ -292,7 +302,17 @@ mod tests {
 
     #[test]
     fn diff_pathspecs_cover_the_visible_roots() {
-        assert_eq!(DataLayout::Root.diff_pathspecs(), &["issues/", ".dit/"]);
+        assert_eq!(
+            DataLayout::Root.diff_pathspecs(),
+            &[
+                "issues/",
+                "docs/",
+                "notes/",
+                "epics/",
+                "changelogs/",
+                ".dit/"
+            ]
+        );
         assert_eq!(DataLayout::DotDir.diff_pathspecs(), &[".dit/"]);
     }
 
