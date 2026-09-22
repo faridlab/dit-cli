@@ -2025,7 +2025,10 @@ A hand rule stays.
 
     // The registry is only an ordering hint now (ADR 0019); lane_counts
     // reads the data. Put one issue in each lane and the hint orders them.
-    for (title, lane) in [("Serves the flow", "backend"), ("Draws the flow", "frontend")] {
+    for (title, lane) in [
+        ("Serves the flow", "backend"),
+        ("Draws the flow", "frontend"),
+    ] {
         let mut tx = dit.transaction("farid").unwrap();
         let id = tx.create_issue(draft(title)).unwrap();
         tx.set_fields(
