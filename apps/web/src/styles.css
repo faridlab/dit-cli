@@ -1000,8 +1000,12 @@ mark{background:var(--mark);color:inherit;border-radius:2px;padding:0 1px}
 /* ---------- sidebar: one scroll region, bottom row pinned ---------- */
 .sb-scroll{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;scrollbar-gutter:stable}
 /* The nav holds its ground; the view's own section is the only part that
-   scrolls, because it is the only part that grows without limit. */
-.sidebar .nav{flex:none}
+   scrolls, because it is the only part that grows without limit. Both are
+   flex columns, so both need their rows pinned to their natural height —
+   otherwise constraining either one squashes its contents instead of
+   scrolling them. */
+.sidebar .nav{flex:none;scrollbar-gutter:stable}
+.sidebar .nav > *{flex:none}
 .sb-section{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding-bottom:12px;scrollbar-gutter:stable}
 /* The section is a flex column AND the scroll container, so its headings and
    lists must keep their natural height. Without this they shrink to fit the
@@ -1013,9 +1017,13 @@ mark{background:var(--mark);color:inherit;border-radius:2px;padding:0 1px}
   touch-action:none;position:relative}
 .sb-split::before{content:"";position:absolute;left:8px;right:8px;top:4px;height:1px;
   background:var(--edge)}
-.sb-split .grip{position:relative;width:26px;height:3px;border-radius:99px;
-  background:transparent;transition:background .12s}
-.sb-split:hover .grip,.sb-split:focus-visible .grip{background:var(--edge-2,var(--edge))}
+.sb-split .grip{box-shadow:0 0 0 3px var(--bg)}
+/* The grip is always drawn. A control that only appears once the pointer is
+   already on it is a control nobody finds: the reader has to know it is
+   there before they have a reason to go there. */
+.sb-split .grip{position:relative;width:28px;height:3px;border-radius:99px;
+  background:var(--edge-2);transition:background .12s,width .12s}
+.sb-split:hover .grip,.sb-split:focus-visible .grip{background:var(--muted);width:40px}
 .sb-split:focus-visible{outline:none}
 .sb-split:focus-visible::before{background:var(--accent)}
 .sb-body{overflow:visible}

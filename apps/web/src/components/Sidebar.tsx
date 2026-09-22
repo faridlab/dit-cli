@@ -125,6 +125,7 @@ function Splitter({
       role="separator"
       aria-orientation="horizontal"
       aria-label="Resize the navigation — arrow keys nudge, double-click resets"
+      title="Drag to give the section below more room · double-click to reset"
       tabIndex={0}
       onPointerDown={(event) => {
         event.preventDefault();
