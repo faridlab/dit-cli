@@ -20,7 +20,12 @@ use dit_vcs::Repo;
 fn workspace(path: &Path) -> Dit {
     let repo = Repo::init(path).unwrap();
     repo.set_identity("DIT Test", "dit@test.local").unwrap();
-    std::fs::write(path.join(".gitignore"), ".dit-cache/\n").unwrap();
+    std::fs::write(
+        path.join(".gitignore"),
+        ".dit-cache/
+",
+    )
+    .unwrap();
     repo.add(".gitignore").unwrap();
     repo.commit("bootstrap").unwrap();
     Dit::open(path).unwrap()
@@ -42,6 +47,7 @@ fn draft(title: &str) -> IssueDraft {
         start: None,
         blocked_by: vec![],
         lane: None,
+        flows: Vec::new(),
         number: None,
         body: "Users get logged out.".into(),
     }
@@ -256,7 +262,13 @@ fn doctor_names_what_is_wrong_and_what_would_break() {
     let tx = Dit::open(tmp.path()).unwrap();
     // The merge driver contract needs an executable; any real file stands in.
     let driver = tmp.path().join("driver.sh");
-    std::fs::write(&driver, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::write(
+        &driver,
+        "#!/bin/sh
+exit 0
+",
+    )
+    .unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -285,7 +297,8 @@ fn an_unparsable_workflow_falls_back_but_is_flagged() {
     std::fs::create_dir_all(tmp.path().join(".dit/schema")).unwrap();
     std::fs::write(
         tmp.path().join(".dit/schema/workflow.yaml"),
-        "statuses: [ broken\n",
+        "statuses: [ broken
+",
     )
     .unwrap();
     let dit = Dit::open(tmp.path()).unwrap();
@@ -306,27 +319,43 @@ fn init_in_an_existing_project_preserves_gitignore_and_readme() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(
         tmp.path().join(".gitignore"),
-        "/target\nnode_modules/\n.env\n",
+        "/target
+node_modules/
+.env
+",
     )
     .unwrap();
-    std::fs::write(tmp.path().join("README.md"), "# My Project\n\nReal docs.\n").unwrap();
+    std::fs::write(
+        tmp.path().join("README.md"),
+        "# My Project
+
+Real docs.
+",
+    )
+    .unwrap();
 
     Dit::init(tmp.path(), &std::env::current_exe().unwrap()).unwrap();
 
     let gitignore = std::fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
     assert!(
         gitignore.contains("/target"),
-        "existing lines survive:\n{gitignore}"
+        "existing lines survive:
+{gitignore}"
     );
     assert!(gitignore.contains("node_modules/"));
     assert!(
         gitignore.contains(".dit-cache/"),
-        "the cache entry is added:\n{gitignore}"
+        "the cache entry is added:
+{gitignore}"
     );
 
     let readme = std::fs::read_to_string(tmp.path().join("README.md")).unwrap();
     assert_eq!(
-        readme, "# My Project\n\nReal docs.\n",
+        readme,
+        "# My Project
+
+Real docs.
+",
         "the README is untouched"
     );
 
@@ -377,6 +406,7 @@ fn draft_with(title: &str, body: &str) -> IssueDraft {
         start: None,
         blocked_by: vec![],
         lane: None,
+        flows: Vec::new(),
         number: None,
         body: body.into(),
     }
@@ -446,7 +476,12 @@ fn init_can_lay_out_dotdir_for_guest_repos() {
 fn init_refuses_a_tree_that_already_owns_a_content_root() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(tmp.path().join("issues/mine")).unwrap();
-    std::fs::write(tmp.path().join("issues/mine/plan.md"), "# My stuff\n").unwrap();
+    std::fs::write(
+        tmp.path().join("issues/mine/plan.md"),
+        "# My stuff
+",
+    )
+    .unwrap();
     let err = Dit::init(tmp.path(), &std::env::current_exe().unwrap()).unwrap_err();
     assert!(
         err.to_string().contains("issues"),
@@ -510,7 +545,10 @@ fn on_merge_numbering_leaves_numbers_unset_until_the_bot_assigns_them() {
     std::fs::create_dir_all(tmp.path().join(".dit")).unwrap();
     std::fs::write(
         tmp.path().join(".dit/config.yaml"),
-        "schema_version: 1\nlayout: dotdir\nnumbering: on-merge\n",
+        "schema_version: 1
+layout: dotdir
+numbering: on-merge
+",
     )
     .unwrap();
     dit.reindex(ReindexMode::State).unwrap();
@@ -661,7 +699,8 @@ fn an_empty_body_is_seeded_from_the_issue_template() {
         body.contains("## Summary")
             && body.contains("## Acceptance criteria")
             && body.contains("## Do not"),
-        "the default template's sections are seeded:\n{body}"
+        "the default template's sections are seeded:
+{body}"
     );
 
     // The issue's own kind seeds the body when no template is named.
@@ -672,7 +711,8 @@ fn an_empty_body_is_seeded_from_the_issue_template() {
     let body = std::fs::read_to_string(tmp.path().join(path)).unwrap();
     assert!(
         body.contains("## Steps to reproduce") && body.contains("## Guard"),
-        "the bug template's sections are seeded:\n{body}"
+        "the bug template's sections are seeded:
+{body}"
     );
 
     // A named template wins over the kind default.
@@ -707,7 +747,8 @@ fn the_generated_index_lists_issues_by_number_and_is_deterministic() {
     let first = std::fs::read_to_string(&index_path).unwrap();
     assert!(
         first.starts_with("<!-- generated by dit"),
-        "the marker is the first thing in the file:\n{first}"
+        "the marker is the first thing in the file:
+{first}"
     );
     assert!(first.contains("#1"), "{first}");
     assert!(
@@ -751,11 +792,13 @@ fn the_generated_index_shows_a_bare_short_ref_when_there_is_no_number() {
     let index = std::fs::read_to_string(tmp.path().join("issues/README.md")).unwrap();
     assert!(
         index.contains(&format!("- **{short}** [Unnumbered](")),
-        "an unnumbered issue shows its bare short ref:\n{index}"
+        "an unnumbered issue shows its bare short ref:
+{index}"
     );
     assert!(
         !index.contains(&format!("#{short}")),
-        "the hash is reserved for numbers:\n{index}"
+        "the hash is reserved for numbers:
+{index}"
     );
 }
 
@@ -848,19 +891,33 @@ fn doctor_warns_about_unnumbered_issues_only_where_backfill_applies() {
 /// bodies still named `issue.md`, no `layout:` in config. Field names are the
 /// on-disk wire format (`type:`, not `kind:`).
 fn legacy_issue() -> &'static str {
-    "---\n\
-     id: 01M08FFCAG185N2V5RTGBCDEFH\n\
-     title: Fix login timeout\n\
-     type: bug\n\
-     status: todo\n\
-     priority: p1\n\
-     reporter: farid\n\
-     assignees: [farid]\n\
-     labels: [auth]\n\
-     created: 2026-08-01T09:00:00Z\n\
-     updated: 2026-08-01T09:00:00Z\n\
-     ---\n\n\
-     Users get logged out.\n"
+    "---
+\
+     id: 01M08FFCAG185N2V5RTGBCDEFH
+\
+     title: Fix login timeout
+\
+     type: bug
+\
+     status: todo
+\
+     priority: p1
+\
+     reporter: farid
+\
+     assignees: [farid]
+\
+     labels: [auth]
+\
+     created: 2026-08-01T09:00:00Z
+\
+     updated: 2026-08-01T09:00:00Z
+\
+     ---
+
+\
+     Users get logged out.
+"
 }
 
 #[test]
@@ -868,7 +925,12 @@ fn migrate_layout_moves_a_legacy_dotdir_workspace_to_the_root() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = Repo::init(tmp.path()).unwrap();
     repo.set_identity("DIT Test", "dit@test.local").unwrap();
-    std::fs::write(tmp.path().join(".gitignore"), ".dit-cache/\n").unwrap();
+    std::fs::write(
+        tmp.path().join(".gitignore"),
+        ".dit-cache/
+",
+    )
+    .unwrap();
     let dir = tmp
         .path()
         .join(".dit/issues/2026/08/01M08FFCAG-185N-fix-login");
@@ -876,7 +938,14 @@ fn migrate_layout_moves_a_legacy_dotdir_workspace_to_the_root() {
     std::fs::write(dir.join("issue.md"), legacy_issue()).unwrap();
     std::fs::write(
         dir.join("comments/01M08FFCAX-185N-budi.md"),
-        "---\nid: 01M08FFCAX185N2W5RTGBCDEFH\nauthor: budi\ncreated: 2026-08-01T10:00:00Z\n---\n\nSeen on Safari too.\n",
+        "---
+id: 01M08FFCAX185N2W5RTGBCDEFH
+author: budi
+created: 2026-08-01T10:00:00Z
+---
+
+Seen on Safari too.
+",
     )
     .unwrap();
     repo.add(".gitignore").unwrap();
@@ -948,7 +1017,10 @@ fn a_saved_doc_lands_as_one_commit_and_reads_back() {
     let mut tx = dit.transaction("farid").unwrap();
     tx.write_doc(
         "docs/adr-0010-doc-editor.md",
-        "# Doc editor\n\nPage   text.\n",
+        "# Doc editor
+
+Page   text.
+",
     )
     .unwrap();
     let head = tx
@@ -981,7 +1053,12 @@ fn a_deleted_doc_disappears_in_one_commit() {
     let tmp = tempfile::tempdir().unwrap();
     let mut dit = workspace(tmp.path());
     let mut tx = dit.transaction("farid").unwrap();
-    tx.write_doc("notes/scratch.md", "# Scratch\n").unwrap();
+    tx.write_doc(
+        "notes/scratch.md",
+        "# Scratch
+",
+    )
+    .unwrap();
     tx.commit("dit docs save: notes/scratch.md").unwrap();
 
     let mut tx = dit.transaction("farid").unwrap();
@@ -999,8 +1076,14 @@ fn a_moved_doc_carries_its_content_and_history_in_one_commit() {
     let tmp = tempfile::tempdir().unwrap();
     let mut dit = workspace(tmp.path());
     let mut tx = dit.transaction("farid").unwrap();
-    tx.write_doc("docs/flows/auth.md", "# Auth\n\nbody text\n")
-        .unwrap();
+    tx.write_doc(
+        "docs/flows/auth.md",
+        "# Auth
+
+body text
+",
+    )
+    .unwrap();
     tx.commit("dit docs save: docs/flows/auth.md").unwrap();
 
     let mut tx = dit.transaction("farid").unwrap();
@@ -1011,7 +1094,10 @@ fn a_moved_doc_carries_its_content_and_history_in_one_commit() {
     // The new location serves the exact bytes; the old one is gone.
     assert_eq!(
         dit.read_doc("notes/auth.md").unwrap(),
-        "# Auth\n\nbody text\n"
+        "# Auth
+
+body text
+"
     );
     assert!(matches!(
         dit.read_doc("docs/flows/auth.md").unwrap_err(),
@@ -1041,8 +1127,18 @@ fn moving_a_doc_onto_an_existing_page_is_refused_without_writing() {
     let tmp = tempfile::tempdir().unwrap();
     let mut dit = workspace(tmp.path());
     let mut tx = dit.transaction("farid").unwrap();
-    tx.write_doc("docs/a.md", "# A\n").unwrap();
-    tx.write_doc("notes/b.md", "# B\n").unwrap();
+    tx.write_doc(
+        "docs/a.md",
+        "# A
+",
+    )
+    .unwrap();
+    tx.write_doc(
+        "notes/b.md",
+        "# B
+",
+    )
+    .unwrap();
     tx.commit("dit docs save: two pages").unwrap();
 
     let mut tx = dit.transaction("farid").unwrap();
@@ -1051,8 +1147,16 @@ fn moving_a_doc_onto_an_existing_page_is_refused_without_writing() {
     tx.abort();
 
     // A refused move writes nothing: both pages intact, tree clean.
-    assert_eq!(dit.read_doc("docs/a.md").unwrap(), "# A\n");
-    assert_eq!(dit.read_doc("notes/b.md").unwrap(), "# B\n");
+    assert_eq!(
+        dit.read_doc("docs/a.md").unwrap(),
+        "# A
+"
+    );
+    assert_eq!(
+        dit.read_doc("notes/b.md").unwrap(),
+        "# B
+"
+    );
     assert!(!dit.status().dirty);
 }
 
@@ -1061,7 +1165,12 @@ fn moving_a_missing_doc_is_not_found_and_a_self_move_is_a_no_op() {
     let tmp = tempfile::tempdir().unwrap();
     let mut dit = workspace(tmp.path());
     let mut tx = dit.transaction("farid").unwrap();
-    tx.write_doc("docs/stay.md", "# Stay\n").unwrap();
+    tx.write_doc(
+        "docs/stay.md",
+        "# Stay
+",
+    )
+    .unwrap();
     tx.commit("dit docs save: docs/stay.md").unwrap();
 
     let mut tx = dit.transaction("farid").unwrap();
@@ -1092,7 +1201,12 @@ fn doc_paths_are_sandboxed_at_the_facade() {
         "docs/../notes/x.md",
     ] {
         let mut tx = dit.transaction("farid").unwrap();
-        let err = tx.write_doc(escape, "# nope\n").unwrap_err();
+        let err = tx
+            .write_doc(
+                escape, "# nope
+",
+            )
+            .unwrap_err();
         assert!(!err.to_string().is_empty(), "{escape} refused: {err}");
         tx.abort();
     }
@@ -1109,10 +1223,30 @@ fn list_docs_skips_names_the_editor_cannot_address() {
     let tmp = tempfile::tempdir().unwrap();
     let dit = workspace(tmp.path());
     std::fs::create_dir_all(tmp.path().join("docs")).unwrap();
-    std::fs::write(tmp.path().join("docs/good.md"), "# good\n").unwrap();
-    std::fs::write(tmp.path().join("docs/BAD-NAME.MD"), "# bad\n").unwrap();
-    std::fs::write(tmp.path().join("docs/.secret.md"), "# hidden\n").unwrap();
-    std::fs::write(tmp.path().join("docs/notes.txt"), "not markdown\n").unwrap();
+    std::fs::write(
+        tmp.path().join("docs/good.md"),
+        "# good
+",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("docs/BAD-NAME.MD"),
+        "# bad
+",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("docs/.secret.md"),
+        "# hidden
+",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("docs/notes.txt"),
+        "not markdown
+",
+    )
+    .unwrap();
 
     let docs = dit.list_docs();
     let paths: Vec<&str> = docs.iter().map(|d| d.path.as_str()).collect();
@@ -1269,7 +1403,19 @@ fn recent_comments_span_issues_newest_first() {
     assert_eq!(dit.recent_comments(1).unwrap().len(), 1);
 }
 
-const RELEASE_FILE: &str = "---\nversion: v0.2.0\nstatus: in_uat\ntarget_ref: release/0.2.0\nrepo: api\ntarget: 2026-10-01\nincludes:\n  - 01K3M9ZXQ2R7VN8P4TDBCEFGHJ\napproved_by: qa-lead\n---\n\nShips the login flow.\n";
+const RELEASE_FILE: &str = "---
+version: v0.2.0
+status: in_uat
+target_ref: release/0.2.0
+repo: api
+target: 2026-10-01
+includes:
+  - 01K3M9ZXQ2R7VN8P4TDBCEFGHJ
+approved_by: qa-lead
+---
+
+Ships the login flow.
+";
 
 /// Commit a release plan the way `dit release plan` (v0.9) eventually will —
 /// by hand, through git, because the read model ships before the writer.
@@ -1313,12 +1459,21 @@ fn releases_are_indexed_from_git_and_patched_in_one_commit() {
     commit_release(
         tmp.path(),
         "v0.1.0",
-        "---\nversion: v0.1.0\nstatus: released\ntarget: 2026-09-01\n---\n",
+        "---
+version: v0.1.0
+status: released
+target: 2026-09-01
+---
+",
     );
     commit_release(
         tmp.path(),
         "v1.0.0",
-        "---\nversion: v1.0.0\nstatus: planned\n---\n",
+        "---
+version: v1.0.0
+status: planned
+---
+",
     );
 
     // Hand-made commits are not absorbed by a transaction; a rebuild is.
@@ -1526,7 +1681,7 @@ fn deleting_an_issue_removes_its_files_but_keeps_its_history() {
 
 // -- ADR 0015/0018: the coordination plane -----------------------------------
 
-use dit_core::{spawn_watcher, ClaimOptions, LaneSpec, Readiness};
+use dit_core::{spawn_watcher, ClaimOptions, LaneSpec};
 
 fn issue_with(dit: &mut Dit, title: &str, patch: dit_core::FieldPatch) -> dit_core::IssueId {
     let mut tx = dit.transaction("farid").unwrap();
@@ -1849,7 +2004,11 @@ fn workflow_init_scaffolds_and_is_idempotent() {
     // Second run: nothing written, hand edits survive.
     std::fs::write(
         tmp.path().join("CLAUDE.md"),
-        format!("{claude}\nA hand rule stays.\n"),
+        format!(
+            "{claude}
+A hand rule stays.
+"
+        ),
     )
     .unwrap();
     let second = dit.init_workflow(&lanes).unwrap();
@@ -1864,119 +2023,149 @@ fn workflow_init_scaffolds_and_is_idempotent() {
         "{claude_after}"
     );
 
-    // The registered lanes are live in the facade after reload.
-    let board = dit.workflow_board().unwrap();
-    let ids: Vec<Option<String>> = board.lanes.iter().map(|l| l.id.clone()).collect();
-    assert!(ids.contains(&Some("backend".into())), "{ids:?}");
-    assert!(ids.contains(&Some("frontend".into())), "{ids:?}");
-    assert!(
-        ids.contains(&None),
-        "the Unlaned row always exists: {ids:?}"
-    );
+    // The registry is only an ordering hint now (ADR 0019); lane_counts
+    // reads the data. Put one issue in each lane and the hint orders them.
+    for (title, lane) in [("Serves the flow", "backend"), ("Draws the flow", "frontend")] {
+        let mut tx = dit.transaction("farid").unwrap();
+        let id = tx.create_issue(draft(title)).unwrap();
+        tx.set_fields(
+            &id,
+            FieldPatch {
+                lane: Some(lane.into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        tx.commit("lane a member").unwrap();
+    }
+    let counts = dit.lane_counts().unwrap();
+    let names: Vec<&str> = counts.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, vec!["backend", "frontend"], "registry order holds");
 }
-
 #[test]
-fn the_workflow_board_derives_blocker_and_claim_states() {
+fn the_flow_diagram_computes_stages_edges_and_the_main_path() {
     let tmp = tempfile::tempdir().unwrap();
     let mut dit = workspace(tmp.path());
-    dit.init_workflow(&[
-        LaneSpec {
-            id: "backend".into(),
-            label: "Backend".into(),
-            owners: vec!["be-1".into()],
-        },
-        LaneSpec {
-            id: "frontend".into(),
-            label: "Frontend".into(),
-            owners: vec!["fe-1".into()],
-        },
-    ])
-    .unwrap();
+    dit.init_workflow(&[]).unwrap();
 
-    let blocker = issue_with(
+    // A flow "launch": a -> b -> c in one lane, plus an isolated node d in
+    // another lane; and a second flow "audit" sharing node b.
+    let a = issue_with(
         &mut dit,
-        "Endpoint returns 500",
+        "Design the endpoint",
         dit_core::FieldPatch {
-            lane: Some("backend".into()),
+            lane: Some("service".into()),
+            flows: Some(vec!["launch".into()]),
             ..Default::default()
         },
     );
-    let cancelled = issue_with(
+    let b = issue_with(
         &mut dit,
-        "Doomed dependency",
+        "Build the endpoint",
         dit_core::FieldPatch {
-            lane: Some("backend".into()),
-            status: Some("cancelled".into()),
+            lane: Some("service".into()),
+            flows: Some(vec!["launch".into(), "audit".into()]),
+            blocked_by: Some(vec![a]),
             ..Default::default()
         },
     );
-    let waiter = issue_with(
+    let c = issue_with(
         &mut dit,
-        "Integrate the endpoint",
+        "Announce the endpoint",
         dit_core::FieldPatch {
-            lane: Some("frontend".into()),
-            blocked_by: Some(vec![blocker, cancelled]),
+            lane: Some("service".into()),
+            flows: Some(vec!["launch".into()]),
+            blocked_by: Some(vec![b]),
+            ..Default::default()
+        },
+    );
+    let d = issue_with(
+        &mut dit,
+        "Draft the comms plan",
+        dit_core::FieldPatch {
+            lane: Some("comms".into()),
+            flows: Some(vec!["launch".into()]),
             ..Default::default()
         },
     );
 
-    dit.claim(
-        &waiter,
-        "fe-1",
-        ClaimOptions {
-            force: true,
+    let summaries = dit.flows().unwrap();
+    assert_eq!(summaries.len(), 2, "{summaries:?}");
+    assert_eq!(summaries[0].name, "launch");
+    assert_eq!(summaries[0].issues, 4);
+
+    let board = dit.flow_board(Some("launch")).unwrap();
+    assert_eq!(board.stages, 3, "a=0, b=1, c=2");
+    let stage_of = |id: dit_core::IssueId| board.nodes.iter().find(|n| n.id == id).unwrap().stage;
+    assert_eq!(stage_of(a), 0);
+    assert_eq!(stage_of(b), 1);
+    assert_eq!(stage_of(c), 2);
+    assert_eq!(stage_of(d), 0, "no edges: root stage");
+    assert_eq!(board.edges.len(), 2);
+    assert_eq!(board.main_path, vec![a, b, c], "the longest chain");
+    // Lanes: free-form values from the data, in first-seen registry-less
+    // order; Unlaned only appears when a member is unlaned.
+    let lane_ids: Vec<Option<&str>> = board.lanes.iter().map(|l| l.id.as_deref()).collect();
+    assert!(lane_ids.contains(&Some("service")), "{lane_ids:?}");
+    assert!(lane_ids.contains(&Some("comms")), "{lane_ids:?}");
+    assert!(!lane_ids.contains(&None), "no unlaned member: {lane_ids:?}");
+
+    // The audit flow renders only b: the a->b edge exists in the data but a
+    // is not a member, so it does not draw inside this board.
+    let audit = dit.flow_board(Some("audit")).unwrap();
+    assert_eq!(audit.nodes.len(), 1);
+    assert!(audit.edges.is_empty());
+    assert_eq!(audit.stages, 1);
+
+    // The b->c edge disposition follows the blocker's status: unsatisfied
+    // now, satisfied once a is done, and the main path keeps its shape.
+    let mut tx = dit.transaction("x").unwrap();
+    tx.set_fields(
+        &a,
+        dit_core::FieldPatch {
+            status: Some("done".into()),
             ..Default::default()
         },
     )
     .unwrap();
-
-    let board = dit.workflow_board().unwrap();
-    let frontend = board
-        .lanes
+    tx.commit("a done").unwrap();
+    let board = dit.flow_board(Some("launch")).unwrap();
+    let edge = board
+        .edges
         .iter()
-        .find(|l| l.id.as_deref() == Some("frontend"))
+        .find(|e| e.from == a && e.to == b)
         .unwrap();
-    let card = frontend
-        .cards
+    assert_eq!(edge.disposition, dit_core::EdgeDisposition::Satisfied);
+    let edge = board
+        .edges
         .iter()
-        .find(|c| c.id == waiter)
-        .expect("the waiter sits in its lane");
-    match &card.readiness {
-        Readiness::Blocked {
-            unsatisfied,
-            broken,
-        } => {
-            assert_eq!(unsatisfied, &vec![blocker]);
-            assert_eq!(broken, &vec![cancelled]);
-        }
-        other => panic!("expected Blocked, got {other:?}"),
-    }
-    let dispositions: Vec<_> = card.blockers.iter().map(|b| b.state).collect();
-    assert!(dispositions.contains(&dit_core::BlockerDisposition::Unsatisfied));
-    assert!(dispositions.contains(&dit_core::BlockerDisposition::Broken));
-    let claim = card.claim.as_ref().expect("the claim is on the card");
-    assert_eq!(claim.claimed_by, "fe-1");
-    assert!(!claim.stale);
-
-    // The backend row carries its own issues; the Unlaned row stays empty here.
-    let backend = board
-        .lanes
-        .iter()
-        .find(|l| l.id.as_deref() == Some("backend"))
+        .find(|e| e.from == b && e.to == c)
         .unwrap();
-    assert!(backend.cards.iter().any(|c| c.id == blocker));
-    let unlaned = board.lanes.iter().find(|l| l.id.is_none()).unwrap();
-    assert!(unlaned.cards.is_empty());
+    assert_eq!(edge.disposition, dit_core::EdgeDisposition::Unsatisfied);
 
-    // Terminal work leaves the coordination board — it can no longer move —
-    // but stays resolvable: the cancelled dependency above still shows as a
-    // broken chip with its title.
-    let cancelled = board
-        .lanes
+    // A cancelled blocker is a broken edge, never a satisfied one.
+    let mut tx = dit.transaction("x").unwrap();
+    tx.set_fields(
+        &b,
+        dit_core::FieldPatch {
+            status: Some("cancelled".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    tx.commit("b cancelled").unwrap();
+    let board = dit.flow_board(Some("launch")).unwrap();
+    let edge = board
+        .edges
         .iter()
-        .flat_map(|l| l.cards.iter())
-        .find(|c| c.title == "Doomed dependency");
-    assert!(cancelled.is_none(), "terminal issues carry no card");
+        .find(|e| e.from == b && e.to == c)
+        .unwrap();
+    assert_eq!(edge.disposition, dit_core::EdgeDisposition::Broken);
+
+    // Terminal members stay on the diagram — it tells the whole story; the
+    // UI dims them. Node d remains at stage 0.
+    assert_eq!(board.nodes.len(), 4);
+    let _ = d;
 }
 
 #[test]
@@ -2064,7 +2253,14 @@ fn workflow_init_seeds_the_evidence_report_template_and_hand_edits_survive() {
     assert!(text.contains("## Request"), "{text}");
 
     // A hand edit survives the second run; the report stays unwritten.
-    std::fs::write(&path, format!("{text}<!-- tuned -->\n")).unwrap();
+    std::fs::write(
+        &path,
+        format!(
+            "{text}<!-- tuned -->
+"
+        ),
+    )
+    .unwrap();
     let second = dit.init_workflow(&lanes).unwrap();
     assert!(!second.report_template_written);
     assert!(std::fs::read_to_string(&path).unwrap().contains("tuned"));

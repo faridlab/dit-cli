@@ -39,4 +39,8 @@ blocked_by?: Array<string>,
 /**
  * The lane id (ADR 0015); `null` or `""` clears back to Unlaned.
  */
-lane?: string | null, };
+lane?: string | null, 
+/**
+ * Replaces the whole membership set, like `labels` (ADR 0019).
+ */
+flows?: Array<string>, };

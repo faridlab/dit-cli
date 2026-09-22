@@ -133,9 +133,10 @@ export interface ReleaseDto extends WireReleaseDto {
 
 export type ReleasePatchInput = ReleasePatchDto;
 
-// The coordination board (ADR 0015 wire types, verbatim from the server).
-export type { WorkflowBoardDto } from "./schema/WorkflowBoardDto";
-export type { BlockerDto } from "./schema/BlockerDto";
-export type { ClaimDto } from "./schema/ClaimDto";
-export type { WorkflowCardDto } from "./schema/WorkflowCardDto";
-export type { WorkflowLaneDto } from "./schema/WorkflowLaneDto";
+// The flow diagram (ADR 0019 wire types, verbatim from the server).
+export type { FlowBoardDto } from "./schema/FlowBoardDto";
+export type { FlowClaimDto } from "./schema/FlowClaimDto";
+export type { FlowEdgeDto } from "./schema/FlowEdgeDto";
+export type { FlowLaneDto } from "./schema/FlowLaneDto";
+export type { FlowNodeDto } from "./schema/FlowNodeDto";
+export type { FlowSummaryDto } from "./schema/FlowSummaryDto";

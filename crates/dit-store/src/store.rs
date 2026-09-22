@@ -400,6 +400,9 @@ impl Transaction {
         if let Some(l) = &draft.lane {
             validate_value("lane", l)?;
         }
+        for f in &draft.flows {
+            validate_value("flows", f)?;
+        }
         let id = self.mint_id()?;
         let slug = dit_model::Slug::from_title(&draft.title);
         let contents = dit_parse::serialize_new_issue(&id, &draft, &format_rfc3339(self.now))?;
@@ -415,6 +418,11 @@ impl Transaction {
         }
         if let Some(l) = &patch.lane {
             validate_value("lane", l)?;
+        }
+        if let Some(list) = &patch.flows {
+            for f in list {
+                validate_value("flows", f)?;
+            }
         }
         let path = self.issue_body(id)?;
         let current = self.current_bytes(&path)?;

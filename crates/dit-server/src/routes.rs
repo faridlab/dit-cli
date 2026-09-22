@@ -54,7 +54,8 @@ pub fn app(state: Arc<AppState>) -> Router {
             axum::routing::patch(patch_release),
         )
         .route("/api/board", get(get_board))
-        .route("/api/workflow", get(get_workflow))
+        .route("/api/flow", get(list_flows))
+        .route("/api/flow/{name}", get(get_flow))
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/docs", get(list_docs))
         .route("/api/docs/move", post(move_doc))
@@ -352,6 +353,7 @@ async fn create_issue(
             start: None,
             blocked_by: Vec::new(),
             lane: input.lane,
+            flows: input.flows.unwrap_or_default(),
             body: input.body,
         };
         let mut tx = dit.transaction(&me).map_err(ServerError::Dit)?;
@@ -595,13 +597,27 @@ async fn post_comment(
     Ok((StatusCode::CREATED, Json(comment)))
 }
 
-/// The coordination board (ADR 0015): swimlanes × statuses, read-only.
-async fn get_workflow(
+/// Every flow in the workspace with its member count (ADR 0019).
+async fn list_flows(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<dto::WorkflowBoardDto>, ApiError> {
+) -> Result<Json<Vec<dto::FlowSummaryDto>>, ApiError> {
+    let flows = read_dit(&state, move |dit| {
+        let flows = dit.flows().map_err(ServerError::Dit)?;
+        Ok(flows.iter().map(dto::flow_summary_dto).collect())
+    })
+    .await?;
+    Ok(Json(flows))
+}
+
+/// One flow as a diagram. `__all__` is the union of every flow.
+async fn get_flow(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<Json<dto::FlowBoardDto>, ApiError> {
+    let want = if name == "__all__" { None } else { Some(name) };
     let board = read_dit(&state, move |dit| {
-        let board = dit.workflow_board().map_err(ServerError::Dit)?;
-        Ok(dto::workflow_board_dto(&board))
+        let board = dit.flow_board(want.as_deref()).map_err(ServerError::Dit)?;
+        Ok(dto::flow_board_dto(&board))
     })
     .await?;
     Ok(Json(board))
@@ -786,6 +802,7 @@ async fn get_board(State(state): State<Arc<AppState>>) -> Result<Json<BoardDto>,
                             number: hit.issue.number,
                             title: hit.issue.title.clone(),
                             priority: hit.issue.priority.map(dto::priority_str),
+                            lane: hit.issue.lane.clone(),
                             kind: dto::kind_str(hit.issue.kind),
                             assignees: hit.issue.assignees.clone(),
                             labels: hit.issue.labels.clone(),

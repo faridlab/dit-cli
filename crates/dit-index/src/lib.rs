@@ -112,6 +112,12 @@ CREATE TABLE IF NOT EXISTS issue_blocked_by (
   blocked_by_id TEXT NOT NULL,
   PRIMARY KEY (issue_id, blocked_by_id)
 );
+CREATE TABLE IF NOT EXISTS issue_flows (
+  issue_id TEXT NOT NULL,
+  pos      INTEGER NOT NULL,
+  flow     TEXT NOT NULL,
+  PRIMARY KEY (issue_id, flow)
+);
 
 CREATE TABLE IF NOT EXISTS releases (
   version    TEXT PRIMARY KEY,
@@ -179,7 +185,7 @@ END;
 /// Bumped whenever the schema below changes shape. The index is disposable —
 /// an on-disk file stamped with an older version is dropped and rebuilt from
 /// git rather than migrated in place (§6: SQLite is only an index).
-const INDEX_VERSION: i64 = 5;
+const INDEX_VERSION: i64 = 6;
 
 /// The column list every issue SELECT shares, in a fixed order. Hand-written
 /// SELECTs drifting out of step with the schema is the known failure mode of
@@ -338,6 +344,7 @@ impl Index {
             issue.id.as_str(),
             &blockers,
         )?;
+        replace_set(&tx, "issue_flows", "flow", issue.id.as_str(), &issue.flows)?;
         tx.commit()?;
         Ok(())
     }
@@ -356,6 +363,10 @@ impl Index {
         )?;
         tx.execute(
             "DELETE FROM issue_blocked_by WHERE issue_id = ?1",
+            params![id.as_str()],
+        )?;
+        tx.execute(
+            "DELETE FROM issue_flows WHERE issue_id = ?1",
             params![id.as_str()],
         )?;
         tx.execute(
@@ -544,7 +555,10 @@ impl Index {
         let assignees = self.set_for("issue_assignees", "alias", id)?;
         let labels = self.set_for("issue_labels", "label", id)?;
         let blocked_by = self.set_for("issue_blocked_by", "blocked_by_id", id)?;
-        Ok(Some(hydrate(id, cols, assignees, labels, blocked_by)?))
+        let flows = self.set_for("issue_flows", "flow", id)?;
+        Ok(Some(hydrate(
+            id, cols, assignees, labels, blocked_by, flows,
+        )?))
     }
 
     /// Every issue matching a compiled DQL query. Reads never touch the
@@ -581,7 +595,8 @@ impl Index {
             let assignees = self.set_for("issue_assignees", "alias", &id)?;
             let labels = self.set_for("issue_labels", "label", &id)?;
             let blocked_by = self.set_for("issue_blocked_by", "blocked_by_id", &id)?;
-            found.push(hydrate(&id, cols, assignees, labels, blocked_by)?);
+            let flows = self.set_for("issue_flows", "flow", &id)?;
+            found.push(hydrate(&id, cols, assignees, labels, blocked_by, flows)?);
         }
         Ok(found)
     }
@@ -1235,6 +1250,7 @@ fn hydrate(
     assignees: Vec<String>,
     labels: Vec<String>,
     blocked_by: Vec<String>,
+    flows: Vec<String>,
 ) -> Result<IndexedIssue, IndexError> {
     let corrupt =
         |field: &str, raw: &str| IndexError::Corrupt(format!("field `{field}` holds `{raw}`"));
@@ -1276,6 +1292,7 @@ fn hydrate(
             start: cols.start,
             blocked_by,
             lane: cols.lane,
+            flows,
             claimed_by: cols.claimed_by,
             claimed_at: cols.claimed_at,
             body: cols.body,
@@ -1311,6 +1328,7 @@ mod tests {
             start: None,
             blocked_by: vec![],
             lane: None,
+            flows: Vec::new(),
             claimed_by: None,
             claimed_at: None,
             body: "Users on 3G get logged out.".into(),

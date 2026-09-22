@@ -142,6 +142,12 @@ enum Command {
         #[arg(long)]
         lane: Option<String>,
     },
+    /// The orchestration flows (ADR 0019): list them, or show one as a
+    /// stage-by-stage text tree. Membership is `dit issue set flows=...`.
+    Flow {
+        #[command(subcommand)]
+        cmd: FlowCmd,
+    },
     /// Called by git during merges; humans never type this.
     #[command(hide = true)]
     MergeDriver {
@@ -164,12 +170,23 @@ enum WorkflowCmd {
     /// Scaffold the coordination plane: lane registry + coordination block
     /// in workflow.yaml, peer protocol section in CLAUDE.md. Idempotent.
     Init {
-        /// Lane ids to register, comma-separated. Default: backend,frontend.
+        /// Lane ids to register, comma-separated — purely an ordering
+        /// hint; lanes are free-form (ADR 0019) and none is registered by
+        /// default.
         #[arg(long, value_delimiter = ',')]
         lanes: Vec<String>,
     },
     /// List the registered lanes and the coordination knobs.
     Lanes,
+}
+
+#[derive(Subcommand)]
+enum FlowCmd {
+    /// Every flow with its member count.
+    List,
+    /// One flow, stage by stage: the text form of the diagram. `all`
+    /// renders the union of every flow.
+    Show { name: String },
 }
 
 #[derive(Subcommand)]
@@ -198,6 +215,9 @@ enum Issue {
         /// The lane this issue is born into (ADR 0015).
         #[arg(long)]
         lane: Option<String>,
+        /// The flow(s) this issue joins at birth (ADR 0019).
+        #[arg(long = "flow")]
+        flows: Vec<String>,
     },
     /// Show one issue: fields, body, comments, field history.
     Show { reference: String },
@@ -576,18 +596,14 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
         Command::Workflow { cmd } => match cmd {
             WorkflowCmd::Init { lanes } => {
                 let mut dit = open()?;
-                let specs: Vec<LaneSpec> = (if lanes.is_empty() {
-                    vec!["backend".to_owned(), "frontend".to_owned()]
-                } else {
-                    lanes
-                })
-                .into_iter()
-                .map(|id| LaneSpec {
-                    label: id[..1].to_uppercase() + &id[1..],
-                    id,
-                    owners: Vec::new(),
-                })
-                .collect();
+                let specs: Vec<LaneSpec> = lanes
+                    .into_iter()
+                    .map(|id| LaneSpec {
+                        label: id[..1].to_uppercase() + &id[1..],
+                        id,
+                        owners: Vec::new(),
+                    })
+                    .collect();
                 let report = dit.init_workflow(&specs)?;
                 if report.schema_created {
                     println!("wrote .dit/schema/workflow.yaml (statuses, lanes, coordination)");
@@ -617,36 +633,31 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
             }
             WorkflowCmd::Lanes => {
                 let dit = open()?;
-                let board = dit.workflow_board()?;
-                if board
-                    .lanes
-                    .iter()
-                    .all(|l| l.cards.is_empty() && l.id.is_some())
-                {
-                    // Still worth listing: the registry exists even when empty.
+                // Lanes are free-form now (ADR 0019): the registry only hints
+                // order, labels, and owners — so the listing is over the data,
+                // joined with whatever the registry knows.
+                let counts = dit.lane_counts()?;
+                for (id, count) in &counts {
+                    let registered = dit
+                        .lane_meta(id)
+                        .map(|(label, owners)| {
+                            format!(
+                                "{}{}",
+                                label,
+                                if owners.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" owners: {}", owners.join(", "))
+                                }
+                            )
+                        })
+                        .unwrap_or_default();
+                    println!("{:<16} {:<4} {}", id, count, registered);
                 }
-                for lane in &board.lanes {
-                    match &lane.id {
-                        Some(id) => println!(
-                            "{:<10} {:<12} owners: {}  issues: {}",
-                            id,
-                            lane.label,
-                            if lane.owners.is_empty() {
-                                "-".to_owned()
-                            } else {
-                                lane.owners.join(", ")
-                            },
-                            lane.cards.len()
-                        ),
-                        None => println!(
-                            "{:<10} {:<12} owners: -  issues: {}",
-                            "(none)",
-                            lane.label,
-                            lane.cards.len()
-                        ),
-                    }
+                if counts.is_empty() {
+                    println!("no lanes in use — set one with `dit issue set REF lane=name`");
                 }
-                println!("claim TTL: {} minutes", board.claim_ttl_minutes);
+                println!("claim TTL: {} minutes", dit.claim_ttl_minutes());
                 Ok(ExitCode::SUCCESS)
             }
         },
@@ -752,6 +763,94 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
             }
             Ok(ExitCode::SUCCESS)
         }
+        Command::Flow { cmd } => match cmd {
+            FlowCmd::List => {
+                let dit = open()?;
+                let flows = dit.flows()?;
+                if flows.is_empty() {
+                    println!(
+                        "no flows yet — put an issue in one with `dit issue set REF flows=name`"
+                    );
+                    return Ok(ExitCode::SUCCESS);
+                }
+                for f in &flows {
+                    println!("{:<3} {}", f.issues, f.name);
+                }
+                Ok(ExitCode::SUCCESS)
+            }
+            FlowCmd::Show { name } => {
+                let dit = open()?;
+                let want: Option<&str> = if name == "all" { None } else { Some(&name) };
+                let board = dit.flow_board(want)?;
+                if board.nodes.is_empty() {
+                    println!(
+                        "flow `{name}` has no members — `dit issue set REF flows={name}` adds one"
+                    );
+                    return Ok(ExitCode::SUCCESS);
+                }
+                println!(
+                    "{} — {} member(s), {} stage(s), {} lane(s)",
+                    want.unwrap_or("(all flows)"),
+                    board.nodes.len(),
+                    board.stages,
+                    board.lanes.len()
+                );
+                let by_id: std::collections::HashMap<dit_core::IssueId, &dit_core::FlowNode> =
+                    board.nodes.iter().map(|n| (n.id, n)).collect();
+                let on_main: std::collections::HashSet<&dit_core::IssueId> =
+                    board.main_path.iter().collect();
+                for stage in 0..board.stages {
+                    println!("\nstage {stage}");
+                    let mut stage_nodes: Vec<&dit_core::FlowNode> =
+                        board.nodes.iter().filter(|n| n.stage == stage).collect();
+                    stage_nodes.sort_by_key(|n| (n.lane.clone().unwrap_or_default(), n.row));
+                    for n in stage_nodes {
+                        let handle = n
+                            .number
+                            .map(|h| format!("#{h}"))
+                            .unwrap_or_else(|| n.short_ref.clone());
+                        let mark = match n.readiness {
+                            dit_core::Readiness::Ready => "ready",
+                            dit_core::Readiness::NotPickable => "in-flight",
+                            dit_core::Readiness::Blocked { .. } => "blocked",
+                        };
+                        let main = if on_main.contains(&n.id) { "*" } else { " " };
+                        let claim = n
+                            .claim
+                            .as_ref()
+                            .map(|c| {
+                                format!(
+                                    " [{}{}]",
+                                    c.claimed_by,
+                                    if c.stale { " stale" } else { "" }
+                                )
+                            })
+                            .unwrap_or_default();
+                        println!(
+                            " {main} {handle:<9} {:<8} {mark:<8} {}{claim}",
+                            n.lane.as_deref().unwrap_or("-"),
+                            n.title
+                        );
+                        let _ = &by_id;
+                    }
+                }
+                if board.main_path.len() > 1 {
+                    let handles: Vec<String> = board
+                        .main_path
+                        .iter()
+                        .filter_map(|id| {
+                            by_id.get(id).map(|n| {
+                                n.number
+                                    .map(|h| format!("#{h}"))
+                                    .unwrap_or_else(|| n.short_ref.clone())
+                            })
+                        })
+                        .collect();
+                    println!("\ncritical path (*): {}", handles.join(" -> "));
+                }
+                Ok(ExitCode::SUCCESS)
+            }
+        },
         Command::MergeDriver {
             base,
             ours,
@@ -786,6 +885,7 @@ fn issue(cmd: Issue, explicit: Option<&str>) -> Result<ExitCode, DitError> {
             body,
             template,
             lane,
+            flows,
         } => {
             let title = title.join(" ");
             if title.trim().is_empty() {
@@ -810,6 +910,7 @@ fn issue(cmd: Issue, explicit: Option<&str>) -> Result<ExitCode, DitError> {
                 start: None,
                 blocked_by: vec![],
                 lane,
+                flows,
                 body: body.unwrap_or_default(),
                 // The number is facade-owned (ADR 0007): numbering policy
                 // assigns it inside the transaction, never the caller.
@@ -1120,6 +1221,7 @@ fn parse_patch(fields: &[String]) -> Result<(FieldPatch, Vec<RefValue>), String>
             "epic" => refs.push(("epic", value.to_owned())),
             "blocked_by" => refs.push(("blocked_by", value.to_owned())),
             "assignees" => patch.assignees = Some(split_list(value)),
+            "flows" => patch.flows = Some(split_list(value)),
             "labels" => patch.labels = Some(split_list(value)),
             "sprint" => patch.sprint = Some(value.to_owned()),
             "due" => patch.due = Some(value.to_owned()),

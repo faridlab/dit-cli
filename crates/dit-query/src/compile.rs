@@ -127,6 +127,7 @@ impl<'a> Compiler<'a> {
         match field {
             Field::Assignee => return self.set_membership("issue_assignees", "alias", op, value),
             Field::Label => return self.set_membership("issue_labels", "label", op, value),
+            Field::Flow => return self.set_membership("issue_flows", "flow", op, value),
             Field::Created | Field::Updated | Field::Due | Field::Start => {
                 return self.date_cmp(field, op, value)
             }
@@ -284,7 +285,7 @@ fn column(field: &Field) -> &'static str {
         Field::Status => "issues.status",
         Field::Priority => "issues.priority",
         Field::Reporter => "issues.reporter",
-        Field::Assignee | Field::Label => "issues.id", // handled via EXISTS
+        Field::Assignee | Field::Label | Field::Flow => "issues.id", // handled via EXISTS
         Field::Epic => "issues.epic",
         Field::Estimate => "issues.estimate",
         Field::Number => "issues.number",

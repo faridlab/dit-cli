@@ -8,4 +8,8 @@ export type NewIssueDto = { title: string, type?: string, status?: string, prior
 /**
  * The lane the issue is born into (ADR 0015); absent = Unlaned.
  */
-lane?: string, body: string, };
+lane?: string, 
+/**
+ * The flows the issue is born into (ADR 0019).
+ */
+flows?: Array<string>, body: string, };

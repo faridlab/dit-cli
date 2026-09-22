@@ -116,9 +116,14 @@ pub struct Issue {
     /// inferred from `due` and the estimate without writing anything back.
     pub start: Option<String>,
     pub blocked_by: Vec<IssueId>,
-    /// A lane id from `schema/workflow.yaml` (ADR 0015). None = Unlaned;
-    /// valid, not an error.
+    /// A free-form lane name (ADR 0015, 0019): the band an issue renders in
+    /// inside a flow diagram. None = Unlaned; valid, not an error. The
+    /// workflow.yaml registry only hints order and labels — never a gate.
     pub lane: Option<String>,
+    /// The orchestrations this issue belongs to (ADR 0019), by name.
+    /// Many-to-many: one issue, any number of concurrent flows. A flow with
+    /// no members is nothing — there is deliberately no file to keep alive.
+    pub flows: Vec<String>,
     /// The actor asserting exclusive intent (ADR 0015). Written by
     /// `dit claim` only, never at creation. An assertion like `assignees`,
     /// not a derived fact — its liveness is computed from `claimed_at` +
@@ -153,6 +158,9 @@ pub struct IssueDraft {
     /// Claims never ride creation (ADR 0015): an issue is claimable once it
     /// exists, by an actor, through `dit claim`.
     pub lane: Option<String>,
+    /// Flows may ride creation (ADR 0019) — membership is ordinary
+    /// authorship, unlike a claim.
+    pub flows: Vec<String>,
     pub body: String,
 }
 
@@ -231,6 +239,8 @@ pub struct FieldPatch {
     pub start: Option<String>,
     pub blocked_by: Option<Vec<IssueId>>,
     pub lane: Option<String>,
+    /// Replaces the whole membership set, like `labels` (ADR 0019).
+    pub flows: Option<Vec<String>>,
     pub claimed_by: Option<String>,
     pub claimed_at: Option<String>,
     /// Optional fields to remove from the file. A field both set and cleared
@@ -263,6 +273,7 @@ impl FieldPatch {
             (self.start.is_some(), "start"),
             (self.blocked_by.is_some(), "blocked_by"),
             (self.lane.is_some(), "lane"),
+            (self.flows.is_some(), "flows"),
             (self.claimed_by.is_some(), "claimed_by"),
             (self.claimed_at.is_some(), "claimed_at"),
         ] {
@@ -329,6 +340,9 @@ impl Issue {
         if let Some(l) = &patch.lane {
             self.lane = Some(l.clone());
         }
+        if let Some(f) = &patch.flows {
+            self.flows = f.clone();
+        }
         if let Some(c) = &patch.claimed_by {
             self.claimed_by = Some(c.clone());
         }
@@ -377,6 +391,7 @@ mod tests {
             start: None,
             blocked_by: vec![],
             lane: None,
+            flows: Vec::new(),
             claimed_by: None,
             claimed_at: None,
             body: "## Context\n\nUsers on 3G get logged out.".into(),

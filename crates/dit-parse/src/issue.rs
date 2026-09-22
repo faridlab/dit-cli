@@ -109,6 +109,7 @@ pub fn issue_from_document(doc: &Document) -> Result<Issue, IssueParseError> {
         .map(|b| IssueId::parse(b).map_err(|e: IdError| bad("blocked_by", e.to_string())))
         .collect::<Result<_, _>>()?;
     let lane = scalar(doc, "lane")?.filter(|s| !s.is_empty());
+    let flows = doc.get_list("flows").unwrap_or_default().to_vec();
     let claimed_by = scalar(doc, "claimed_by")?.filter(|s| !s.is_empty());
     let claimed_at = match scalar(doc, "claimed_at")?.filter(|s| !s.is_empty()) {
         Some(at) => {
@@ -138,6 +139,7 @@ pub fn issue_from_document(doc: &Document) -> Result<Issue, IssueParseError> {
         start,
         blocked_by,
         lane,
+        flows,
         claimed_by,
         claimed_at,
         body,
@@ -228,6 +230,10 @@ pub fn serialize_new_issue(
     // on purpose — `dit claim` is the only writer of those keys.
     if let Some(l) = &draft.lane {
         doc.set_raw("lane", &serialize_scalar(l));
+    }
+    // Flows may ride creation (ADR 0019): membership is ordinary authorship.
+    if !draft.flows.is_empty() {
+        doc.set_raw("flows", &serialize_seq(&draft.flows));
     }
     doc.set_raw("created", &serialize_scalar(now_rfc3339));
     doc.set_raw("updated", &serialize_scalar(now_rfc3339));
@@ -346,6 +352,12 @@ pub fn apply_patch(
         doc.set_raw("lane", &serialize_scalar(l));
         touched.push("lane");
     }
+    if let Some(f) = &patch.flows {
+        // The list fields clear by being set to `[]`; `flows` follows
+        // `labels`, so there is no clearable variant (ADR 0019).
+        doc.set_raw("flows", &serialize_seq(f));
+        touched.push("flows");
+    }
     if let Some(c) = &patch.claimed_by {
         doc.set_raw("claimed_by", &serialize_scalar(c));
         touched.push("claimed_by");
@@ -414,6 +426,7 @@ mod tests {
             start: None,
             blocked_by: vec![],
             lane: None,
+            flows: Vec::new(),
             body: String::new(),
         }
     }
@@ -675,6 +688,7 @@ mod tests {
             start: None,
             blocked_by: vec![],
             lane: None,
+            flows: Vec::new(),
             body: "Body here".into(),
         };
         let file = serialize_new_issue(&id, &draft, "2026-08-16T09:12:00Z").unwrap();
@@ -797,6 +811,7 @@ mod tests {
             start: None,
             blocked_by: vec![],
             lane: None,
+            flows: Vec::new(),
             body: String::new(),
         };
         let file = serialize_new_issue(&id, &draft, "2026-08-16T09:12:00Z").unwrap();

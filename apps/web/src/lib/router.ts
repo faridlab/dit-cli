@@ -18,7 +18,7 @@ export type PeekHost =
   | "timeline"
   | "roadmap"
   | "gantt"
-  | "workflow";
+  | "flow";
 
 const PEEK_HOSTS: readonly string[] = [
   "home",
@@ -28,7 +28,7 @@ const PEEK_HOSTS: readonly string[] = [
   "timeline",
   "roadmap",
   "gantt",
-  "workflow",
+  "flow",
 ];
 
 export type Route =
@@ -51,8 +51,8 @@ export type Route =
   | { name: "timeline"; issue?: string | null; seq?: number | null }
   | { name: "roadmap"; issue?: string | null }
   | { name: "gantt"; issue?: string | null }
-  /** The coordination board (ADR 0015): lanes × statuses, read-only. */
-  | { name: "workflow"; issue?: string | null }
+  /** The flow diagram (ADR 0019): issues as nodes, blocked_by as edges. */
+  | { name: "flow"; issue?: string | null }
   | { name: "issue"; id: string; from?: PeekHost | null }
   /** The composer; `type` preselects the issue type (the roadmap's "New epic"). */
   | { name: "new-issue"; type?: string | null }
@@ -100,8 +100,8 @@ export function routeToHash(route: Route): string {
       return `#/roadmap${query([["issue", route.issue]])}`;
     case "gantt":
       return `#/gantt${query([["issue", route.issue]])}`;
-    case "workflow":
-      return `#/workflow${query([["issue", route.issue]])}`;
+    case "flow":
+      return `#/flow${query([["issue", route.issue]])}`;
     case "issue":
       return `#/issue/${encodeURIComponent(route.id)}${query([["from", route.from]])}`;
     case "new-issue":
@@ -160,7 +160,7 @@ export function parseHash(hash: string): Route {
   }
   if (first === "roadmap") return { name: "roadmap", issue };
   if (first === "gantt") return { name: "gantt", issue };
-  if (first === "workflow") return { name: "workflow", issue };
+  if (first === "flow") return { name: "flow", issue };
   if (first === "new") return { name: "new-issue", type: nonEmpty("type") };
   if (first === "settings") return { name: "settings" };
   // Home is the landing view: capture, triage, orient — the board is one
@@ -186,7 +186,7 @@ export function peekOf(route: Route): string | null {
     case "timeline":
     case "roadmap":
     case "gantt":
-    case "workflow":
+    case "flow":
       return route.issue ?? null;
     default:
       return null;
@@ -212,8 +212,8 @@ export function withPeek(route: Route, id: string | null): Route {
       return { name: "roadmap", issue: id };
     case "gantt":
       return { name: "gantt", issue: id };
-    case "workflow":
-      return { name: "workflow", issue: id };
+    case "flow":
+      return { name: "flow", issue: id };
     default: {
       const host = peekHost(route);
       if (host === "home") return { name: "home", issue: id };

@@ -21,7 +21,8 @@ import type {
   StatusInfo,
   ReleaseDto,
   ReleasePatchInput,
-  WorkflowBoardDto,
+  FlowBoardDto,
+  FlowSummaryDto,
   WorkspaceCommentDto,
 } from "./types";
 
@@ -141,10 +142,14 @@ export function getBoard(): Promise<BoardDto> {
   return request<BoardDto>("/api/board");
 }
 
-/** The coordination board (ADR 0015): lanes × statuses with derived
- *  readiness, blocker states and claim liveness. Read-only. */
-export function getWorkflowBoard(): Promise<WorkflowBoardDto> {
-  return request<WorkflowBoardDto>("/api/workflow");
+/** Every flow with its member count (ADR 0019). */
+export function getFlows(): Promise<FlowSummaryDto[]> {
+  return request<FlowSummaryDto[]>("/api/flow");
+}
+
+/** One flow as a diagram; `__all__` is the union of every flow. */
+export function getFlowBoard(name: string): Promise<FlowBoardDto> {
+  return request<FlowBoardDto>(`/api/flow/${encodeURIComponent(name)}`);
 }
 
 // -- docs (ADR 0010) ----------------------------------------------------------

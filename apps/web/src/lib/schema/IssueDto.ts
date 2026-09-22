@@ -22,6 +22,10 @@ blocked_by: Array<string>,
  */
 lane: string | null, 
 /**
+ * The orchestrations this issue belongs to (ADR 0019), by name.
+ */
+flows: Array<string>, 
+/**
  * Who claims exclusive intent (ADR 0015); absent = unclaimed. Liveness
  * is derived client-side from `claimed_at` + the TTL in the schema.
  */

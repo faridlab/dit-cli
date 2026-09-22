@@ -200,12 +200,12 @@ export function Sidebar({
           <NavLink label="Roadmap" icon={Layers} shortcut="⌘7" active={route.name === "roadmap"} onClick={() => onNavigate({ name: "roadmap" })} />
           <NavLink label="Gantt" icon={ChartGantt} shortcut="⌘8" active={route.name === "gantt"} onClick={() => onNavigate({ name: "gantt" })} />
           <NavLink
-            label="Workflow"
+            label="Flow"
             icon={Waypoints}
             shortcut="⌘9"
-            title="The coordination board: lanes × statuses, live (ADR 0015)"
-            active={route.name === "workflow"}
-            onClick={() => onNavigate({ name: "workflow" })}
+            title="Orchestrations as diagrams: issues as nodes, blocked_by as arrows (ADR 0019)"
+            active={route.name === "flow"}
+            onClick={() => onNavigate({ name: "flow" })}
           />
         </nav>
 

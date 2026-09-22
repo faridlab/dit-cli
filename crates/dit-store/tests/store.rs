@@ -33,6 +33,7 @@ fn draft(title: &str) -> IssueDraft {
         start: None,
         blocked_by: vec![],
         lane: None,
+        flows: Vec::new(),
         body: "## Context\n\nIt breaks.".to_owned(),
     }
 }

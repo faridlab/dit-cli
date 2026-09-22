@@ -34,7 +34,8 @@ export const queryKeys = {
   markdownPreview: (text: string) => ["markdown-preview", text] as const,
   workspaceComments: (limit: number) => ["workspace-comments", limit] as const,
   releases: ["releases"] as const,
-  workflowBoard: ["workflow-board"] as const,
+  flows: ["flows"] as const,
+  flowBoard: (name: string) => ["flow-board", name] as const,
 };
 
 /** Mark everything a commit can change as stale. The schema is deliberately
@@ -47,7 +48,8 @@ export function invalidateWorkspaceData(client: QueryClient) {
     queryKeys.status,
     ["issues"],
     queryKeys.board,
-    queryKeys.workflowBoard,
+    queryKeys.flows,
+    ["flow-board"],
     ["issue"],
     ["comments"],
     ["history"],
@@ -81,12 +83,22 @@ export function useBoard() {
   return useQuery({ queryKey: queryKeys.board, queryFn: api.getBoard, staleTime: STALE_TIME_MS });
 }
 
-/** The coordination board (ADR 0015): derived on the server per call, so a
- *  short stale time plus the live event keeps it moving without polling. */
-export function useWorkflowBoard() {
+/** Every flow with its member count (ADR 0019). */
+export function useFlows() {
   return useQuery({
-    queryKey: queryKeys.workflowBoard,
-    queryFn: api.getWorkflowBoard,
+    queryKey: queryKeys.flows,
+    queryFn: api.getFlows,
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+/** One flow as a diagram (ADR 0019); `__all__` is the union. Derived on the
+ *  server per call, so a short stale time plus the live event keeps it
+ *  moving without polling. */
+export function useFlowBoard(name: string) {
+  return useQuery({
+    queryKey: queryKeys.flowBoard(name),
+    queryFn: () => api.getFlowBoard(name),
     staleTime: STALE_TIME_MS,
   });
 }

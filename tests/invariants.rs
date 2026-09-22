@@ -158,6 +158,7 @@ fn workspace_with_issue(title: &str) -> (dit_core::Dit, tempfile::TempDir) {
         start: None,
         blocked_by: Vec::new(),
         lane: None,
+        flows: Vec::new(),
         body: "body".to_owned(),
     };
     let mut tx = dit.transaction("guard").unwrap();
@@ -248,6 +249,9 @@ const KNOWN_ISSUE_KEYS: &[&str] = &[
     "lane",
     "claimed_by",
     "claimed_at",
+    // ADR 0019: authored orchestration membership, the same class as
+    // `labels` — a set of names the issue belongs to.
+    "flows",
     "created",
     "updated",
 ];

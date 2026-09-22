@@ -16,6 +16,7 @@
 pub mod board;
 pub mod diagnostics;
 pub mod error;
+pub mod flow;
 pub mod watch;
 pub mod workflow;
 
@@ -47,11 +48,9 @@ pub use dit_model::{
     WorkflowStatus, CONTENT_ROOTS, DOC_ROOTS, GENERATED_INDEX_MARKER,
 };
 pub use dit_vcs::{SyncOptions, SyncReport};
+pub use flow::{EdgeDisposition, FlowBoard, FlowClaim, FlowEdge, FlowLane, FlowNode, FlowSummary};
 pub use watch::spawn as spawn_watcher;
-pub use workflow::{
-    BlockerDisposition, BlockerState, ClaimState, InboxItem, WorkflowBoard, WorkflowCard,
-    WorkflowLane,
-};
+pub use workflow::InboxItem;
 
 /// Which parts of the index to rebuild. The state half is cheap (read every
 /// file at HEAD); the history half walks the whole commit graph, so it gets
@@ -2272,8 +2271,11 @@ fn upsert_protocol_section(existing: &str, lanes: &[LaneSpec]) -> String {
     let body = format!(
         "{START}\n\n\
          ## DIT peer protocol for parallel actors\n\n\
-         Each actor (human or AI session) works one lane. Identity: `export DIT_ME=<lane-owner>`\n\
-         (or `--me`) before any command; every claim, comment and commit is attributed to it.\n\n\
+         Each actor (human or AI session) works one lane. Identity: `export DIT_ME=<alias>`\n\
+         (or `--me`) before any command; every claim, comment and commit is attributed to it.
+         Lanes are free-form (`dit issue set REF lane=any-name`); orchestrations are flows
+         (`dit issue set REF flows=launch,audit`) and one issue may join several at once â
+         watch one with `dit flow show <name>`.\n\n\
          - Poll for work: `dit ready --lane <your-lane>` (add `--until review` to start against a\n\
            blocker still in review). Empty output means wait.\n\
          - Claim before you edit: `dit claim <issue>`; refresh with `dit claim <issue> --renew`\n\
@@ -2281,10 +2283,10 @@ fn upsert_protocol_section(existing: &str, lanes: &[LaneSpec]) -> String {
            A claim older than the TTL is takable by another actor.\n\
          - Move the issue through statuses (`in_progress` before the first edit, `review` while a\n\
            gate is pending, `done` only with evidence in a comment).\n\
-         - Blocked on another lane? Comment on the blocker issue with what you expected, what you\n\
+         - Blocked on another actor? Comment on the blocker issue with what you expected, what you\n\
            got, and the evidence (request, response, error), then reply in-thread when it lands.\n\
-         - Never edit another lane's issue without claiming it first.\n\n\
-         Lanes: {}.\n\n\
+         - Never edit another actor's claimed issue without claiming it first.\n\n\
+         Lanes registered here: {}.\n\n\
          {END}",
         lane_ids.join(", ")
     );
