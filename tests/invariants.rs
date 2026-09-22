@@ -157,6 +157,7 @@ fn workspace_with_issue(title: &str) -> (dit_core::Dit, tempfile::TempDir) {
         due: None,
         start: None,
         blocked_by: Vec::new(),
+        fed_by: Vec::new(),
         lane: None,
         flows: Vec::new(),
         body: "body".to_owned(),
@@ -243,6 +244,9 @@ const KNOWN_ISSUE_KEYS: &[&str] = &[
     "due",
     "start",
     "blocked_by",
+    // ADR 0020: the non-gating relation. A second list field, the same class
+    // as `blocked_by` — an authored fact about the work, not a derived one.
+    "fed_by",
     // ADR 0015: authored coordination state — an actor's assertion, the same
     // class as `assignees`, not a derived fact. Age, liveness and readiness
     // are computed from these, never stored.

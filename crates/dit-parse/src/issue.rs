@@ -108,6 +108,12 @@ pub fn issue_from_document(doc: &Document) -> Result<Issue, IssueParseError> {
         .iter()
         .map(|b| IssueId::parse(b).map_err(|e: IdError| bad("blocked_by", e.to_string())))
         .collect::<Result<_, _>>()?;
+    let fed_by: Vec<IssueId> = doc
+        .get_list("fed_by")
+        .unwrap_or_default()
+        .iter()
+        .map(|b| IssueId::parse(b).map_err(|e: IdError| bad("fed_by", e.to_string())))
+        .collect::<Result<_, _>>()?;
     let lane = scalar(doc, "lane")?.filter(|s| !s.is_empty());
     let flows = doc.get_list("flows").unwrap_or_default().to_vec();
     let claimed_by = scalar(doc, "claimed_by")?.filter(|s| !s.is_empty());
@@ -138,6 +144,7 @@ pub fn issue_from_document(doc: &Document) -> Result<Issue, IssueParseError> {
         due,
         start,
         blocked_by,
+        fed_by,
         lane,
         flows,
         claimed_by,
@@ -217,6 +224,14 @@ pub fn serialize_new_issue(
     if let Some(d) = &draft.start {
         validate_date(d).map_err(|e| bad("start", e.to_string()))?;
         doc.set_raw("start", &serialize_scalar(d));
+    }
+    if !draft.fed_by.is_empty() {
+        let fed: Vec<String> = draft
+            .fed_by
+            .iter()
+            .map(|id| id.as_str().to_owned())
+            .collect();
+        doc.set_raw("fed_by", &serialize_seq(&fed));
     }
     if !draft.blocked_by.is_empty() {
         let blocked: Vec<String> = draft
@@ -343,6 +358,11 @@ pub fn apply_patch(
         doc.set_raw("start", &serialize_scalar(d));
         touched.push("start");
     }
+    if let Some(f) = &patch.fed_by {
+        let fed: Vec<String> = f.iter().map(|id| id.as_str().to_owned()).collect();
+        doc.set_raw("fed_by", &serialize_seq(&fed));
+        touched.push("fed_by");
+    }
     if let Some(b) = &patch.blocked_by {
         let blocked: Vec<String> = b.iter().map(|x| x.as_str().to_owned()).collect();
         doc.set_raw("blocked_by", &serialize_seq(&blocked));
@@ -425,6 +445,7 @@ mod tests {
             due: None,
             start: None,
             blocked_by: vec![],
+            fed_by: vec![],
             lane: None,
             flows: Vec::new(),
             body: String::new(),
@@ -687,6 +708,7 @@ mod tests {
             due: Some("2026-09-01".into()),
             start: None,
             blocked_by: vec![],
+            fed_by: vec![],
             lane: None,
             flows: Vec::new(),
             body: "Body here".into(),
@@ -810,6 +832,7 @@ mod tests {
             due: None,
             start: None,
             blocked_by: vec![],
+            fed_by: vec![],
             lane: None,
             flows: Vec::new(),
             body: String::new(),

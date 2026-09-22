@@ -116,6 +116,12 @@ pub struct Issue {
     /// inferred from `due` and the estimate without writing anything back.
     pub start: Option<String>,
     pub blocked_by: Vec<IssueId>,
+    /// Issues that feed this one (ADR 0020): a result, an outcome, a return
+    /// path. It draws an arrow and may carry a caption from the flow's
+    /// fence, and it touches nothing derived — never readiness, never a
+    /// stage, never the critical path. That separation is the whole point:
+    /// `blocked_by` gets to mean exactly one thing.
+    pub fed_by: Vec<IssueId>,
     /// A free-form lane name (ADR 0015, 0019): the band an issue renders in
     /// inside a flow diagram. None = Unlaned; valid, not an error. The
     /// workflow.yaml registry only hints order and labels — never a gate.
@@ -155,6 +161,12 @@ pub struct IssueDraft {
     pub due: Option<String>,
     pub start: Option<String>,
     pub blocked_by: Vec<IssueId>,
+    /// Issues that feed this one (ADR 0020): a result, an outcome, a return
+    /// path. It draws an arrow and may carry a caption from the flow's
+    /// fence, and it touches nothing derived — never readiness, never a
+    /// stage, never the critical path. That separation is the whole point:
+    /// `blocked_by` gets to mean exactly one thing.
+    pub fed_by: Vec<IssueId>,
     /// Claims never ride creation (ADR 0015): an issue is claimable once it
     /// exists, by an actor, through `dit claim`.
     pub lane: Option<String>,
@@ -238,6 +250,8 @@ pub struct FieldPatch {
     pub due: Option<String>,
     pub start: Option<String>,
     pub blocked_by: Option<Vec<IssueId>>,
+    /// Replaces the set, like every other list field.
+    pub fed_by: Option<Vec<IssueId>>,
     pub lane: Option<String>,
     /// Replaces the whole membership set, like `labels` (ADR 0019).
     pub flows: Option<Vec<String>>,
@@ -272,6 +286,7 @@ impl FieldPatch {
             (self.due.is_some(), "due"),
             (self.start.is_some(), "start"),
             (self.blocked_by.is_some(), "blocked_by"),
+            (self.fed_by.is_some(), "fed_by"),
             (self.lane.is_some(), "lane"),
             (self.flows.is_some(), "flows"),
             (self.claimed_by.is_some(), "claimed_by"),
@@ -334,6 +349,9 @@ impl Issue {
         if let Some(d) = &patch.start {
             self.start = Some(d.clone());
         }
+        if let Some(f) = &patch.fed_by {
+            self.fed_by = f.clone();
+        }
         if let Some(b) = &patch.blocked_by {
             self.blocked_by = b.clone();
         }
@@ -390,6 +408,7 @@ mod tests {
             due: None,
             start: None,
             blocked_by: vec![],
+            fed_by: vec![],
             lane: None,
             flows: Vec::new(),
             claimed_by: None,

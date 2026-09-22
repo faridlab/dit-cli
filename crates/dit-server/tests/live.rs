@@ -26,6 +26,7 @@ fn draft(title: &str) -> IssueDraft {
         due: None,
         start: None,
         blocked_by: vec![],
+        fed_by: vec![],
         lane: Some("backend".into()),
         flows: Vec::new(),
         number: None,
