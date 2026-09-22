@@ -225,12 +225,10 @@ fn reindex_rebuilds_after_the_cache_is_deleted() {
     let short = short_of(&new);
 
     std::fs::remove_file(tmp.path().join(".dit-cache/index.sqlite")).unwrap();
-    let empty = dit(tmp.path(), &["issue", "show", &short]);
-    assert_eq!(
-        empty.status.code(),
-        Some(2),
-        "a missing index answers nothing"
-    );
+    // Opening self-heals a missing cache before the first read (the upgrade
+    // path), so the show already answers; the explicit reindex below stays
+    // covered for its own sake.
+    assert!(dit(tmp.path(), &["issue", "show", &short]).status.success());
 
     let reindex = dit(tmp.path(), &["reindex"]);
     assert!(reindex.status.success(), "{}", stderr(&reindex));

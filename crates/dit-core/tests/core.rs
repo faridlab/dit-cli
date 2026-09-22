@@ -197,9 +197,12 @@ fn reindex_rebuilds_a_deleted_index_from_git_alone() {
     let cache = tmp.path().join(".dit-cache/index.sqlite");
     std::fs::remove_file(&cache).unwrap();
     let mut dit = Dit::open(tmp.path()).unwrap();
+    // Open self-heals a missing cache before the first read (the upgrade
+    // path), so the old "empty index answers nothing" contract is gone; the
+    // explicit rebuild below still stands on its own for history recovery.
     assert!(
-        dit.get(id.as_str()).unwrap().is_none(),
-        "empty index answers nothing"
+        dit.get(id.as_str()).unwrap().is_some(),
+        "open rebuilds a missing index before reads"
     );
 
     let report = dit.reindex(ReindexMode::All).unwrap();
@@ -2163,4 +2166,26 @@ fn the_inbox_lists_threads_the_lane_has_not_answered() {
     .unwrap();
     tx.commit("question on ui").unwrap();
     assert_eq!(dit.inbox(Some("frontend")).unwrap().len(), 1);
+}
+
+#[test]
+fn opening_self_heals_an_empty_or_version_bumped_index() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    let mut tx = dit.transaction("farid").unwrap();
+    let id = tx.create_issue(draft("Survivor")).unwrap();
+    tx.commit("create").unwrap();
+
+    // The upgrade scenario: the version bump (or a lost clone cache) leaves
+    // a dropped database. Opening must rebuild it before the first read —
+    // found live when serpa-dit moved to the index-v5 binary and every read
+    // answered empty until an explicit `dit reindex`.
+    drop(dit);
+    std::fs::remove_file(tmp.path().join(".dit-cache/index.sqlite")).unwrap();
+    let dit = Dit::open(tmp.path()).unwrap();
+    assert!(
+        dit.get(id.as_str()).unwrap().is_some(),
+        "open rebuilds a missing index before reads"
+    );
+    assert_eq!(dit.query("", None).unwrap().len(), 1);
 }

@@ -174,6 +174,15 @@ impl Dit {
             schema_problem: None,
         };
         dit.reload_schema();
+        // Self-heal the cache before the first read: a version bump drops it,
+        // a fresh clone lacks it, and another process's commits move HEAD
+        // past the watermark — none of those should ever surface as an empty
+        // board. Cheap when current (one git call, one sqlite read); a
+        // failure is logged, never fatal — reads answer empty and `doctor`
+        // says so, which is better than refusing to open the workspace.
+        if let Err(e) = dit.refresh_state() {
+            tracing::warn!("startup index refresh failed: {e} — run `dit reindex`");
+        }
         Ok(dit)
     }
 
