@@ -117,6 +117,23 @@ pub struct StoredMorseSpec {
     pub problem: Option<String>,
 }
 
+/// The last run of one scenario, as the index holds it. Derived and
+/// disposable: it is a fact about one machine at one moment, never about the
+/// project, and it is gone at the next reindex (§20.7). Response bodies are
+/// deliberately absent — the likeliest place in the product for a real token
+/// to appear is a response, and an index file is still a file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredMorseRun {
+    pub scenario: String,
+    /// Seconds since the epoch, from the caller's clock.
+    pub ran_at: i64,
+    pub passed: bool,
+    /// Set when the run never started because the host is not allowed.
+    pub refused: Option<String>,
+    /// One line per step: `id\tmethod\tstatus\tms\tok|fail\tdetail`.
+    pub steps: String,
+}
+
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS issues (
   id          TEXT PRIMARY KEY,
@@ -264,6 +281,16 @@ CREATE TABLE IF NOT EXISTS morse_scenarios (
   problem  TEXT,
   stale_by INTEGER,
   broken   TEXT
+);
+
+-- One row per scenario: its most recent run. Cleared at reindex like the
+-- rest of the derived tier, and never written back to a file.
+CREATE TABLE IF NOT EXISTS morse_runs (
+  scenario TEXT PRIMARY KEY,
+  ran_at   INTEGER NOT NULL,
+  passed   INTEGER NOT NULL,
+  refused  TEXT,
+  steps    TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS state (
@@ -714,6 +741,48 @@ impl Index {
             "UPDATE morse_scenarios SET stale_by = ?2, broken = ?3 WHERE scenario = ?1",
             params![scenario, stale_by.map(|n| n as i64), joined],
         )?;
+        Ok(())
+    }
+
+    /// Record what a run did. One row per scenario: a scenario's history is
+    /// its git history, and keeping every run would be keeping a log of one
+    /// machine's afternoons.
+    pub fn record_morse_run(&mut self, run: &StoredMorseRun) -> Result<(), IndexError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO morse_runs (scenario, ran_at, passed, refused, steps) \
+             VALUES (?1,?2,?3,?4,?5)",
+            params![
+                run.scenario,
+                run.ran_at,
+                i64::from(run.passed),
+                run.refused,
+                run.steps
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn morse_run(&self, scenario: &str) -> Result<Option<StoredMorseRun>, IndexError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT scenario, ran_at, passed, refused, steps FROM morse_runs WHERE scenario = ?1",
+                params![scenario],
+                |r| {
+                    Ok(StoredMorseRun {
+                        scenario: r.get(0)?,
+                        ran_at: r.get(1)?,
+                        passed: r.get::<_, i64>(2)? != 0,
+                        refused: r.get(3)?,
+                        steps: r.get(4)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    pub fn clear_morse_runs(&mut self) -> Result<(), IndexError> {
+        self.conn.execute("DELETE FROM morse_runs", [])?;
         Ok(())
     }
 
