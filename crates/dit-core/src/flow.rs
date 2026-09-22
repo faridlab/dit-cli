@@ -137,9 +137,10 @@ pub struct FlowEdge {
     /// and may carry a caption, and touches nothing derived — not readiness,
     /// not the stage layering, not the critical path.
     pub gating: bool,
-    /// The blocker sits in a later column than the issue it blocks, so the
-    /// arrow runs against the authored order. Reported, never refused: both
-    /// facts are human assertions and the contradiction is the finding.
+    /// The blocker sits in a *strictly* later column than the issue it
+    /// blocks, so the arrow runs against the authored order. Reported, never
+    /// refused: both facts are human assertions and the contradiction is the
+    /// finding. A dependency inside one phase is not a contradiction.
     pub backward: bool,
     /// What the fence says this arrow means, if it says anything.
     pub label: Option<String>,
@@ -527,7 +528,11 @@ impl Dit {
             let (Some(from), Some(to)) = (column.get(&edge.from), column.get(&edge.to)) else {
                 continue;
             };
-            edge.backward = edge.gating && from >= to;
+            // Strictly later, not merely equal: two issues in the same phase
+            // depending on each other is ordinary — a phase groups work, it
+            // does not forbid an order inside the group. Flagging those would
+            // bury the real contradictions in noise.
+            edge.backward = edge.gating && from > to;
         }
 
         // Arrow captions from the fence. Its two ends are written the way

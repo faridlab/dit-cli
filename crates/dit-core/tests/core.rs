@@ -2917,3 +2917,48 @@ fn fed_by_draws_an_arrow_and_gates_absolutely_nothing() {
     let reread = dit.get(sink.as_str()).unwrap().unwrap();
     assert_eq!(reread.issue.fed_by, vec![source]);
 }
+
+#[test]
+fn a_dependency_inside_one_phase_is_ordinary_and_never_flagged() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    dit.init_workflow(&[]).unwrap();
+
+    // Both in `plan`: choosing a capability waits on planning the step. A
+    // phase groups work; it does not forbid an order inside the group.
+    let first = issue_with(
+        &mut dit,
+        "Plan the next step",
+        dit_core::FieldPatch {
+            flows: Some(vec!["r".into()]),
+            labels: Some(vec!["phase/plan".into()]),
+            ..Default::default()
+        },
+    );
+    let second = issue_with(
+        &mut dit,
+        "Choose which capability to call",
+        dit_core::FieldPatch {
+            flows: Some(vec!["r".into()]),
+            labels: Some(vec!["phase/plan".into()]),
+            blocked_by: Some(vec![first]),
+            ..Default::default()
+        },
+    );
+    write_doc(
+        &mut dit,
+        "docs/r.md",
+        "```dit-flow\nflow: r\nphases:\n  - { id: plan }\n  - { id: ship }\n```\n",
+    );
+
+    let board = dit.flow_board(Some("r")).unwrap();
+    let edge = board
+        .edges
+        .iter()
+        .find(|e| e.from == first && e.to == second)
+        .unwrap();
+    assert!(
+        !edge.backward,
+        "same phase is not a violation — flagging it would bury the real ones"
+    );
+}
