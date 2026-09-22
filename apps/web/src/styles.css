@@ -1338,3 +1338,36 @@ html[data-present] .fcanvas{border-radius:8px}
   width:1px;background:var(--edge)}
 .nav a.q{position:relative}
 .nav a.q.on::before{background:var(--accent)}
+
+/* Morse (§20): the specs a workspace registers and the scenarios written
+   against them. Two stacked sections, both plain reading surfaces — there is
+   no Run control because Morse 1 sends nothing, and a button that did
+   nothing would be worse than none. */
+.morse{display:flex;flex-direction:column;gap:18px;padding:16px 20px;overflow-y:auto;flex:1;min-height:0}
+.morse-sec{display:flex;flex-direction:column;gap:10px}
+.morse-specs{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px}
+.morse-spec-top{display:flex;align-items:center;gap:8px;width:100%;text-align:left;color:var(--ink)}
+.morse-spec-top .title{font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.morse-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11.5px;color:var(--muted)}
+.morse-meta .mono{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.morse-ops{display:flex;flex-direction:column;gap:3px;margin-top:4px;border-top:1px solid var(--edge);padding-top:8px}
+.morse-ops li{display:flex;align-items:center;gap:8px;font-size:11.5px;min-width:0}
+.morse-verb{flex:none;min-width:48px;justify-content:center}
+.morse-opid{color:var(--muted);flex:none}
+.morse-summary{color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.morse-list{display:flex;flex-direction:column;gap:8px}
+.morse-row{background:var(--surface);border:1px solid var(--edge);border-radius:8px;padding:10px 12px;
+  display:flex;flex-direction:column;gap:6px}
+.morse-row-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.morse-name{font-size:13px;color:var(--ink);font-weight:500}
+.morse-where{font-size:11px;color:var(--faint)}
+.morse-steps{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);
+  list-style:none;counter-reset:step}
+.morse-steps li{display:inline-flex;align-items:center;gap:5px;counter-increment:step}
+.morse-steps li::before{content:counter(step);display:inline-flex;align-items:center;justify-content:center;
+  width:15px;height:15px;border-radius:50%;background:var(--sunken);font:10px var(--mono);color:var(--muted)}
+.morse-steps li:not(:last-child)::after{content:"→";color:var(--faint);margin-left:2px}
+.morse-requires{font-size:11.5px;color:var(--muted)}
+.morse-note{color:var(--faint)}
+.morse-problem{display:flex;align-items:flex-start;gap:6px;font-size:11.5px;color:var(--todo);line-height:1.5}
+.morse-problem .i{flex:none;margin-top:2px}

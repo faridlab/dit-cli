@@ -26,6 +26,8 @@ export function crumbsFor(route: Route, workspace: string, extra?: string | null
       return [workspace, route.inbox ? "Inbox" : route.starred ? "Starred" : "Issues"];
     case "docs":
       return extra ? [workspace, "Docs", extra] : [workspace, "Docs"];
+    case "morse":
+      return [workspace, "Morse"];
     case "search":
       return [workspace, "Search"];
     case "timeline":

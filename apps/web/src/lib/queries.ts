@@ -36,6 +36,7 @@ export const queryKeys = {
   releases: ["releases"] as const,
   flows: ["flows"] as const,
   flowBoard: (name: string) => ["flow-board", name] as const,
+  morse: ["morse"] as const,
 };
 
 /** Mark everything a commit can change as stale. The schema is deliberately
@@ -50,6 +51,9 @@ export function invalidateWorkspaceData(client: QueryClient) {
     queryKeys.board,
     queryKeys.flows,
     ["flow-board"],
+    // A commit can change a spec, a fence, or the config that registers
+    // either — all three change what Morse reports.
+    queryKeys.morse,
     ["issue"],
     ["comments"],
     ["history"],
@@ -81,6 +85,15 @@ export function useSchema() {
 
 export function useBoard() {
   return useQuery({ queryKey: queryKeys.board, queryFn: api.getBoard, staleTime: STALE_TIME_MS });
+}
+
+/** Morse (§20): the derived catalogue and every scenario's verdict. */
+export function useMorse() {
+  return useQuery({
+    queryKey: queryKeys.morse,
+    queryFn: api.getMorse,
+    staleTime: STALE_TIME_MS,
+  });
 }
 
 /** Every flow with its member count (ADR 0019). */

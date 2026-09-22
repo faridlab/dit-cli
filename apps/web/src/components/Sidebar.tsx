@@ -39,6 +39,7 @@ import {
   House,
   Layers,
   ListTodo,
+  Radio,
   Search,
   Settings,
   Waypoints,
@@ -55,8 +56,10 @@ import logo from "../assets/dit-logo.png";
 
 export type SidebarMode = "expanded" | "hidden";
 
-/** The rail order is also the ⌘1..⌘8 shortcut order (⌘2 is Search, reached
- *  through the palette). AppShell's shortcut table and this list must agree. */
+/** The ⌘1..⌘9 and ⌘0 shortcut order (⌘2 is Search, reached through the
+ *  palette). AppShell's shortcut table and this list must agree — and every
+ *  label a rail row prints must have an entry here, or the row advertises a
+ *  key that does nothing. */
 export const SHORTCUT_VIEWS: Route[] = [
   { name: "home" },
   { name: "search", q: "" },
@@ -66,6 +69,8 @@ export const SHORTCUT_VIEWS: Route[] = [
   { name: "timeline" },
   { name: "roadmap" },
   { name: "gantt" },
+  { name: "flow" },
+  { name: "morse" },
 ];
 
 function NavLink({
@@ -326,6 +331,14 @@ export function Sidebar({
       >
           <NavLink label="Home" icon={House} shortcut="⌘1" active={route.name === "home"} onClick={() => onNavigate({ name: "home" })} />
           <NavLink label="Docs" icon={FileText} shortcut="⌘5" active={route.name === "docs"} onClick={() => onNavigate({ name: "docs", p: null })} />
+          <NavLink
+            label="Morse"
+            icon={Radio}
+            shortcut="⌘0"
+            title="API scenarios in the repo: endpoints derived from the registered OpenAPI specs, and whether each scenario still matches (§20)"
+            active={route.name === "morse"}
+            onClick={() => onNavigate({ name: "morse" })}
+          />
 
           <div className="sb-h nav-h">Work</div>
           <NavLink label="Board" icon={Columns3} shortcut="⌘3" active={route.name === "board"} onClick={() => onNavigate({ name: "board" })} />

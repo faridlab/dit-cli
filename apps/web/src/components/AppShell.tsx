@@ -35,6 +35,7 @@ import { SearchPane } from "./panes/SearchPane";
 import { SettingsPane } from "./panes/SettingsPane";
 import { BoardView } from "../views/BoardView";
 import { DocsView } from "../views/DocsView";
+import { MorseView } from "../views/MorseView";
 import { HomeView } from "../views/HomeView";
 import { IssueDetailView } from "../views/IssueDetailView";
 import { IssuesView } from "../views/IssuesView";
@@ -74,6 +75,8 @@ function cliFor(route: Route): string {
       return `dit show ${route.id}`;
     case "docs":
       return route.p ? `dit doc show ${route.p}` : "dit doc ls";
+    case "morse":
+      return "dit morse check";
     default:
       return "dit ui";
   }
@@ -220,8 +223,10 @@ function Shell() {
       } else if (key === ",") {
         event.preventDefault();
         navigate({ name: "settings" });
-      } else if (key >= "1" && key <= "8") {
-        const target = SHORTCUT_VIEWS[Number(key) - 1];
+      } else if (key >= "0" && key <= "9") {
+        // ⌘1..⌘9 walk the table; ⌘0 is its tenth entry, because a rail that
+        // prints a key must have one that works.
+        const target = SHORTCUT_VIEWS[key === "0" ? 9 : Number(key) - 1];
         if (target) {
           event.preventDefault();
           navigate(target);
@@ -463,6 +468,7 @@ function Shell() {
             {route.name === "docs" ? (
               <DocsView p={route.p} onSelect={selectDoc} tabs={docsTabs} onCloseTab={closeDocTab} />
             ) : null}
+            {route.name === "morse" ? <MorseView /> : null}
             {route.name === "search" ? <SearchView q={route.q} onOpen={openIssue} /> : null}
             {route.name === "timeline" ? (
               <TimelineView

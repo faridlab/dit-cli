@@ -14,6 +14,7 @@ import type {
   FieldPatch,
   IssueDto,
   IssueListDto,
+  MorseReportDto,
   NewIssueInput,
   SchemaDto,
   SetSettingsInput,
@@ -140,6 +141,12 @@ export function createIssue(input: NewIssueInput): Promise<IssueDto> {
 
 export function getBoard(): Promise<BoardDto> {
   return request<BoardDto>("/api/board");
+}
+
+/** Morse's read model (§20): the derived catalogue and each scenario's
+ *  verdict. A read — the server answers from the index and sends nothing. */
+export function getMorse(): Promise<MorseReportDto> {
+  return request<MorseReportDto>("/api/morse");
 }
 
 /** Every flow with its member count (ADR 0019). */

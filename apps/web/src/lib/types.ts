@@ -28,6 +28,10 @@ import type { FieldEventDto as WireFieldEventDto } from "./schema/FieldEventDto"
 import type { FieldPatchDto } from "./schema/FieldPatchDto";
 import type { IssueDto as WireIssueDto } from "./schema/IssueDto";
 import type { IssueListDto as WireIssueListDto } from "./schema/IssueListDto";
+import type { MorseOperationDto as WireMorseOperationDto } from "./schema/MorseOperationDto";
+import type { MorseReportDto as WireMorseReportDto } from "./schema/MorseReportDto";
+import type { MorseScenarioDto as WireMorseScenarioDto } from "./schema/MorseScenarioDto";
+import type { MorseSpecDto as WireMorseSpecDto } from "./schema/MorseSpecDto";
 import type { NewIssueDto } from "./schema/NewIssueDto";
 import type { SchemaDto as WireSchemaDto } from "./schema/SchemaDto";
 import type { SetSettingsDto } from "./schema/SetSettingsDto";
@@ -46,6 +50,13 @@ export interface IssueDto extends WireIssueDto {
   type: IssueType;
   priority: Priority | null;
 }
+
+// Morse (§20): a read model only. Nothing on the wire here can be sent
+// anywhere — Morse 1 has no egress (I11).
+export type MorseOperationDto = WireMorseOperationDto;
+export type MorseSpecDto = WireMorseSpecDto;
+export type MorseScenarioDto = WireMorseScenarioDto;
+export type MorseReportDto = WireMorseReportDto;
 
 export type CommentDto = WireCommentDto;
 export type FieldEventDto = WireFieldEventDto;

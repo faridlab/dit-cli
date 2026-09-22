@@ -46,6 +46,9 @@ export type Route =
       inbox?: boolean;
     }
   | { name: "docs"; p: string | null }
+  /** Morse (§20): API scenarios and the specs they are pinned to. A read
+   *  screen — it has no state worth putting in the URL yet. */
+  | { name: "morse" }
   | { name: "search"; q: string; issue?: string | null }
   /** The three plan views. Each hosts the issue panel like any list. */
   | { name: "timeline"; issue?: string | null; seq?: number | null }
@@ -100,6 +103,8 @@ export function routeToHash(route: Route): string {
       ])}`;
     case "docs":
       return `#/docs${query([["p", route.p]])}`;
+    case "morse":
+      return "#/morse";
     case "search":
       return `#/search${query([
         ["q", route.q],
@@ -176,6 +181,7 @@ export function parseHash(hash: string): Route {
     // the URL so a reload (or a shared link) reopens the same page.
     return { name: "docs", p: nonEmpty("p") };
   }
+  if (first === "morse") return { name: "morse" };
   if (first === "timeline") {
     const raw = nonEmpty("seq");
     const seq = raw === null ? null : Number.parseInt(raw, 10);

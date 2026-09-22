@@ -226,8 +226,9 @@ describe("the rail", () => {
   });
 
   it("keeps the shortcut table and the rail agreeing on the order", () => {
-    // AppShell binds ⌘1..⌘8 to this list by index; a row that moved without
-    // the table moving sends the reader somewhere they did not ask for.
+    // AppShell binds ⌘1..⌘9 and ⌘0 to this list by index; a row that moved
+    // without the table moving sends the reader somewhere they did not ask
+    // for.
     expect(SHORTCUT_VIEWS.map((r) => r.name)).toEqual([
       "home",
       "search",
@@ -237,6 +238,8 @@ describe("the rail", () => {
       "timeline",
       "roadmap",
       "gantt",
+      "flow",
+      "morse",
     ]);
     render();
     for (const [index, label] of [
@@ -247,8 +250,24 @@ describe("the rail", () => {
       [5, "Timeline"],
       [6, "Roadmap"],
       [7, "Gantt"],
+      [8, "Flow"],
     ] as Array<[number, string]>) {
       expect(row(label).querySelector("kbd")?.textContent, label).toBe(`⌘${index + 1}`);
+    }
+    // The tenth rides on ⌘0, since there is no ⌘10.
+    expect(row("Morse").querySelector("kbd")?.textContent).toBe("⌘0");
+  });
+
+  it("advertises no shortcut the shell does not bind", () => {
+    // A key printed on a row that nothing listens for is a dead control.
+    // Flow printed ⌘9 for months while the shell only bound ⌘1..⌘8.
+    render();
+    for (const label of ["Home", "Board", "Issues", "Docs", "Timeline", "Roadmap", "Gantt", "Flow", "Morse"]) {
+      const printed = row(label).querySelector("kbd")?.textContent;
+      if (!printed) continue;
+      const digit = printed.replace("⌘", "");
+      const index = digit === "0" ? 9 : Number(digit) - 1;
+      expect(SHORTCUT_VIEWS[index], `${label} prints ${printed}`).toBeDefined();
     }
   });
 });
