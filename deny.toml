@@ -8,6 +8,10 @@ allow = [
     "Unicode-3.0",
     "Unicode-DFS-2016",
     "Zlib",
+    # notify (the watcher, ADR 0017) is MIT OR Apache-2.0 OR CC0-1.0; the
+    # expression as a whole needs every arm allowed. CC0 is a permissive
+    # public-domain dedication.
+    "CC0-1.0",
 ]
 confidence-threshold = 0.9
 

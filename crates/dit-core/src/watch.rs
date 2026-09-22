@@ -77,6 +77,15 @@ pub fn spawn(dit: Arc<Mutex<Dit>>) -> mpsc::Receiver<()> {
                     // folder's creation.
                     let _ = watcher.watch(shard, RecursiveMode::Recursive);
                 }
+                // Every commit rewrites a ref under `.git/refs` (loose or
+                // packed) — a small tree, and the one event source that is
+                // deterministic on every backend regardless of how the
+                // content files were written (truncate-write, temp-rename,
+                // or a hand `git commit` after a Vim edit).
+                let refs = notify_root.join(".git").join("refs");
+                if refs.is_dir() {
+                    let _ = watcher.watch(&refs, RecursiveMode::Recursive);
+                }
                 for e in rx.iter().flatten() {
                     // Only fs changes matter; the rest (e.g. errors about
                     // watch limits) take the polling path below.
