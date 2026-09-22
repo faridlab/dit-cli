@@ -37,11 +37,20 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Watch the workspace and signal once per externally-committed change.
 ///
-/// Watches the tree root and `.dit/` non-recursively plus the current
-/// month's shard recursively (new work lands there; §6.3's scale rules —
-/// watching every historical month would exhaust inotify). A signal means
-/// "the index moved under you, refetch"; it carries no payload on purpose,
-/// the same contract the server's WebSocket frame already has.
+/// Watches a bounded set of paths: the repo root non-recursively and
+/// `.git/refs` recursively. That is the whole observation DIT can make —
+/// reads answer from HEAD, so only a commit changes anything observable,
+/// and every commit rewrites a ref. A signal means "the index moved under
+/// you, refetch"; it carries no payload on purpose, the same contract the
+/// server's WebSocket frame already has.
+///
+/// Deliberately NOT watching the content shards (§6.3's original sketch):
+/// on macOS the kqueue backend costs one file descriptor per watched path,
+/// so a recursive shard watch on a real workspace burns hundreds of fds and
+/// wedges the server against the default 256-descriptor limit — found live
+/// when a serpa-dit `dit ui` stopped answering. Refs are dozens of paths at
+/// most, which keeps the watch set bounded on every platform (Linux inotify
+/// spends no fd per watch, but bounded is bounded).
 pub fn spawn(dit: Arc<Mutex<Dit>>) -> mpsc::Receiver<()> {
     let (tx, rx) = mpsc::channel();
     let stopped = Arc::new(AtomicBool::new(false));
@@ -50,7 +59,6 @@ pub fn spawn(dit: Arc<Mutex<Dit>>) -> mpsc::Receiver<()> {
         let dit = lock(&dit);
         dit.repo.root().to_owned()
     };
-    let month_shard = current_month_shard(&root);
 
     // The notify side: watch and forward raw events into the debounce loop,
     // or degrade that loop to HEAD polling on any error.
@@ -71,12 +79,6 @@ pub fn spawn(dit: Arc<Mutex<Dit>>) -> mpsc::Receiver<()> {
                 #[cfg(not(target_os = "macos"))]
                 let mut watcher = notify::recommended_watcher(tx)?;
                 watcher.watch(&notify_root, RecursiveMode::NonRecursive)?;
-                if let Some(shard) = &month_shard {
-                    // Best effort: a missing shard simply means nothing to
-                    // watch there yet; the root watch still fires on the
-                    // folder's creation.
-                    let _ = watcher.watch(shard, RecursiveMode::Recursive);
-                }
                 // Every commit rewrites a ref under `.git/refs` (loose or
                 // packed) — a small tree, and the one event source that is
                 // deterministic on every backend regardless of how the
@@ -195,19 +197,4 @@ fn lock(dit: &Arc<Mutex<Dit>>) -> std::sync::MutexGuard<'_, Dit> {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     }
-}
-
-/// `issues/YYYY/MM` for the current UTC month, when the layout has one —
-/// whichever side of `.dit/` the content root sits on (ADR 0005).
-fn current_month_shard(root: &std::path::Path) -> Option<std::path::PathBuf> {
-    let now = time::OffsetDateTime::now_utc();
-    let month = format!("{:02}", u8::from(now.month()));
-    ["issues", ".dit/issues"]
-        .into_iter()
-        .map(|base| {
-            root.join(base)
-                .join(format!("{:04}", now.year()))
-                .join(&month)
-        })
-        .find(|shard| shard.is_dir())
 }

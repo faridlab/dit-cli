@@ -993,9 +993,22 @@ async fn serve_uri(uri: axum::http::Uri) -> Response {
             None => return axum::http::StatusCode::NOT_FOUND.into_response(),
         },
     };
+    // Cache discipline: hashed assets are immutable, so a year is safe and
+    // makes reloads instant. The shell must NEVER be cached beyond
+    // revalidation — a stale shell references yesterday's hashed assets,
+    // which a new binary no longer embeds, and the browser reports them as
+    // 404s over an upgrade.
+    let cache = if name.starts_with("assets/") {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
     {
         (
-            [(axum::http::header::CONTENT_TYPE, asset_mime(name))],
+            [
+                (axum::http::header::CONTENT_TYPE, asset_mime(name)),
+                (axum::http::header::CACHE_CONTROL, cache),
+            ],
             axum::body::Body::from(data.into_owned()),
         )
             .into_response()
