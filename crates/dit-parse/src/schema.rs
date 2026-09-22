@@ -3,7 +3,7 @@
 
 use dit_model::{
     Config, Coordination, DataLayout, DerivedRule, DerivedSignal, Gate, Lane, Numbering,
-    ReadinessConfig, RepoLink, StatusCategory, Transition, Workflow, WorkflowStatus,
+    ReadinessConfig, RepoLink, SpecEntry, StatusCategory, Transition, Workflow, WorkflowStatus,
 };
 
 use crate::yaml::{self, Yaml, YamlError};
@@ -350,12 +350,93 @@ pub fn parse_config(text: &str) -> Result<Config, SchemaError> {
             });
         }
     }
-    Ok(Config {
+    let mut specs = Vec::new();
+    if let Some(sn) = root.get("specs") {
+        for node in sn.as_seq().ok_or(SchemaError::NotAList("specs".into()))? {
+            let id = str_of(node, "id")?;
+            let path = str_of(node, "path")?;
+            specs.push(SpecEntry {
+                id,
+                repo: node
+                    .get("repo")
+                    .and_then(Yaml::as_str)
+                    .map(str::to_owned)
+                    .filter(|r| !r.is_empty()),
+                path,
+            });
+        }
+    }
+    let config = Config {
         schema_version,
         layout,
         numbering,
         repos,
-    })
+        specs,
+    };
+    validate_specs(&config)?;
+    Ok(config)
+}
+
+/// The cross-field checks on `specs:` (§20.2). Two of them are ordinary
+/// hygiene; the third is I7 in code rather than only in prose.
+fn validate_specs(cfg: &Config) -> Result<(), SchemaError> {
+    let mut seen = std::collections::HashSet::new();
+    for spec in &cfg.specs {
+        if !seen.insert(&spec.id) {
+            return Err(SchemaError::BadValue {
+                key: "specs".into(),
+                value: spec.id.clone(),
+                hint: "the same spec id appears twice — a step's `operation:`                        would have no single answer"
+                    .into(),
+            });
+        }
+        if spec.id.is_empty()
+            || !spec
+                .id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(SchemaError::BadValue {
+                key: "specs.id".into(),
+                value: spec.id.clone(),
+                hint: "a spec id is letters, digits, dashes and underscores —                        it is the namespace before the `/` in `operation:`"
+                    .into(),
+            });
+        }
+        if looks_like_url(&spec.path) {
+            return Err(SchemaError::BadValue {
+                key: "specs.path".into(),
+                value: spec.path.clone(),
+                hint: "a spec is a path inside a repository, never a URL: a file                        DIT could fetch on its own accord is remote code execution                        by pull request (I7, §20.2). Vendor the document instead"
+                    .into(),
+            });
+        }
+        if let Some(repo) = &spec.repo {
+            if !cfg.repos.iter().any(|r| &r.name == repo) {
+                return Err(SchemaError::BadValue {
+                    key: "specs.repo".into(),
+                    value: repo.clone(),
+                    hint: "not one of the linked repos — add it under `repos:` first".into(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether a spec path is really an address. Deliberately broad: a scheme of
+/// any name, and the protocol-relative form that a scheme test alone misses.
+fn looks_like_url(path: &str) -> bool {
+    let trimmed = path.trim();
+    if trimmed.starts_with("//") {
+        return true;
+    }
+    match trimmed.split_once("://") {
+        Some((scheme, _)) => {
+            !scheme.is_empty() && scheme.chars().all(|c| c.is_ascii_alphanumeric())
+        }
+        None => false,
+    }
 }
 
 /// Read a closed-set enum key: absent or null → `None` (caller applies the
@@ -493,10 +574,12 @@ pub fn write_config(cfg: &Config) -> String {
     let mut out = format!("schema_version: {}\n", cfg.schema_version);
     out.push_str(&format!("layout: {}\n", cfg.layout.as_str()));
     out.push_str(&format!("numbering: {}\n", cfg.numbering.as_str()));
-    if cfg.repos.is_empty() {
+    if cfg.repos.is_empty() && cfg.specs.is_empty() {
         return out;
     }
-    out.push_str("repos:\n");
+    if !cfg.repos.is_empty() {
+        out.push_str("repos:\n");
+    }
     for r in &cfg.repos {
         out.push_str(&format!(
             "  - name: {}\n    remote: {}\n",
@@ -508,6 +591,17 @@ pub fn write_config(cfg: &Config) -> String {
             out.push_str(&format!("    branches: [{}]\n", bs.join(", ")));
         }
     }
+    if !cfg.specs.is_empty() {
+        out.push_str("specs:\n");
+        for spec in &cfg.specs {
+            let mut fields = format!("id: {}", quote_if_needed(&spec.id));
+            if let Some(repo) = &spec.repo {
+                fields.push_str(&format!(", repo: {}", quote_if_needed(repo)));
+            }
+            fields.push_str(&format!(", path: {}", quote_if_needed(&spec.path)));
+            out.push_str(&format!("  - {{ {fields} }}\n"));
+        }
+    }
     out
 }
 
@@ -515,7 +609,7 @@ pub fn write_config(cfg: &Config) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use dit_model::Workflow;
+    use dit_model::{SpecEntry, Workflow};
 
     #[test]
     fn the_default_workflow_round_trips_through_yaml() {
@@ -639,9 +733,71 @@ coordination:
                 remote: "git@github.com:acme/backend.git".into(),
                 branches: vec!["main".into(), "develop".into()],
             }],
+            specs: vec![],
         };
         let text = write_config(&cfg);
         assert_eq!(parse_config(&text).unwrap(), cfg);
+    }
+
+    #[test]
+    fn a_config_with_registered_specs_round_trips() {
+        let cfg = Config {
+            repos: vec![RepoLink {
+                name: "backend".into(),
+                remote: "git@github.com:acme/backend.git".into(),
+                branches: vec![],
+            }],
+            specs: vec![
+                SpecEntry {
+                    id: "auth".into(),
+                    repo: Some("backend".into()),
+                    path: "services/auth/openapi.yaml".into(),
+                },
+                SpecEntry {
+                    id: "legacy".into(),
+                    repo: None,
+                    path: "vendor/legacy-v2.json".into(),
+                },
+            ],
+            ..Config::default()
+        };
+        let text = write_config(&cfg);
+        assert_eq!(parse_config(&text).unwrap(), cfg);
+        assert!(
+            !write_config(&Config::default()).contains("specs:"),
+            "a workspace with no specs writes no key — old files stay byte-identical"
+        );
+    }
+
+    #[test]
+    fn a_spec_path_that_is_a_url_is_refused() {
+        // §20.2 / I7: a spec DIT could fetch has no place in a committed
+        // file. Vendoring puts the change in a diff a person reads.
+        for bad in [
+            "https://example.com/openapi.yaml",
+            "http://example.com/openapi.yaml",
+            "//example.com/openapi.yaml",
+        ] {
+            let text = format!("schema_version: 1\nspecs:\n  - {{ id: a, path: \"{bad}\" }}\n");
+            let err = parse_config(&text).unwrap_err();
+            assert!(
+                err.to_string().contains("path"),
+                "`{bad}` must be refused by name, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_spec_naming_an_unlinked_repo_is_refused() {
+        let text = "schema_version: 1\nspecs:\n  - { id: a, repo: nowhere, path: a.yaml }\n";
+        let err = parse_config(text).unwrap_err();
+        assert!(err.to_string().contains("nowhere"), "{err}");
+    }
+
+    #[test]
+    fn duplicate_spec_ids_are_refused() {
+        let text = "schema_version: 1\nspecs:\n  - { id: a, path: one.yaml }\n  - { id: a, path: two.yaml }\n";
+        assert!(parse_config(text).is_err());
     }
 
     #[test]

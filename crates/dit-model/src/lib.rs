@@ -30,7 +30,7 @@ mod time;
 mod workflow;
 
 pub use comment::{Author, Comment};
-pub use config::{Config, Numbering, RepoLink, SCHEMA_MAX};
+pub use config::{Config, Numbering, RepoLink, SpecEntry, SCHEMA_MAX};
 pub use doc::{DocEntry, DocPath, DocPathError, DOC_ROOTS};
 pub use events::{ChangeSummary, DayCount, EventSource, FieldEvent, StoredFieldEvent};
 pub use flowshape::{

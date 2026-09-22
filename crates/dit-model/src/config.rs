@@ -21,6 +21,26 @@ pub struct RepoLink {
     pub branches: Vec<String>,
 }
 
+/// An OpenAPI document Morse reads endpoints from (§20.2, ADR 0022).
+///
+/// `path` is a path inside a repository and never a URL: a spec DIT could
+/// fetch would be a file it retrieves on its own accord, which is the whole
+/// of I7. A spec another team publishes is vendored into the tree by the
+/// command that updates it, where a human reads the diff.
+///
+/// `repo` names an entry in [`Config::repos`], which is what makes Morse work
+/// in Mode A — the default, and the one mode where the spec is not in this
+/// repository at all. `None` means this workspace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpecEntry {
+    /// The namespace a step's `operation:` is qualified with. Required
+    /// because `operationId` is unique only inside one OpenAPI document.
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    pub path: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
     /// The file-format version. Clients read files up to their `SCHEMA_MAX`,
@@ -38,6 +58,10 @@ pub struct Config {
     /// Mode A linked code repos. Empty in a standalone non-code workspace.
     #[serde(default)]
     pub repos: Vec<RepoLink>,
+    /// OpenAPI documents Morse derives its endpoint catalogue from. Empty in
+    /// a workspace that does not use Morse.
+    #[serde(default)]
+    pub specs: Vec<SpecEntry>,
 }
 
 /// Number-assignment policy (ADR 0007). Closed set of two.
@@ -80,6 +104,7 @@ impl Default for Config {
             layout: DataLayout::Root,
             numbering: Numbering::Local,
             repos: vec![],
+            specs: vec![],
         }
     }
 }
