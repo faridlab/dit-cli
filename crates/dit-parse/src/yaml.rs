@@ -72,13 +72,36 @@ struct Line {
     indent: usize,
     text: String, // comment-stripped, trimmed
     no: usize,    // 1-based source line number
+    /// The already-gathered value of a `key: |` or `key: >` block. Resolved
+    /// during the line scan, because the continuation lines are deeper than
+    /// their key and every structural rule below would read them as a nested
+    /// block instead of as text.
+    block: Option<String>,
 }
 
 pub fn parse(text: &str) -> Result<Yaml, YamlError> {
     let mut lines = Vec::new();
-    for (i, raw) in text.split('\n').enumerate() {
+    let raw_lines: Vec<&str> = text.split('\n').collect();
+    let mut i = 0;
+    while i < raw_lines.len() {
+        let raw = raw_lines[i];
+        // A block scalar's own lines are literal text: comments are not
+        // stripped from them and `#` is just a character, so the header has
+        // to be recognised before anything else touches the line.
+        if let Some((key, style, indent)) = block_header(raw) {
+            let (value, next) = gather_block(&raw_lines, i + 1, indent, style);
+            lines.push(Line {
+                indent,
+                text: format!("{key}:"),
+                no: i + 1,
+                block: Some(value),
+            });
+            i = next;
+            continue;
+        }
         let stripped = strip_comment(raw);
         if stripped.trim().is_empty() {
+            i += 1;
             continue;
         }
         let indent = stripped.len() - stripped.trim_start().len();
@@ -86,13 +109,95 @@ pub fn parse(text: &str) -> Result<Yaml, YamlError> {
             indent,
             text: stripped.trim().to_owned(),
             no: i + 1,
+            block: None,
         });
+        i += 1;
     }
     if lines.is_empty() {
         return Ok(Yaml::Null);
     }
     let mut idx = 0;
     parse_block(&lines, &mut idx, lines[0].indent)
+}
+
+/// How a block scalar joins its lines and what it does with the trailing
+/// newline. Only the four forms real documents use are accepted.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BlockStyle {
+    /// `|` — lines kept as written.
+    Literal,
+    /// `>` — lines folded into one, joined with spaces.
+    Folded,
+}
+
+/// `key: |`, `key: >`, with an optional `-` or `+` chomping indicator.
+/// Returns the key, the style, and the key's own indentation.
+fn block_header(raw: &str) -> Option<(String, BlockStyle, usize)> {
+    let indent = raw.len() - raw.trim_start().len();
+    let text = raw.trim();
+    let (key, value) = split_entry(text)?;
+    let mut chars = value.chars();
+    let style = match chars.next()? {
+        '|' => BlockStyle::Literal,
+        '>' => BlockStyle::Folded,
+        _ => return None,
+    };
+    // Everything after the marker must be a chomping indicator and nothing
+    // else — `a: |x` is a scalar that happens to start with a pipe.
+    if !chars.all(|c| c == '-' || c == '+') {
+        return None;
+    }
+    Some((key, style, indent))
+}
+
+/// Consume the lines belonging to a block scalar: those indented deeper than
+/// the key, plus blank lines between them. Returns the value and the index
+/// of the first line that is not part of it.
+fn gather_block(
+    raw_lines: &[&str],
+    start: usize,
+    key_indent: usize,
+    style: BlockStyle,
+) -> (String, usize) {
+    let mut body: Vec<&str> = Vec::new();
+    let mut i = start;
+    while i < raw_lines.len() {
+        let line = raw_lines[i];
+        let deeper = line.len() - line.trim_start().len() > key_indent;
+        if line.trim().is_empty() || deeper {
+            body.push(line);
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    while body.last().is_some_and(|l| l.trim().is_empty()) {
+        body.pop();
+    }
+    // The block's own indentation is set by its first non-blank line and
+    // stripped from every line, so nesting the document deeper does not
+    // change the text.
+    let strip = body
+        .iter()
+        .find(|l| !l.trim().is_empty())
+        .map_or(0, |l| l.len() - l.trim_start().len());
+    let cut = |l: &&str| -> String {
+        if l.len() >= strip {
+            l[strip..].trim_end().to_owned()
+        } else {
+            l.trim().to_owned()
+        }
+    };
+    let value = match style {
+        BlockStyle::Literal => body.iter().map(cut).collect::<Vec<_>>().join("\n"),
+        BlockStyle::Folded => body
+            .iter()
+            .map(cut)
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join(" "),
+    };
+    (value, i)
 }
 
 /// Strip a trailing `# comment` that is outside quotes.
@@ -160,9 +265,9 @@ fn parse_child(lines: &[Line], idx: &mut usize, key_indent: usize) -> Result<Yam
 fn parse_map(lines: &[Line], idx: &mut usize, indent: usize) -> Result<Yaml, YamlError> {
     let mut entries: Vec<(String, Yaml)> = Vec::new();
     while *idx < lines.len() {
-        let (line_no, text, cur_indent) = {
+        let (line_no, text, cur_indent, block) = {
             let l = &lines[*idx];
-            (l.no, l.text.clone(), l.indent)
+            (l.no, l.text.clone(), l.indent, l.block.clone())
         };
         if cur_indent < indent {
             break;
@@ -184,7 +289,9 @@ fn parse_map(lines: &[Line], idx: &mut usize, indent: usize) -> Result<Yaml, Yam
             });
         };
         *idx += 1; // the key line is consumed in every branch below
-        let value = if !value_part.is_empty() {
+        let value = if let Some(text) = block {
+            Yaml::Str(text)
+        } else if !value_part.is_empty() {
             parse_scalar(&value_part, line_no)?
         } else {
             parse_child(lines, idx, indent)?
@@ -247,6 +354,7 @@ fn parse_seq(lines: &[Line], idx: &mut usize, indent: usize) -> Result<Yaml, Yam
                     let l = &lines[*idx];
                     (l.no, l.text.clone(), l.indent)
                 };
+                let cont_block = lines[*idx].block.clone();
                 let Some((k, vp)) = split_entry(&cont_text) else {
                     return Err(YamlError::BadLine {
                         line: cont_no,
@@ -254,7 +362,9 @@ fn parse_seq(lines: &[Line], idx: &mut usize, indent: usize) -> Result<Yaml, Yam
                     });
                 };
                 *idx += 1;
-                let v = if !vp.is_empty() {
+                let v = if let Some(text) = cont_block {
+                    Yaml::Str(text)
+                } else if !vp.is_empty() {
                     parse_scalar(&vp, cont_no)?
                 } else {
                     parse_child(lines, idx, cont_indent)?
@@ -387,6 +497,51 @@ derived:
   - on: commit_trailer
     implies: review
 ";
+
+    #[test]
+    fn literal_block_scalars_keep_their_lines() {
+        // Real OpenAPI documents describe things, and descriptions wrap.
+        // Before block scalars were understood, the indented continuation
+        // lines read as inconsistent indentation and killed the whole file.
+        let y = parse(
+            "info:\n  title: Acme\n  description: |\n    First line.\n    Second line.\nservers:\n  - url: \"http://localhost:3000\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            y.get("info").and_then(|i| i.get("description")).unwrap(),
+            &Yaml::Str("First line.\nSecond line.".into())
+        );
+        assert_eq!(
+            y.get("info")
+                .and_then(|i| i.get("title"))
+                .and_then(Yaml::as_str),
+            Some("Acme"),
+            "the keys around a block scalar still parse"
+        );
+        assert!(y.get("servers").and_then(Yaml::as_seq).is_some());
+    }
+
+    #[test]
+    fn folded_and_chomped_blocks_are_understood() {
+        let y = parse("a: >\n  one\n  two\nb: 2\n").unwrap();
+        assert_eq!(
+            y.get("a"),
+            Some(&Yaml::Str("one two".into())),
+            "folded joins with spaces"
+        );
+        assert_eq!(y.get("b").and_then(Yaml::as_str), Some("2"));
+
+        let y = parse("a: |-\n  one\n\nb: 2\n").unwrap();
+        assert_eq!(y.get("a"), Some(&Yaml::Str("one".into())));
+        assert_eq!(y.get("b").and_then(Yaml::as_str), Some("2"));
+    }
+
+    #[test]
+    fn a_hash_inside_a_block_scalar_is_not_a_comment() {
+        let y = parse("a: |\n  # not a comment\n  text\nb: 2\n").unwrap();
+        assert_eq!(y.get("a"), Some(&Yaml::Str("# not a comment\ntext".into())));
+        assert_eq!(y.get("b").and_then(Yaml::as_str), Some("2"));
+    }
 
     #[test]
     fn parses_the_workflow_shape() {
