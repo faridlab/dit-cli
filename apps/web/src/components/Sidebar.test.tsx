@@ -32,7 +32,6 @@ function render(route: Route = { name: "home" }) {
         mode="expanded"
         section={null}
         onNavigate={(r) => went.push(r)}
-        onNewIssue={() => undefined}
         onOpenPalette={() => undefined}
         workspaceMenu={[]}
       />,
@@ -128,6 +127,32 @@ describe("the rail", () => {
     );
     expect(current).toHaveLength(1);
     expect(current[0]?.querySelector(".lbl")?.textContent).toBe("Inbox");
+  });
+
+  it("draws New issue once, and not here — the header already owns it", () => {
+    render();
+    const creates = [...container.querySelectorAll("button, a")].filter((el) =>
+      (el.textContent ?? "").includes("New issue"),
+    );
+    expect(creates).toHaveLength(0);
+  });
+
+  it("pins Settings and nothing else to the bottom edge", () => {
+    render();
+    const pinned = [...container.querySelectorAll(".sb-bottom a, .sb-bottom button")];
+    expect(pinned.map((el) => el.querySelector(".lbl")?.textContent)).toEqual(["Settings"]);
+  });
+
+  it("keeps the nav out of the scrolling region so a long list cannot push it away", () => {
+    render({ name: "board" });
+    const nav = container.querySelector("nav.nav");
+    const section = container.querySelector(".sb-section");
+    expect(nav).toBeTruthy();
+    // Structural, because this is a structural fix: the part that grows
+    // without limit is the view's section, and it must be the only thing
+    // that scrolls.
+    expect(nav!.closest(".sb-section")).toBeNull();
+    expect(section?.contains(nav!)).not.toBe(true);
   });
 
   it("keeps the shortcut table and the rail agreeing on the order", () => {

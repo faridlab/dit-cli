@@ -426,7 +426,6 @@ function Shell() {
           mode={sidebarMode}
           section={section}
           onNavigate={navigate}
-          onNewIssue={openNewIssue}
           onOpenPalette={() => setPaletteOpen(true)}
           workspaceMenu={workspaceMenu}
         />

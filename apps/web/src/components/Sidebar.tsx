@@ -1,8 +1,17 @@
 // The workbench's left column: workspace identity, the search box, labeled
 // navigation with live counts, then the active view's own section (columns,
-// filters, the pages tree…), with "New issue" and Settings pinned to the
-// bottom edge. Nav and section share one scroll region so a short window
-// never lets the section run under the pinned row.
+// filters, the pages tree…), with Settings pinned to the bottom edge.
+//
+// The navigation does not scroll. Only the view's own section does, because
+// that is the part that grows without limit — a lane's waiting list, a
+// board's columns, a docs tree. Scrolling them together meant reaching the
+// bottom of a long list pushed Home and Board off the screen, so getting
+// back to another view began with scrolling up to find it.
+//
+// "New issue" is not here. The header already draws it as the one coloured
+// action on every screen, with the same `C` shortcut; a second copy pinned
+// down here was the same button twice, and it cost the section the height
+// it actually needed.
 //
 // The nav is grouped because a flat list of eleven rows hid what kind of
 // thing each row was. Three kinds live here and they are not equals:
@@ -30,7 +39,6 @@ import {
   House,
   Layers,
   ListTodo,
-  Plus,
   Search,
   Settings,
   Waypoints,
@@ -133,7 +141,6 @@ export function Sidebar({
   mode,
   section,
   onNavigate,
-  onNewIssue,
   onOpenPalette,
   workspaceMenu,
 }: {
@@ -142,7 +149,6 @@ export function Sidebar({
   /** The active view's own surface: filters, columns, the pages tree. */
   section: { title: string; node: ReactNode } | null;
   onNavigate: (route: Route) => void;
-  onNewIssue: () => void;
   onOpenPalette: () => void;
   /** The workspace menu behind the logo row. */
   workspaceMenu: MenuItem[];
@@ -197,8 +203,7 @@ export function Sidebar({
         </button>
       </div>
 
-      <div className="sb-scroll">
-        <nav className="nav" aria-label="Views">
+      <nav className="nav" aria-label="Views">
           <NavLink label="Home" icon={House} shortcut="⌘1" active={route.name === "home"} onClick={() => onNavigate({ name: "home" })} />
           <NavLink label="Docs" icon={FileText} shortcut="⌘5" active={route.name === "docs"} onClick={() => onNavigate({ name: "docs", p: null })} />
 
@@ -247,21 +252,15 @@ export function Sidebar({
           <NavLink label="Timeline" icon={Clock} shortcut="⌘6" active={route.name === "timeline"} onClick={() => onNavigate({ name: "timeline" })} />
           <NavLink label="Roadmap" icon={Layers} shortcut="⌘7" active={route.name === "roadmap"} onClick={() => onNavigate({ name: "roadmap" })} />
           <NavLink label="Gantt" icon={ChartGantt} shortcut="⌘8" active={route.name === "gantt"} onClick={() => onNavigate({ name: "gantt" })} />
-        </nav>
+      </nav>
 
-        {section ? (
-          <section aria-label={`${section.title} section`} className="sb-section">
-            {section.node}
-          </section>
-        ) : null}
-      </div>
+      {section ? (
+        <section aria-label={`${section.title} section`} className="sb-section">
+          {section.node}
+        </section>
+      ) : null}
 
       <div className="sb-bottom nav">
-        <button type="button" className="row" style={{ height: 30 }} onClick={onNewIssue}>
-          <Plus className="i" aria-hidden />
-          <span className="lbl">New issue</span>
-          <kbd>C</kbd>
-        </button>
         <a
           href="#/settings"
           onClick={(event) => {
