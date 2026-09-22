@@ -12,6 +12,12 @@ allow = [
     # expression as a whole needs every arm allowed. CC0 is a permissive
     # public-domain dedication.
     "CC0-1.0",
+    # webpki-roots is Mozilla's CA bundle, which entered the graph when Morse
+    # started speaking HTTPS (§20.5). CDLA-Permissive-2.0 is a permissive
+    # *data* licence — no copyleft and no obligation on anything downstream —
+    # which fits, because what it covers is a list of certificates rather
+    # than code this project links against.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9
 
