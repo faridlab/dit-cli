@@ -154,6 +154,13 @@ enum Command {
         #[command(subcommand)]
         cmd: FlowCmd,
     },
+    /// Morse (§20): the API scenarios this repository states, and whether
+    /// they still match the specs they were written against. Reads only —
+    /// nothing here sends a request.
+    Morse {
+        #[command(subcommand)]
+        cmd: MorseCmd,
+    },
     /// Called by git during merges; humans never type this.
     #[command(hide = true)]
     MergeDriver {
@@ -218,6 +225,21 @@ enum FlowCmd {
     /// One flow, stage by stage: the text form of the diagram. `all`
     /// renders the union of every flow.
     Show { name: String },
+}
+
+#[derive(Subcommand)]
+enum MorseCmd {
+    /// The registered specs and what each one describes.
+    Specs,
+    /// One spec's operations — the catalogue a scenario draws from.
+    Operations {
+        /// The spec id, as `specs:` in .dit/config.yaml registers it.
+        spec: String,
+    },
+    /// Every scenario with its verdict: fresh, stale, broken, unreadable.
+    /// Exits non-zero when anything is broken or unreadable — stale is a
+    /// fact about the world, not a failure, so it does not fail the check.
+    Check,
 }
 
 #[derive(Subcommand)]
@@ -835,6 +857,109 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
             }
             Ok(ExitCode::SUCCESS)
         }
+        Command::Morse { cmd } => match cmd {
+            MorseCmd::Specs => {
+                let dit = open()?;
+                let report = dit.morse_report()?;
+                if report.specs.is_empty() {
+                    println!(
+                        "no specs registered — add one under `specs:` in .dit/config.yaml, \
+                         e.g. `- {{ id: auth, path: api/openapi.yaml }}`"
+                    );
+                    return Ok(ExitCode::SUCCESS);
+                }
+                for spec in &report.specs {
+                    let where_ = spec
+                        .repo
+                        .as_deref()
+                        .map_or_else(|| spec.path.clone(), |r| format!("{r}:{}", spec.path));
+                    match &spec.problem {
+                        None => println!(
+                            "{:<12} {:>4} op(s)  {}  {}",
+                            spec.id,
+                            spec.operations.len(),
+                            spec.title.as_deref().unwrap_or("-"),
+                            where_
+                        ),
+                        Some(problem) => {
+                            println!("{:<12} unreadable  {where_}", spec.id);
+                            println!("             {problem}");
+                        }
+                    }
+                }
+                Ok(ExitCode::SUCCESS)
+            }
+            MorseCmd::Operations { spec } => {
+                let dit = open()?;
+                let report = dit.morse_report()?;
+                let Some(found) = report.specs.iter().find(|s| s.id == spec) else {
+                    eprintln!("no spec `{spec}` — `dit morse specs` lists the registered ones");
+                    return Ok(ExitCode::FAILURE);
+                };
+                if let Some(problem) = &found.problem {
+                    eprintln!("spec `{spec}` could not be read: {problem}");
+                    return Ok(ExitCode::FAILURE);
+                }
+                for op in &found.operations {
+                    println!(
+                        "{:<7} {:<32} {:<24} {}",
+                        op.method,
+                        op.path,
+                        op.operation_id,
+                        op.summary.as_deref().unwrap_or("")
+                    );
+                }
+                Ok(ExitCode::SUCCESS)
+            }
+            MorseCmd::Check => {
+                let dit = open()?;
+                let report = dit.morse_report()?;
+                for spec in report.specs.iter().filter(|s| s.problem.is_some()) {
+                    println!(
+                        "spec {} — {}",
+                        spec.id,
+                        spec.problem.as_deref().unwrap_or("")
+                    );
+                }
+                if report.scenarios.is_empty() {
+                    println!(
+                        "no scenarios yet — write a `dit-morse` fence in a document under docs/"
+                    );
+                }
+                for s in &report.scenarios {
+                    let at = format!("{}:{}", s.path, s.line);
+                    match &s.health {
+                        dit_core::ScenarioHealth::Fresh => {
+                            println!("fresh       {:<24} {at}", s.scenario);
+                        }
+                        dit_core::ScenarioHealth::Stale { commits } => {
+                            println!(
+                                "stale       {:<24} {at}  — `{}` has moved {commits} commit(s) \
+                                 since this was checked",
+                                s.scenario, s.spec_id
+                            );
+                        }
+                        dit_core::ScenarioHealth::Broken { reasons } => {
+                            println!("broken      {:<24} {at}", s.scenario);
+                            for reason in reasons {
+                                println!("            {reason}");
+                            }
+                        }
+                        dit_core::ScenarioHealth::Unreadable { detail } => {
+                            println!("unreadable  {:<24} {at}", s.scenario);
+                            println!("            {detail}");
+                        }
+                    }
+                }
+                // Stale never fails the check: it reports that the world
+                // moved, which is the thing to know, not a thing to fix here.
+                Ok(if report.is_clean() {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                })
+            }
+        },
         Command::Flow { cmd } => match cmd {
             FlowCmd::List => {
                 let dit = open()?;
