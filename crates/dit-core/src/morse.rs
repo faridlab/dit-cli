@@ -658,6 +658,22 @@ impl Dit {
                     parsed.spec.id
                 ))
             })?;
+        // A generated spec very often declares `servers: - url: /`, which says
+        // "wherever this is deployed" and names no host at all. That is a
+        // perfectly good document and an impossible instruction, so it is
+        // worth its own sentence rather than failing later as a malformed URL.
+        if !base_url.contains("://") {
+            return Err(DitError::Refuse(format!(
+                "the spec for `{}` says its server is `{base_url}`, which is relative — it names \
+                 no host, so nothing can be sent. Give the `{}` environment a `server:` in \
+                 {}, for example:\n\
+                 \n  envs:\n    {}:\n      server: \"http://localhost:8080\"\n",
+                parsed.spec.id,
+                env_name.unwrap_or("default"),
+                crate::MORSE_LOCAL_PATH,
+                env_name.unwrap_or("default"),
+            )));
+        }
 
         let mut steps = Vec::new();
         for step in &parsed.steps {

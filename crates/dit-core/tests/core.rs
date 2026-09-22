@@ -3601,3 +3601,45 @@ fn a_host_this_machine_never_allowed_stops_the_run_and_names_the_way_out() {
     let refused = outcome.refused.unwrap();
     assert!(refused.contains("dit morse allow 127.0.0.1"), "{refused}");
 }
+
+#[test]
+fn a_spec_declaring_a_relative_server_says_what_to_do_about_it() {
+    // Generated specs very often say `servers: - url: /` — "wherever this is
+    // deployed". Real workspaces are full of them, and failing later as a
+    // malformed URL sends the reader looking in the wrong place.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    dit.init_workflow(&[]).unwrap();
+    std::fs::create_dir_all(tmp.path().join("api")).unwrap();
+    std::fs::write(
+        tmp.path().join("api/openapi.yaml"),
+        "openapi: 3.0.3\nservers:\n  - url: /\n    description: local\npaths:\n  /me:\n    get:\n      operationId: getCurrentUser\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(tmp.path().join(".dit")).unwrap();
+    std::fs::write(
+        tmp.path().join(".dit/config.yaml"),
+        "schema_version: 1\nlayout: root\nnumbering: local\nspecs:\n  - { id: auth, path: api/openapi.yaml }\n",
+    )
+    .unwrap();
+    let repo = Repo::open(tmp.path()).unwrap();
+    repo.add(".").unwrap();
+    repo.commit("a spec with a relative server").unwrap();
+    let pin = repo.head().unwrap();
+
+    let mut dit = Dit::open(tmp.path()).unwrap();
+    dit.reindex(ReindexMode::All).unwrap();
+    write_doc(
+        &mut dit,
+        "docs/api/s.md",
+        &format!("```dit-morse\nscenario: s\nspec: {{ id: auth, commit: {pin} }}\nenv: local\nsteps:\n  - id: me\n    operation: auth/getCurrentUser\n```\n"),
+    );
+
+    let err = dit.morse_run("s", None).unwrap_err().to_string();
+    assert!(err.contains("relative"), "{err}");
+    assert!(err.contains("morse.local.yaml"), "{err}");
+    assert!(
+        err.contains("server:"),
+        "the message has to carry the fix: {err}"
+    );
+}
