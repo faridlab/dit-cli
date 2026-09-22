@@ -1003,6 +1003,21 @@ mark{background:var(--mark);color:inherit;border-radius:2px;padding:0 1px}
    scrolls, because it is the only part that grows without limit. */
 .sidebar .nav{flex:none}
 .sb-section{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding-bottom:12px;scrollbar-gutter:stable}
+/* The section is a flex column AND the scroll container, so its headings and
+   lists must keep their natural height. Without this they shrink to fit the
+   viewport and their contents draw over each other. */
+.sb-section > *{flex:none}
+/* The measured half of the rail: nav, the line the reader drags, section. */
+.sb-shell{flex:1;min-height:0;display:flex;flex-direction:column}
+.sb-split{flex:none;height:9px;cursor:row-resize;display:grid;place-items:center;
+  touch-action:none;position:relative}
+.sb-split::before{content:"";position:absolute;left:8px;right:8px;top:4px;height:1px;
+  background:var(--edge)}
+.sb-split .grip{position:relative;width:26px;height:3px;border-radius:99px;
+  background:transparent;transition:background .12s}
+.sb-split:hover .grip,.sb-split:focus-visible .grip{background:var(--edge-2,var(--edge))}
+.sb-split:focus-visible{outline:none}
+.sb-split:focus-visible::before{background:var(--accent)}
 .sb-body{overflow:visible}
 .sb-bottom{flex:none;background:var(--bg)}
 .sidebar .nav a kbd,.sidebar .nav .row kbd{flex:none}

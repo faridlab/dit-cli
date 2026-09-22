@@ -29,7 +29,7 @@
 // back. The pointer never does either — a sweep across the screen must not
 // undo a decision.
 
-import type { ReactNode } from "react";
+import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   ChartGantt,
   Clock,
@@ -49,6 +49,7 @@ import { doneIds, isInbox } from "../lib/lists";
 import { mineQuery } from "../lib/dql";
 import { useStarred } from "../lib/starred";
 import { cn } from "../lib/cn";
+import { clampSplit, readSplit, writeSplit } from "../lib/sidebarsplit";
 import { MenuButton, type MenuItem } from "./chrome";
 import logo from "../assets/dit-logo.png";
 
@@ -100,6 +101,57 @@ function NavLink({
       {count !== undefined && count !== null ? <span className="cnt">{count}</span> : null}
       {shortcut ? <kbd>{shortcut}</kbd> : null}
     </a>
+  );
+}
+
+/** The draggable line between the navigation and the view's own section.
+ *  The nav is a fixed list and the section is not, so who gets the height is
+ *  the reader's call, not a constant someone picked once. Dragged with the
+ *  pointer, nudged with the arrow keys, and reset by double-clicking — and
+ *  remembered per browser, because a window's height is not a fact about the
+ *  plan. */
+function Splitter({
+  onDrag,
+  onNudge,
+  onReset,
+}: {
+  onDrag: (clientY: number, phase: "start" | "move" | "end") => void;
+  onNudge: (delta: number) => void;
+  onReset: () => void;
+}) {
+  return (
+    <div
+      className="sb-split"
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="Resize the navigation — arrow keys nudge, double-click resets"
+      tabIndex={0}
+      onPointerDown={(event) => {
+        event.preventDefault();
+        (event.currentTarget as Element).setPointerCapture(event.pointerId);
+        onDrag(event.clientY, "start");
+      }}
+      onPointerMove={(event) => {
+        if (!(event.currentTarget as Element).hasPointerCapture(event.pointerId)) return;
+        onDrag(event.clientY, "move");
+      }}
+      onPointerUp={(event) => onDrag(event.clientY, "end")}
+      onDoubleClick={onReset}
+      onKeyDown={(event) => {
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          onNudge(-16);
+        } else if (event.key === "ArrowDown") {
+          event.preventDefault();
+          onNudge(16);
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          onReset();
+        }
+      }}
+    >
+      <span className="grip" aria-hidden />
+    </div>
   );
 }
 
@@ -172,6 +224,68 @@ export function Sidebar({
   const mineCount = pool.data && me ? open.filter((issue) => issue.assignees.includes(me)).length : null;
   const openCount = pool.data ? pool.data.total : null;
 
+  // The split between the nav and the section, in pixels of nav height.
+  // `null` means nobody has dragged it and the nav keeps its natural height,
+  // so an untouched rail looks exactly as it always did.
+  const shell = useRef<HTMLDivElement>(null);
+  const [split, setSplit] = useState<number | null>(() => readSplit());
+  const drag = useRef<{ from: number; at: number } | null>(null);
+
+  const room = useCallback(() => shell.current?.getBoundingClientRect().height ?? 0, []);
+
+  const apply = useCallback(
+    (next: number | null) => {
+      if (next === null) {
+        setSplit(null);
+        writeSplit(null);
+        return;
+      }
+      const clamped = clampSplit(next, room());
+      setSplit(clamped);
+      writeSplit(clamped);
+    },
+    [room],
+  );
+
+  const onDrag = useCallback(
+    (clientY: number, phase: "start" | "move" | "end") => {
+      if (phase === "start") {
+        const height =
+          split ?? shell.current?.querySelector(".nav")?.getBoundingClientRect().height ?? 0;
+        drag.current = { from: clientY, at: height };
+        return;
+      }
+      const start = drag.current;
+      if (start === null) return;
+      apply(start.at + (clientY - start.from));
+      if (phase === "end") drag.current = null;
+    },
+    [apply, split],
+  );
+
+  const onNudge = useCallback(
+    (delta: number) => {
+      const height =
+        split ?? shell.current?.querySelector(".nav")?.getBoundingClientRect().height ?? 0;
+      apply(height + delta);
+    },
+    [apply, split],
+  );
+
+  // A window that shrinks below the stored split has to give the section its
+  // minimum back, or the drag from a taller screen follows you down.
+  useLayoutEffect(() => {
+    if (split === null) return;
+    const element = shell.current;
+    if (element === null) return;
+    const observer = new ResizeObserver(() => {
+      const fits = clampSplit(split, element.getBoundingClientRect().height);
+      if (fits !== split) setSplit(fits);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [split]);
+
   const issuesActive =
     (route.name === "issues" && !route.inbox && !route.starred) ||
     route.name === "issue" ||
@@ -203,7 +317,12 @@ export function Sidebar({
         </button>
       </div>
 
-      <nav className="nav" aria-label="Views">
+      <div className="sb-shell" ref={shell}>
+      <nav
+        className="nav"
+        aria-label="Views"
+        style={split === null ? undefined : { height: split, overflowY: "auto" }}
+      >
           <NavLink label="Home" icon={House} shortcut="⌘1" active={route.name === "home"} onClick={() => onNavigate({ name: "home" })} />
           <NavLink label="Docs" icon={FileText} shortcut="⌘5" active={route.name === "docs"} onClick={() => onNavigate({ name: "docs", p: null })} />
 
@@ -255,10 +374,14 @@ export function Sidebar({
       </nav>
 
       {section ? (
-        <section aria-label={`${section.title} section`} className="sb-section">
-          {section.node}
-        </section>
+        <>
+          <Splitter onDrag={onDrag} onNudge={onNudge} onReset={() => apply(null)} />
+          <section aria-label={`${section.title} section`} className="sb-section">
+            {section.node}
+          </section>
+        </>
       ) : null}
+      </div>
 
       <div className="sb-bottom nav">
         <a

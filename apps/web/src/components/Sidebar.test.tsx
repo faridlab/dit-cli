@@ -18,6 +18,21 @@ vi.mock("../lib/starred", () => ({
   useStarred: () => ({ starred: new Set<string>(["x"]) }),
 }));
 
+// jsdom has neither layout nor a ResizeObserver; the splitter asks for both.
+class NoopResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+globalThis.ResizeObserver ??= NoopResizeObserver as unknown as typeof ResizeObserver;
+Element.prototype.getBoundingClientRect = function rect() {
+  return { height: 600, width: 260, top: 0, left: 0, right: 260, bottom: 600, x: 0, y: 0, toJSON: () => ({}) };
+} as unknown as typeof Element.prototype.getBoundingClientRect;
+Element.prototype.setPointerCapture ??= function setPointerCapture() {};
+Element.prototype.hasPointerCapture ??= function hasPointerCapture() {
+  return true;
+};
+
 const { Sidebar, SHORTCUT_VIEWS } = await import("./Sidebar");
 
 let container: HTMLDivElement;
@@ -153,6 +168,61 @@ describe("the rail", () => {
     // that scrolls.
     expect(nav!.closest(".sb-section")).toBeNull();
     expect(section?.contains(nav!)).not.toBe(true);
+  });
+
+  it("offers a splitter only when there is a section to split with", () => {
+    render();
+    expect(container.querySelector('[role="separator"]')).toBeNull();
+    act(() => {
+      root.render(
+        <Sidebar
+          route={{ name: "board" }}
+          mode="expanded"
+          section={{ title: "Board", node: <p>columns</p> }}
+          onNavigate={(r) => went.push(r)}
+          onOpenPalette={() => undefined}
+          workspaceMenu={[]}
+        />,
+      );
+    });
+    const split = container.querySelector('[role="separator"]');
+    expect(split).toBeTruthy();
+    expect(split?.getAttribute("aria-orientation")).toBe("horizontal");
+    expect(split?.getAttribute("tabindex")).toBe("0");
+  });
+
+  it("resizes from the keyboard and gives the height back on reset", () => {
+    window.localStorage.clear();
+    act(() => {
+      root.render(
+        <Sidebar
+          route={{ name: "board" }}
+          mode="expanded"
+          section={{ title: "Board", node: <p>columns</p> }}
+          onNavigate={(r) => went.push(r)}
+          onOpenPalette={() => undefined}
+          workspaceMenu={[]}
+        />,
+      );
+    });
+    const nav = container.querySelector<HTMLElement>("nav.nav")!;
+    // Untouched, the nav keeps its natural height: nothing looks dragged.
+    expect(nav.style.height).toBe("");
+
+    const split = container.querySelector('[role="separator"]')!;
+    act(() => {
+      split.dispatchEvent(
+        Object.assign(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }), {}),
+      );
+    });
+    expect(nav.style.height).not.toBe("");
+    expect(window.localStorage.getItem("dit.sidebarSplit")).toBeTruthy();
+
+    act(() => {
+      split.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+    expect(container.querySelector<HTMLElement>("nav.nav")!.style.height).toBe("");
+    expect(window.localStorage.getItem("dit.sidebarSplit")).toBeNull();
   });
 
   it("keeps the shortcut table and the rail agreeing on the order", () => {
