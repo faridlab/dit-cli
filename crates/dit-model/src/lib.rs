@@ -21,6 +21,7 @@ mod flowshape;
 mod ids;
 mod issue;
 mod layout;
+mod morse;
 mod openapi;
 mod readiness;
 mod release;
@@ -41,6 +42,11 @@ pub use layout::{
     generated_index_paths, is_comment, is_generated_index, is_issue_body, is_release_file,
     looks_like_issue_body, release_version_from_path, DataLayout, CONTENT_ROOTS,
     GENERATED_INDEX_MARKER, ISSUE_BODY_FILE, LEGACY_ISSUE_BODY_FILE, RELEASES_DIR, RELEASE_FILE,
+};
+pub use morse::{
+    variables_in, Capture, Expect, ExpectRule, InlineRequest, JsonCheck, MorseScenario, MorseStep,
+    MorseValue, OperationRef, Selector, SpecPin, StepTarget, SuspectedSecret, UnboundVariable,
+    VAR_CLOSE, VAR_OPEN,
 };
 pub use openapi::{OpenApiSpec, SpecOperation, SpecServer};
 pub use readiness::{claim_liveness, readiness, ClaimLiveness, Readiness};
