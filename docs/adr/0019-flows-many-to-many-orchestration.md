@@ -45,8 +45,14 @@ charset-validated; the workflow.yaml registry remains purely an ordering and
 label hint, never a gate); its edges are the members' `blocked_by` entries
 (blocker → dependent); its stages are computed, not authored — the
 longest-path rank over the flow's edges, so a dependency always points
-rightward; its main path is the longest chain. All derived, nothing stored
-beyond membership (invariant I5 intact).
+rightward; its rows follow the mean row of each node's blockers so the
+arrows cross as little as the grid allows; and its main path is the chain
+holding the most unfinished work, which is what a reader means by "critical
+path" — the longest chain may be entirely done and therefore silent about
+when the flow lands. Blockers that are not members of the flow cannot be
+drawn, so each node carries them by name instead: without that the diagram
+shows a node as ready with nothing on screen explaining why it is not. All
+derived, nothing stored beyond membership (invariant I5 intact).
 
 - **Field**: `flows: Vec<String>` on `Issue` and `FieldPatch`, set-replace like
   `labels`, cleared with `flows=`; merge policy SET (union) as with the other

@@ -347,7 +347,7 @@ status: in_progress          # must exist in schema/workflow.yaml
 priority: p1
 reporter: farid
 assignees: [farid, budi]
-labels: [auth, frontend]
+labels: [auth, frontend, phase/build]  # `phase/` is reserved — ADR 0020
 epic: 01K3M0AAAA1234567890ABCD
 estimate: 3
 sprint: 2026-W33
@@ -356,7 +356,9 @@ updated: 2026-08-16T11:40:00Z
 due: 2026-08-30
 start: 2026-08-20               # optional — only issues someone actually scheduled
 blocked_by: [01K3M5QQQQ0000000000ZZZZ]
+fed_by: [01K3M7RRRR0000000000YYYY]  # optional — ADR 0020; draws, never gates
 lane: frontend                  # optional — ADR 0015; a lane id from schema/workflow.yaml
+flows: [hr-launch, audit-2027]  # optional — ADR 0019; orchestrations this issue belongs to
 claimed_by: fe-1                # optional — written by `dit claim` only, never at creation
 claimed_at: 2026-08-16T11:38:00Z # RFC3339; claim liveness is derived from this + the TTL
 ---
@@ -375,6 +377,22 @@ Users on a 3G connection get logged out after ~8 seconds idle. See [[docs/flows/
 
 Suspect it's in `src/auth/session.rs:142`.
 ```
+
+**Two relations, one of which gates.** `blocked_by` says "this cannot start
+until that is through the gate": it decides `dit ready`, readiness, the flow
+diagram's stage layering and its critical path. `fed_by` (ADR 0020) says only
+"that feeds this" — a result, a recorded outcome, a return path. It draws an
+arrow and it may carry a label, and it touches **nothing** derived. The second
+relation exists so the first never has to be borrowed for a picture: an arrow
+drawn with `blocked_by` that does not really gate makes `dit ready` lie to
+every actor polling it.
+
+**Reserved label namespaces.** `labels` is free-form except for prefixes DIT
+owns. `phase/<id>` (ADR 0020) states which authored phase of a flow an issue
+sits in; it is a label rather than a field because `labels` merges as a set
+union, so two branches that disagree produce two visible labels instead of one
+edit silently winning. Ordinary label surfaces — the filter, context chips,
+search — hide the reserved prefixes; the Flow screen is where they are shown.
 
 **What is deliberately NOT in this file** (Principle 3): the list of related commits, PR links, activity log, status change history, comment counts. All of it is computed from git during indexing. If it were stored, every code commit would touch the issue file → constant conflicts and noisy diffs. The same rule covers coordination judgments (ADR 0015): claim age/liveness and readiness are derived at read time — only the actor's *assertion* (`lane`, `claimed_by`, `claimed_at`) is authored.
 
@@ -1388,6 +1406,14 @@ This trail enables three things: auditing ("where did this sentence come from?")
 
 This is the most interesting and most differentiating part, because the real problem is not *writing* documentation — it is documentation that **rots**.
 
+> **Two things are called "flow" in DIT, and they are unrelated.** This section
+> is about a *business flow document*: AI-generated prose under `docs/flows/`
+> describing how a feature behaves, with its sources and their commits recorded
+> in the frontmatter. An *orchestration flow* (ADR 0019) is a set of issues
+> carrying the same name in `flows:`, drawn as a diagram, with no file of its
+> own; the document that shapes one (ADR 0020) holds a `dit-flow` fence and
+> must **not** be placed under `docs/flows/`, which is generated output.
+
 **Generation:**
 
 ```
@@ -1835,6 +1861,8 @@ Fenced code blocks win because of their **graceful degradation**: in GitHub, Obs
 
 Planned blocks: `dit-query` (DQL-produced table/board, Dataview-style), `dit-issues` (embedded issue list), `dit-board`, `dit-note` / `dit-warning` (callouts).
 
+`dit-flow` (ADR 0020) is the first fence the **backend** reads rather than the editor. It carries the part of a flow diagram no derivation can produce — the order and labels of its phases, the groups inside a lane, the labels on its arrows — written in the YAML subset `dit-parse` already speaks, so it adds no grammar and no new fuzz target. The fence names its own flow (`flow: register`), so the document holding it may live anywhere; `dit reindex` walks the document tree, parses the fences it finds, and stores the result in the index, which keeps the read path off the disk (I2). It may not list members (that is `flows:` on the issues), restate status or dependencies, or name anything to run or fetch — I7 makes a flow with executable steps remote code execution by pull request. A fence that does not parse never costs anyone their diagram: the flow falls back to computed stages under a banner naming the document and the line.
+
 Two diagram kinds are decided. `dit-diagram` (ADR 0012): the fence's bytes are a standalone SVG document, and the editor renders the drawing through a sanitizing NodeView — the source text stays the only writable half. No renderer dependency, no layout engine in the tab, and the file format is unchanged (an info-string convention over already-legal CommonMark, so §18 does not move). `mermaid` (ADR 0013) renders too: the editor loads mermaid.js lazily — a doc with no mermaid fence never downloads it — under `securityLevel: "strict"`. The security gates are per-source: untrusted `dit-diagram` bytes pass the editor's own allowlist sanitizer, while mermaid's output is gated by mermaid's built-in DOMPurify (its strict-mode output legitimately contains `<style>` and `foreignObject`, which our allowlist strips by design); the CSP backs both. Where they differ is reach: mermaid renders on GitHub as well, `dit-diagram` only where DIT's editor runs.
 
 In the editor, each of these blocks is rendered as an interactive TipTap NodeView; in the file, it stays plain text.
@@ -2265,6 +2293,19 @@ impl Dit {
     pub fn ready(&self, lane: Option<&str>, until: Option<&str>) -> Result<Vec<ReadyIssue>>;
     pub fn workflow_board(&self) -> Result<WorkflowBoard>;   // lanes × statuses, read-only view
     pub fn inbox(&self, lane: Option<&str>) -> Result<Vec<InboxItem>>; // threads a lane has not answered
+
+    // Orchestration reads (ADR 0019, 0020) — derived, never stored:
+    pub fn flows(&self) -> Result<Vec<FlowSummary>>;
+    pub fn flow_board(&self, name: Option<&str>) -> Result<FlowBoard>;
+    // The authored half of a board: phases, groups and arrow labels, parsed
+    // from a `dit-flow` fence at reindex and read back from the index like
+    // everything else. `None` means the flow has no fence, and the board
+    // falls back to computed stages.
+    pub fn flow_shape(&self, name: &str) -> Result<Option<FlowShape>>;
+
+    // Agent onboarding (ADR 0021) — generated from the binary, never parsed back:
+    pub fn agent_spec(&self) -> String;                       // what `dit ai spec` prints
+    pub fn write_agent_docs(&self, opts: &AgentDocOptions) -> Result<AgentDocReport>;
 }
 
 pub struct Scope { pub repo: Option<RepoId>, pub include_archived: bool }
