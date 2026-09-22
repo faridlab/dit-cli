@@ -13,6 +13,7 @@
 //! async would infect every signature for no real parallelism: there is one
 //! writer per workspace, guarded by a lock file.
 
+mod agent;
 pub mod board;
 pub mod diagnostics;
 pub mod error;
@@ -39,6 +40,7 @@ pub use error::DitError;
 // Types from below the facade that appear in its signatures. Callers
 // construct arguments out of these, so they must be reachable without a
 // second dependency — the facade is the only crate delivery names.
+pub use agent::{AgentDocOptions, AgentDocReport, AGENT_DOC_PATH};
 pub use dit_index::{IndexedIssue, IndexedRelease, WorkspaceComment};
 pub use dit_model::{
     claim_liveness, validate_date, validate_release_version, ChangeSummary, ClaimLiveness,
@@ -47,8 +49,12 @@ pub use dit_model::{
     Readiness, Release, ReleasePatch, ReleaseStatus, StatusCategory, StoredFieldEvent, Workflow,
     WorkflowStatus, CONTENT_ROOTS, DOC_ROOTS, GENERATED_INDEX_MARKER,
 };
+pub use dit_model::{FlowGroup, FlowPhase, FlowShape, PHASE_LABEL_PREFIX};
 pub use dit_vcs::{SyncOptions, SyncReport};
-pub use flow::{EdgeDisposition, FlowBoard, FlowClaim, FlowEdge, FlowLane, FlowNode, FlowSummary};
+pub use flow::{
+    EdgeDisposition, FlowBoard, FlowClaim, FlowEdge, FlowLane, FlowNode, FlowOutsideBlocker,
+    FlowSummary,
+};
 pub use watch::spawn as spawn_watcher;
 pub use workflow::InboxItem;
 
@@ -130,8 +136,42 @@ pub struct WorkflowInitReport {
     pub schema_created: bool,
     pub lanes_written: bool,
     pub coordination_written: bool,
-    pub protocol_written: bool,
     pub report_template_written: bool,
+}
+
+/// A flow's authored shape as the workspace holds it, with where it came
+/// from — so a fence that does not parse can be named rather than ignored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlowShapeRef {
+    /// The document the fence was found in.
+    pub path: String,
+    /// The fence's opening line.
+    pub line: usize,
+    /// Why the fence could not be used, if it could not.
+    pub problem: Option<String>,
+    /// The parsed shape; `None` exactly when `problem` is set.
+    pub shape: Option<dit_model::FlowShape>,
+}
+
+/// Whether a path is a document page — the only files a `dit-flow` fence
+/// can live in. Deliberately loose: a fence is found by its info string,
+/// not by where someone filed the page.
+fn is_doc_path(path: &str) -> bool {
+    path.ends_with(".md")
+        && dit_model::DOC_ROOTS
+            .iter()
+            .any(|root| path == *root || path.contains(&format!("{root}/")))
+}
+
+/// The flow a fence names, read without parsing the rest. A fence that fails
+/// on line nine still knows which diagram it was shaping on line one, and
+/// that is what lets the screen report the failure instead of swallowing it.
+fn name_in_fence(body: &str) -> Option<String> {
+    body.lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("flow:"))
+        .map(|name| name.trim().trim_matches('"').trim_matches('\'').to_owned())
+        .filter(|name| !name.is_empty())
 }
 
 /// An open workspace: git repo + files on one side, the index on the other.
@@ -902,14 +942,8 @@ impl Dit {
             atomic::write(&schema_path, &text)?;
         }
 
-        // 2. CLAUDE.md — only the marked protocol block is ever touched.
-        let claude = self.repo.root().join("CLAUDE.md");
-        let existing = std::fs::read_to_string(&claude).unwrap_or_default();
-        let updated = upsert_protocol_section(&existing, lanes);
-        if updated != existing {
-            atomic::write(&claude, &updated)?;
-            report.protocol_written = true;
-        }
+        // Agent-facing rules are no longer written here: they live in one
+        // generated document and are installed by `dit ai` (ADR 0021).
 
         // 3. The evidence-report template, seeded like every other template:
         // only when absent, hand edits survive.
@@ -933,9 +967,6 @@ impl Dit {
             let rel = rel_to_root(&root, &schema_path);
             self.repo.add(&rel)?;
         }
-        if report.protocol_written {
-            self.repo.add("CLAUDE.md")?;
-        }
         if report.report_template_written {
             let rel = rel_to_root(&root, &report_template);
             self.repo.add(&rel)?;
@@ -943,11 +974,73 @@ impl Dit {
         if report.lanes_written
             || report.coordination_written
             || report.schema_created
-            || report.protocol_written
             || report.report_template_written
         {
             self.repo
-                .commit("init workflow coordination: lanes and peer protocol")?;
+                .commit("init workflow coordination: lanes and claim settings")?;
+        }
+        Ok(report)
+    }
+
+    /// The specification an agent needs to work in this workspace (ADR
+    /// 0021): generated from this binary, so it can never disagree with the
+    /// binary, and filled in with this workspace's own statuses and lanes.
+    pub fn agent_spec(&self) -> String {
+        let statuses: Vec<String> = self
+            .workflow
+            .statuses
+            .iter()
+            .map(|s| s.id.clone())
+            .collect();
+        let lanes: Vec<String> = self.workflow.lanes.iter().map(|l| l.id.clone()).collect();
+        agent::agent_spec(env!("CARGO_PKG_VERSION"), &statuses, &lanes)
+    }
+
+    /// Install the agent document and point every agent file at it (ADR
+    /// 0021). Idempotent — a second run writes nothing and reports
+    /// `changed: false`. Only the marked blocks are ever touched, so
+    /// hand-written rules in the same files survive byte-for-byte.
+    pub fn write_agent_docs(&mut self, opts: &AgentDocOptions) -> Result<AgentDocReport, DitError> {
+        let mut report = AgentDocReport::default();
+        let root = self.repo.root().to_owned();
+
+        // 1. The canonical document.
+        let doc_path = root.join(AGENT_DOC_PATH);
+        let existing = std::fs::read_to_string(&doc_path).unwrap_or_default();
+        let updated = agent::render_document(&existing, &self.agent_spec());
+        if updated != existing {
+            let parent = doc_path.parent().ok_or_else(|| {
+                DitError::Refuse("the agent document must live inside a directory".into())
+            })?;
+            std::fs::create_dir_all(parent)?;
+            atomic::write(&doc_path, &updated)?;
+            self.repo.add(AGENT_DOC_PATH)?;
+            report.document_written = true;
+            report.changed = true;
+        }
+
+        // 2. A pointer in each agent file this repo actually uses.
+        for rel in agent::targets(&root, opts) {
+            let path = root.join(&rel);
+            let existing = std::fs::read_to_string(&path).unwrap_or_default();
+            let (updated, had_legacy) = agent::render_pointer(&existing);
+            if had_legacy {
+                report.legacy_replaced.push(rel.clone());
+            }
+            if updated != existing {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                atomic::write(&path, &updated)?;
+                self.repo.add(&rel)?;
+                report.changed = true;
+            }
+            report.pointers.push(rel);
+        }
+
+        if report.changed {
+            self.repo
+                .commit("install the DIT agent guide and point the agent files at it")?;
         }
         Ok(report)
     }
@@ -1201,6 +1294,30 @@ impl Dit {
                 "workflow.yaml and config.yaml parse",
             ));
         }
+        // The agent guide is generated, so a workspace can silently drift a
+        // version behind the binary reading it (ADR 0021).
+        let guide = self.repo.root().join(AGENT_DOC_PATH);
+        match std::fs::read_to_string(&guide)
+            .ok()
+            .as_deref()
+            .map(agent::agent_doc_stamp)
+        {
+            None => out.push(Diagnostic::warn(
+                "agent-guide",
+                format!("no {AGENT_DOC_PATH} — run `dit ai init` so AI sessions know the rules"),
+            )),
+            Some(Some(stamp)) if stamp == env!("CARGO_PKG_VERSION") => out.push(Diagnostic::ok(
+                "agent-guide",
+                "the agent guide matches this binary",
+            )),
+            Some(stamp) => out.push(Diagnostic::warn(
+                "agent-guide",
+                format!(
+                    "{AGENT_DOC_PATH} was written by DIT {} — run `dit ai init` to refresh it",
+                    stamp.as_deref().unwrap_or("an unknown version")
+                ),
+            )),
+        }
         if self.repo.has_identity() {
             out.push(Diagnostic::ok("git-identity", "git user is configured"));
         } else {
@@ -1429,6 +1546,23 @@ impl Dit {
                     }
                 }
             }
+            // The authored shape of a flow (ADR 0020): a `dit-flow` fence
+            // in any document. Only the fences are read — this is not the
+            // document index ADR 0010 deferred — and the result lands in
+            // the index so the read path never walks the tree (I2).
+            self.index.clear_flow_shapes()?;
+            for root in dit_model::DOC_ROOTS {
+                let rel = self.store.layout().content_root_rel(root);
+                for (path, _) in self.repo.ls_tree(&rel)? {
+                    if !path.ends_with(".md") {
+                        continue;
+                    }
+                    let Some(text) = self.repo.show_text(&format!("HEAD:{path}")) else {
+                        continue;
+                    };
+                    report.skipped += self.absorb_flow_fences(&path, &text)?;
+                }
+            }
             // Release plans (§15.2) live under `.dit/releases/` in every
             // layout. A workspace without the directory lists nothing —
             // `ls-tree` over a missing prefix is empty, not an error.
@@ -1456,6 +1590,57 @@ impl Dit {
             self.index.set_watermark("events", &head)?;
         }
         Ok(report)
+    }
+
+    /// Read one document's `dit-flow` fences into the index. Returns how
+    /// many were passed over: a fence too broken to even name its flow has
+    /// nowhere to report itself, and a second fence for a flow another
+    /// document already shapes is a warning, not a merge.
+    fn absorb_flow_fences(&mut self, path: &str, text: &str) -> Result<usize, DitError> {
+        let mut skipped = 0;
+        for fence in dit_parse::flow_fences(text) {
+            let (flow, problem) = match dit_parse::parse_flow_shape(&fence.body) {
+                Ok(shape) => (shape.flow, None),
+                Err(err) => match name_in_fence(&fence.body) {
+                    Some(flow) => (flow, Some(err.to_string())),
+                    None => {
+                        skipped += 1;
+                        continue;
+                    }
+                },
+            };
+            let kept = self.index.upsert_flow_shape(
+                &flow,
+                path,
+                fence.line,
+                &fence.body,
+                problem.as_deref(),
+            )?;
+            if !kept {
+                skipped += 1;
+            }
+        }
+        Ok(skipped)
+    }
+
+    /// One flow's authored shape, as stored at reindex (ADR 0020). `None`
+    /// means the flow has no fence and the board falls back to computed
+    /// stages; a shape carrying a `problem` means the fence is there but
+    /// unreadable, and the screen says which document and line to fix.
+    pub fn flow_shape(&self, flow: &str) -> Result<Option<FlowShapeRef>, DitError> {
+        let Some(stored) = self.index.flow_shape(flow)? else {
+            return Ok(None);
+        };
+        let shape = match &stored.problem {
+            Some(_) => None,
+            None => dit_parse::parse_flow_shape(&stored.shape).ok(),
+        };
+        Ok(Some(FlowShapeRef {
+            path: stored.path,
+            line: stored.line,
+            problem: stored.problem,
+            shape,
+        }))
     }
 
     /// The issue a comment file belongs to: the body file living in the
@@ -1798,6 +1983,9 @@ impl Dit {
                     if let Ok((issue, _)) = dit_parse::parse_issue(&old_text) {
                         self.index.remove_issue(&issue.id)?;
                     }
+                } else if is_doc_path(new_path) {
+                    // A deleted document takes its flow shapes with it.
+                    self.index.clear_flow_shapes_at(new_path)?;
                 } else if new_path.contains("/comments/") {
                     if let Ok(comment) = dit_parse::parse_comment(&old_text) {
                         self.index.remove_comment(&comment.id)?;
@@ -1825,6 +2013,13 @@ impl Dit {
                         self.index.upsert_comment(&parent, &comment)?;
                     }
                 }
+            } else if is_doc_path(new_path) {
+                // A `dit-flow` fence (ADR 0020) reaches the diagram on the
+                // same write that saved it, rather than waiting for a full
+                // reindex — the screen is live on any process's write, and
+                // shaping a flow is a write like any other.
+                self.index.clear_flow_shapes_at(new_path)?;
+                self.absorb_flow_fences(new_path, &text)?;
             }
         }
         let events = dit_vcs::walk_field_events(&self.repo, prev_head, layout)?;
@@ -2260,58 +2455,6 @@ coordination:
     pick_from: todo
     gate: terminal
 ";
-
-/// Replace (or append) the marked peer-protocol section in a workspace's
-/// CLAUDE.md. Only the text between the markers is ever touched; everything
-/// else — hand-written rules, other sections — survives byte-for-byte.
-fn upsert_protocol_section(existing: &str, lanes: &[LaneSpec]) -> String {
-    const START: &str = "<!-- dit:workflow-protocol -->";
-    const END: &str = "<!-- /dit:workflow-protocol -->";
-    let lane_ids: Vec<&str> = lanes.iter().map(|l| l.id.as_str()).collect();
-    let body = format!(
-        "{START}\n\n\
-         ## DIT peer protocol for parallel actors\n\n\
-         Each actor (human or AI session) works one lane. Identity: `export DIT_ME=<alias>`\n\
-         (or `--me`) before any command; every claim, comment and commit is attributed to it.
-         Lanes are free-form (`dit issue set REF lane=any-name`); orchestrations are flows
-         (`dit issue set REF flows=launch,audit`) and one issue may join several at once â
-         watch one with `dit flow show <name>`.\n\n\
-         - Poll for work: `dit ready --lane <your-lane>` (add `--until review` to start against a\n\
-           blocker still in review). Empty output means wait.\n\
-         - Claim before you edit: `dit claim <issue>`; refresh with `dit claim <issue> --renew`\n\
-           when a session runs long; release with `dit claim <issue> --release` when you stop.\n\
-           A claim older than the TTL is takable by another actor.\n\
-         - Move the issue through statuses (`in_progress` before the first edit, `review` while a\n\
-           gate is pending, `done` only with evidence in a comment).\n\
-         - Blocked on another actor? Comment on the blocker issue with what you expected, what you\n\
-           got, and the evidence (request, response, error), then reply in-thread when it lands.\n\
-         - Never edit another actor's claimed issue without claiming it first.\n\n\
-         Lanes registered here: {}.\n\n\
-         {END}",
-        lane_ids.join(", ")
-    );
-    match (existing.find(START), existing.find(END)) {
-        (Some(a), Some(b)) if b > a => {
-            let mut out = String::with_capacity(existing.len());
-            out.push_str(&existing[..a]);
-            out.push_str(&body);
-            out.push_str(&existing[b + END.len()..]);
-            out
-        }
-        _ => {
-            let mut out = existing.to_owned();
-            if !out.is_empty() {
-                if !out.ends_with('\n') {
-                    out.push('\n');
-                }
-                out.push('\n');
-            }
-            out.push_str(&body);
-            out.push('\n');
-            out
-        }
-    }
-}
 
 /// This build's version, stamped into the generated index marker so a reader
 /// can tell which dit wrote the file (ADR 0008).

