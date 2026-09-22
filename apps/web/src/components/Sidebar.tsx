@@ -1,8 +1,20 @@
 // The workbench's left column: workspace identity, the search box, labeled
-// navigation with live counts, the Plan group, then the active view's own
-// section (columns, filters, the pages tree…), with "New issue" and Settings
-// pinned to the bottom edge. Nav and section share one scroll region so a
-// short window never lets the section run under the pinned row.
+// navigation with live counts, then the active view's own section (columns,
+// filters, the pages tree…), with "New issue" and Settings pinned to the
+// bottom edge. Nav and section share one scroll region so a short window
+// never lets the section run under the pinned row.
+//
+// The nav is grouped because a flat list of eleven rows hid what kind of
+// thing each row was. Three kinds live here and they are not equals:
+//
+//   - **Material**: Home and Docs. Different content, not a view of issues.
+//   - **Lenses**: Board, Issues, Flow, Timeline, Roadmap, Gantt — six
+//     projections of one set. Grouped Work and Plan by what the reader came
+//     to do, not by how the screen is drawn.
+//   - **Saved queries**: Inbox, My issues, Starred are literally
+//     `#/issues?…` with a filter. They are drawn as children of Issues,
+//     indented and quieter, because that is what they are — presenting them
+//     as peers of Board invited the question "which list is the real one?".
 //
 // ⌘B (or the header's toggle) collapses it to nothing; the header is the way
 // back. The pointer never does either — a sweep across the screen must not
@@ -16,14 +28,11 @@ import {
   FileText,
   GitBranch,
   House,
-  Inbox,
   Layers,
   ListTodo,
   Plus,
   Search,
   Settings,
-  Star,
-  UserRound,
   Waypoints,
 } from "lucide-react";
 import type { Route } from "../lib/router";
@@ -82,6 +91,39 @@ function NavLink({
       <span className="lbl">{label}</span>
       {count !== undefined && count !== null ? <span className="cnt">{count}</span> : null}
       {shortcut ? <kbd>{shortcut}</kbd> : null}
+    </a>
+  );
+}
+
+/** A saved query over the issue list: the same destination as Issues with a
+ *  filter applied. Indented under it and drawn quieter, so the rail says
+ *  which rows are places and which are questions. */
+function NavQuery({
+  label,
+  active,
+  count,
+  onClick,
+  title,
+}: {
+  label: string;
+  active: boolean;
+  count?: number | null;
+  onClick: () => void;
+  title?: string;
+}) {
+  return (
+    <a
+      href="#"
+      onClick={(event) => {
+        event.preventDefault();
+        onClick();
+      }}
+      title={title}
+      aria-current={active ? "page" : undefined}
+      className={cn("q", active && "on")}
+    >
+      <span className="lbl">{label}</span>
+      {count !== undefined && count !== null ? <span className="cnt">{count}</span> : null}
     </a>
   );
 }
@@ -158,22 +200,9 @@ export function Sidebar({
       <div className="sb-scroll">
         <nav className="nav" aria-label="Views">
           <NavLink label="Home" icon={House} shortcut="⌘1" active={route.name === "home"} onClick={() => onNavigate({ name: "home" })} />
-          <NavLink
-            label="Inbox"
-            icon={Inbox}
-            title="Open issues with no owner or no @context"
-            count={inboxCount}
-            active={route.name === "issues" && route.inbox === true}
-            onClick={() => onNavigate({ name: "issues", q: null, inbox: true })}
-          />
-          <NavLink
-            label="My issues"
-            icon={UserRound}
-            title={me ? "Open issues assigned to @me" : "No alias configured for @me — set one in Settings"}
-            count={mineCount}
-            active={isMine}
-            onClick={() => onNavigate({ name: "issues", q: mine })}
-          />
+          <NavLink label="Docs" icon={FileText} shortcut="⌘5" active={route.name === "docs"} onClick={() => onNavigate({ name: "docs", p: null })} />
+
+          <div className="sb-h nav-h">Work</div>
           <NavLink label="Board" icon={Columns3} shortcut="⌘3" active={route.name === "board"} onClick={() => onNavigate({ name: "board" })} />
           <NavLink
             label="Issues"
@@ -184,21 +213,27 @@ export function Sidebar({
             active={issuesActive && !isMine}
             onClick={() => onNavigate({ name: "issues", q: null })}
           />
-          <NavLink label="Docs" icon={FileText} shortcut="⌘5" active={route.name === "docs"} onClick={() => onNavigate({ name: "docs", p: null })} />
-          <NavLink
+          <NavQuery
+            label="Inbox"
+            title="Open issues with no owner or no @context"
+            count={inboxCount}
+            active={route.name === "issues" && route.inbox === true}
+            onClick={() => onNavigate({ name: "issues", q: null, inbox: true })}
+          />
+          <NavQuery
+            label="My issues"
+            title={me ? "Open issues assigned to @me" : "No alias configured for @me — set one in Settings"}
+            count={mineCount}
+            active={isMine}
+            onClick={() => onNavigate({ name: "issues", q: mine })}
+          />
+          <NavQuery
             label="Starred"
-            icon={Star}
             title="Issues you starred — kept in this browser, never in the repo"
             count={starred.size}
             active={route.name === "issues" && route.starred === true}
             onClick={() => onNavigate({ name: "issues", q: null, starred: true })}
           />
-          <div className="sb-h" style={{ marginTop: 8, paddingBottom: 2 }}>
-            Plan
-          </div>
-          <NavLink label="Timeline" icon={Clock} shortcut="⌘6" active={route.name === "timeline"} onClick={() => onNavigate({ name: "timeline" })} />
-          <NavLink label="Roadmap" icon={Layers} shortcut="⌘7" active={route.name === "roadmap"} onClick={() => onNavigate({ name: "roadmap" })} />
-          <NavLink label="Gantt" icon={ChartGantt} shortcut="⌘8" active={route.name === "gantt"} onClick={() => onNavigate({ name: "gantt" })} />
           <NavLink
             label="Flow"
             icon={Waypoints}
@@ -207,6 +242,11 @@ export function Sidebar({
             active={route.name === "flow"}
             onClick={() => onNavigate({ name: "flow" })}
           />
+
+          <div className="sb-h nav-h">Plan</div>
+          <NavLink label="Timeline" icon={Clock} shortcut="⌘6" active={route.name === "timeline"} onClick={() => onNavigate({ name: "timeline" })} />
+          <NavLink label="Roadmap" icon={Layers} shortcut="⌘7" active={route.name === "roadmap"} onClick={() => onNavigate({ name: "roadmap" })} />
+          <NavLink label="Gantt" icon={ChartGantt} shortcut="⌘8" active={route.name === "gantt"} onClick={() => onNavigate({ name: "gantt" })} />
         </nav>
 
         {section ? (
