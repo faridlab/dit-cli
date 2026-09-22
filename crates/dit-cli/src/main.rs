@@ -871,7 +871,13 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
                             .number
                             .map(|h| format!("#{h}"))
                             .unwrap_or_else(|| n.short_ref.clone());
+                        // `NotPickable` covers both "someone is on it" and
+                        // "it is finished", and reading a done issue as
+                        // in-flight is the difference between a flow that is
+                        // landing and one that is stuck.
+                        let done = n.category == Some(dit_core::StatusCategory::Done);
                         let mark = match n.readiness {
+                            _ if done => "done",
                             dit_core::Readiness::Ready => "ready",
                             dit_core::Readiness::NotPickable => "in-flight",
                             dit_core::Readiness::Blocked { .. } => "blocked",
