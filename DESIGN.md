@@ -33,6 +33,7 @@ Date: 16 August 2026
 | **17** | Threat Model: Hostile Input | Prompt injection, XSS, RCE via repo configuration |
 | **18** | Schema Versioning & Migration | Compatibility rules & field preservation |
 | **19** | Testing Strategy | Seven layers + fixtures from 71 bugs |
+| **20** | Morse — API Scenarios in the Repo | Postman's job, done in git: OpenAPI-derived endpoints, declarative scenarios, nothing fired on its own |
 | **A** | "Hello World" Walkthrough | What using DIT actually feels like |
 | **B** | Decision Summary | One table, every decision |
 | **C** | Verification | What was tested, what was wrong, what hasn't been checked |
@@ -1625,6 +1626,17 @@ Down from 8–12 weeks because choosing the browser over Tauri removes code sign
 ### v1.x — Future ideas
 - **WASM plugins** (wasmtime + WIT) — custom fields, integrations, automation rules written by the community in any language that compiles to WASM. This is the natural continuation of your interest in WASM.
 - **DIT Web Viewer** — a read-only board for public repos, running entirely in the browser via WASM + the GitHub API.
+- **Morse** (§20, ADR 0022) — API scenarios in the repo. Two milestones, split on
+  whether anything touches the network:
+  - **Morse 1 — read-only, zero egress.** `specs:` in the config, the `dit-morse`
+    fence parsed in `dit-parse` (wasm-clean), the endpoint catalogue and scenario
+    shapes in the index, `dit morse check` reporting stale and broken, and a
+    read-only Morse screen. Nothing is sent, so none of I7's surface is touched
+    yet — and the part no other API client has, staleness against the spec's
+    commit, ships first.
+  - **Morse 2 — the network.** The `dit-morse` adapter crate and I11's containment
+    tests, the local host allowlist and environment storage, `dit morse run`, and
+    `dit morse sync` moving the pin only on green.
 - Time tracking, insights & reports (this is where DuckDB starts to make sense).
 
 ---
@@ -2443,11 +2455,19 @@ Three defenses, all mandatory:
 
 This is an invariant that has to be written down now so that it is not violated unknowingly later:
 
-> **No field in any DIT file may name an executable, a shell command, a binary path, or a URL that will be fetched automatically.**
+> **No field in any DIT file may name anything DIT executes or fetches of its own accord** —
+> an executable, a shell command, a binary path, or a URL it would reach without being asked.
 
 The context: `merge.dit-md.driver` contains a command that git runs. It is installed by `dit install-hooks` into the **local config**, which is not committed — so it is safe. But if at some point somebody thinks "it would be nice if the driver were configurable from `.dit/config.yaml`", that immediately becomes remote code execution via pull request. The same applies to `automation.yaml`: automation rules may only choose from a list of built-in actions, never run commands.
 
 Companion measure: `dit validate` flags changes to `.dit/.gitattributes` and `.dit/schema/**` as sensitive changes requiring CODEOWNERS approval.
+
+The operative words are *of its own accord*, and §20 is where they are tested. A Morse
+scenario names a URL, and that is the point of it — but no reindex, watcher, `dit doctor`,
+CI run, or opened document ever sends it. Only `dit morse run` and the Run control do,
+against a host the person running them has separately allowed on that machine, in a
+gitignored local file. Parsing is not fetching. A scenario that arrives in a pull request
+is inert until someone decides otherwise (ADR 0022).
 
 ### 17.4 The rest
 
@@ -2585,6 +2605,338 @@ This document was written by running nearly every claim in a dummy repo before w
 
 ---
 
+## 20. Morse — API Scenarios in the Repo
+
+Morse is what a Postman collection would be if it lived where the code lives.
+It is decided in ADR 0022; this section is the shape of the thing.
+
+### 20.1 The problem is not the request, it is the scenario
+
+Firing a single HTTP request is a solved problem with a dozen good tools. What
+no tool does well is the sequence: register a user, take the id out of that
+response, log in with the same credentials, take the token out of *that*
+response, and call the profile endpoint with it. That sequence is the actual
+specification of how the API is meant to be used, and it is exactly the part
+that lives nowhere durable — in a hosted workspace nobody reviews, exported as
+JSON into a chat thread, or in one engineer's local history.
+
+Three consequences follow, and they are the same three DIT was built for:
+
+- It is **not reviewed**. The pull request that changes the login response does
+  not contain the scenario it breaks, so nobody sees the break.
+- It **rots silently**. When `POST /users` becomes `POST /accounts`, the
+  collection keeps the old path and keeps failing for a reason nobody reads.
+- It is **not the project's**. It belongs to whoever set up the workspace.
+
+Put it in the repo and all three change at once. The scenario is in the diff.
+Its staleness is computable, because DIT knows what commit the spec was at when
+the scenario was written (§7.4). And cloning gets you the whole thing.
+
+### 20.2 Endpoints are derived; scenarios are written
+
+A workspace points Morse at its OpenAPI document — the one the application
+already generates or maintains — and Morse derives the endpoint catalogue from
+it at reindex. Nothing about an endpoint is copied into a DIT file: that would
+be two sources of truth for one fact, and derived data in the source of truth
+is what Principle 3 and I5 forbid. The catalogue is an index table, rebuilt
+from the spec like everything else.
+
+> The format is OpenAPI 3.x in YAML or JSON (`openapi.yaml` / `openapi.json`),
+> or Swagger 2.0, whose `schemes` + `host` + `basePath` Morse reassembles into
+> the one URL it needs. An `.xml` API description is WSDL — a different
+> protocol family, and a separate importer if it is ever wanted.
+>
+> Both formats land in the same tree, so nothing downstream of reading one
+> branches on which it was. Two things had to be built for that and are worth
+> recording, because the first was found by running the parser rather than by
+> reading it: the YAML subset now understands block scalars (`|`, `>`, with
+> chomping), which every real document uses for `description:` and which
+> previously failed the whole file as inconsistent indentation; and JSON gets
+> its own small reader rather than loosening the YAML parser, which is
+> deliberately strict about the files DIT itself writes.
+>
+> An operation with no `operationId` is skipped rather than given an invented
+> one. A step names an `operationId`, and a generated name would break every
+> scenario using it the day the document adds a real one.
+
+What *is* written by hand is the scenario, and anything the spec does not
+describe. An endpoint that exists in no document — a legacy service, a
+third-party callback, something not yet specified — is authored inline under
+`requests:` in the fence, because that is a fact only a person knows:
+
+```yaml
+requests:
+  - { id: legacyPing, method: get, path: /internal/ping, summary: Undocumented }
+steps:
+  - id: ping
+    request: legacyPing          # instead of `operation:`
+```
+
+An inline request carries a **path, never a URL**, and it is a path on the
+server the scenario's spec names. That is not a limitation dressed up as a
+rule: it is what keeps §20.5 true, because a committed DIT file that could
+introduce an address is the thing I7 exists for. An endpoint on a genuinely
+different host needs that host's spec registered, or an environment that says
+so — and an environment lives outside the repository (§20.6). A path without a
+leading `/`, a scheme of any name, and the protocol-relative `//host/path`
+form are all refused by the parser, naming the request.
+
+**A workspace has more than one spec, and they have to be told apart.** A
+polyrepo or a service-per-folder monorepo has an `openapi.yaml` per service, and
+`operationId` is only unique *within one document* — the OpenAPI specification
+says so, which means two services both describing `createUser` is normal and
+legal. Without a name for each spec, a step saying `operation: createUser` does
+not resolve at all. So specs are registered in `.dit/config.yaml`, in the shape
+`repos:` already uses:
+
+```yaml
+# .dit/config.yaml
+repos:
+  - { name: backend, remote: "git@github.com:acme/backend.git" }
+
+specs:
+  - { id: auth,    repo: backend, path: "services/auth/openapi.yaml" }
+  - { id: billing, repo: backend, path: "services/billing/openapi.yaml" }
+  - { id: legacy,                 path: "vendor/legacy-v2.json" }
+```
+
+**`repo:` is what makes Morse work in Mode A**, which is DIT's default and the
+one mode where the spec is not in this repository at all. It names an entry in
+`repos:`, and the spec is read the way §5 already reads code — through a git
+ref with `show_text`, never merged in and never checked out. Omitting `repo:`
+means this workspace, which is Mode C and a vendored spec. The spec is not
+copied here under either reading: a committed copy would be derived data in the
+source of truth (I5), and worse, the pin would then record a commit of the
+*copy* rather than of the code, so staleness would measure the wrong history.
+
+`id` is the namespace: a step says `operation: auth/loginUser`, and one
+scenario may cross services freely — register against `auth`, then subscribe
+against `billing` — which is the case that makes a scenario worth writing in
+the first place.
+
+`path` is a **path in the repository, never a URL**. A spec fetched from a
+network address would be a file DIT retrieves on its own accord, which is the
+whole of I7; a spec published by another team is vendored into the tree by the
+command that updates it, where a human can read the diff. The registry is also
+what lets the Morse screen list a service that has no scenario yet — the state
+every newly registered spec starts in, and the moment someone most wants to
+browse its endpoints.
+
+### 20.3 The `dit-morse` fence
+
+A scenario is a fenced block in an ordinary document, on ADR 0020's precedent:
+no new content root, no new grammar, no new fuzz target, and on GitHub it
+renders as a readable code block.
+
+````markdown
+```dit-morse
+scenario: register
+spec: { id: auth, commit: a3f9c2d }
+env: local
+requires: [email, password]
+steps:
+  - id: create
+    operation: auth/createUser
+    body: { email: "{{email}}", password: "{{password}}" }
+    expect: { status: 201 }
+    capture: { user_id: $.data.id }
+  - id: login
+    operation: auth/loginUser
+    body: { email: "{{email}}", password: "{{password}}" }
+    expect:
+      status: 200
+      jsonpath:
+        $.token: { exists: true }
+    capture: { token: $.token }
+  - id: me
+    operation: auth/getCurrentUser
+    headers: { Authorization: "Bearer {{token}}" }
+    expect:
+      status: 200
+      jsonpath:
+        $.id: "{{user_id}}"
+```
+````
+
+`operation` is `<spec id>/<operationId>`; method, path and schemas come from
+the registered spec at the pinned commit. `capture` binds a name to a selector — a JSONPath into the body, a
+response header, or the status. `expect` compares against a literal or a bound
+name. `{{name}}` substitutes into path parameters, query values, headers and
+body values, and **never** into the scheme, host or port, so no captured value
+can send the next request somewhere else.
+
+**There is no expression language and no escape hatch.** No `script`, no
+`pre_request`, no `transform`. This is the single most important constraint in
+the feature, and it is what Postman does differently: Postman chains with
+JavaScript, and a file containing JavaScript that runs on a maintainer's
+machine is remote code execution by pull request (§17.3). When the selectors
+cannot express something, the answer is a new built-in selector in a later
+release of DIT — discussed in a pull request against DIT, never a line of code
+in a user's repository.
+
+### 20.4 Staleness — what no API client can do
+
+`spec: { id, commit }` is the same construction §7.4 uses for flow documents,
+and it buys the same thing. `dit morse check` resolves the id through the
+registry and compares the recorded commit against HEAD — **the HEAD of the repo
+that holds the spec**, which in Mode A is the linked code repo and not this
+workspace. That is the only reading that means anything: the question a pin
+answers is "has the API moved since I wrote this", and the API moves in the
+code repo's history.
+
+- The spec has moved since the scenario was written → **stale**, with the count
+  of commits and a diff of the operations the scenario touches.
+- An `operation` no longer resolves in the spec at HEAD → **broken**, named
+  before anyone runs anything.
+
+Neither is written into the file; both are computed at query time (Principle 3).
+Run in CI, this is a rotting-collection check, and it is the reason to adopt
+Morse even for a team that keeps using another client to fire requests.
+
+**Updating a spec deletes nothing and merges nothing, because nothing was ever
+imported.** This is the payoff of §20.2, and it is worth stating plainly because
+the question every API client forces people to ask — *"if I re-import, do I lose
+my edits?"* — has no meaning here. There is no import step and no imported copy.
+A newer spec reaches the workspace the way every other file does:
+
+| What changed | Who handles it |
+|---|---|
+| The `openapi.yaml` bytes | Git. An ordinary file merge, reviewed in the pull request that made it |
+| The endpoint catalogue | Recomputed from HEAD at reindex. Nothing is deleted, because nothing was stored |
+| `requests:` written by hand in a fence | Untouched, by construction — they never came from a spec |
+| An operation that vanished or was renamed | The scenario is reported **broken**, naming the step and the operation. Never silently dropped |
+
+The one thing a person must decide is the `commit:` pin, and it stays theirs.
+
+**The pin never moves on its own.** Reindex does not bump it, the watcher does
+not bump it, opening the document does not bump it. A pin that advanced by
+itself could never say "this has gone stale", which would delete the only thing
+this section is for — the same reasoning that keeps `dit docs sync` a command a
+person runs in §7.4.
+
+**`dit morse sync <scenario>` moves it, and only after a real run.** It
+re-resolves every operation against the spec at HEAD, then *actually fires the
+scenario* against the environment, and bumps the pin only if the whole chain
+comes back green. That is what makes the pin a claim worth reading: not "these
+operations still exist" but "this scenario was proven to work at this commit" —
+the same kind of assertion §15 makes about a release, verification rather than
+record-keeping. An endpoint that kept its shape and changed its behaviour is
+exactly the failure a structural check would wave through, and it is the common
+one.
+
+The cost is deliberate and has to be stated: **`dit morse sync` needs a live
+environment and an allowed host, so it cannot run in CI.** That is not a
+limitation to work around — CI bumping pins on its own would be the
+auto-firing that §20.5 forbids. CI runs `dit morse check`, which reads and
+reports and never sends anything; a human runs `sync`.
+
+**Two people bumping the same pin is an ordinary body conflict.** The fence
+lives in a document body, so it goes through §5.3's diff3 like any prose, and
+the resolution is a person choosing a commit. A fence left with conflict
+markers does not break the screen: ADR 0020 already decided that a fence which
+fails to parse falls back under a banner naming the document and the line.
+
+### 20.5 Nothing fires on its own
+
+Morse makes DIT a program that sends requests to hosts named in files, and that
+sentence has to stay true only in its narrowest reading. §17.3 governs; the
+list is in ADR 0022 and repeated here because it is load-bearing:
+
+| Never fires a request | Fires a request |
+|---|---|
+| `dit reindex`, the file watcher, the indexer, the merge driver | `dit morse run <scenario>` |
+| `dit doctor`, `dit validate`, `dit ready` | The Run control on the Morse screen |
+| `dit morse check` — it reads and reports, never sends | `dit morse sync <scenario>`, which runs the chain before moving the pin (§20.4) |
+| CI, which is why it may run `check` and never `sync` | |
+| Opening the document, hovering a step, rendering the fence's NodeView | |
+
+Parsing is not fetching. Beyond that: a host must be present in the **local,
+gitignored** allowlist before it can be reached — a scenario arriving in a pull
+request against an unfamiliar host prints the host and stops. `http` and
+`https` only. A redirect leaving the allowlist is not followed. Egress is
+confined to one adapter crate, `dit-morse`, the way I3 confines git to
+`dit-vcs`, and no read path can reach it.
+
+### 20.6 Secrets and environments
+
+**The base URL comes from the spec, not from a DIT file.** OpenAPI already
+carries `servers:`, and that is the API's own statement about where it lives —
+maintained by the people who maintain the API, in a file that is not a DIT
+file. `env:` selects one of them by its description, and a local override (a
+different dev port, a personal tunnel) lives in gitignored storage beside the
+secrets:
+
+```yaml
+# openapi.yaml — already exists, not a DIT file
+servers:
+  - { url: "https://api.acme.com",  description: production }
+  - { url: "http://localhost:3000", description: local }
+```
+
+```yaml
+# .dit/morse.local.yaml — GITIGNORED, never committed, never merged
+envs:
+  local:
+    server: "http://localhost:4000"      # optional override of servers:
+    vars: { email: "dev@acme.test", password: "..." }
+allow_hosts: ["localhost", "api.staging.acme.com"]
+```
+
+This is what keeps §20.5 honest. No URL Morse might call is ever introduced by
+a committed DIT file: the ones it can reach come either from the API's own
+spec or from a file that only exists on this machine. A committed
+`environments.yaml` full of base URLs would be exactly the shape I7 refuses,
+and the local host allowlist would become the only thing standing between a
+pulled branch and an outbound request.
+
+**What is committed is the set of variable names**, stated by the scenario
+itself as `requires: [email, password]`. A scenario that reads a variable
+neither `requires:` nor an earlier step provides is reported **broken**, and
+the message distinguishes the two cases that look alike: nothing provides it,
+or a *later* step captures it and the chain is simply in the wrong order. A new contributor is told what to fill
+in rather than being handed someone's key, and `dit morse check` reports an
+environment that is missing one before anything is run. Values never enter the
+repo: they live in the gitignored file above or the OS keychain, and the fence
+references `{{token}}` without ever containing one.
+
+Two checks hold that line, and both belong to **`dit doctor`** rather than to
+`dit validate`. `validate` is a planned command (§4.5, §5.3, §17.3) and is not
+built; health questions have a home that exists, and a guard that waits for an
+unbuilt command is not a guard.
+
+- **`morse-env`.** `dit init` writes `.dit/morse.local.yaml` into `.gitignore`
+  alongside `.dit-cache/` (§4.1), so the file cannot be committed by accident
+  on the day someone first fills it in. `doctor` reports an **error** if it is
+  ever tracked, and an error too if it exists while `.gitignore` does not list
+  it — one `git add .` from a leak. A secret that reaches git history is not
+  recoverable by deleting the file, which is why the guard is at `init` and
+  not at review time.
+- **`morse-secrets`.** A fence carrying a literal that looks like a real
+  credential is an **error**, named down to the document, line, step and
+  field. `Bearer {{token}}` and `{{password}}` pass silently — that is the
+  shape this section asks for. What does not pass is a bearer token, JWT or
+  provider key written out, or any literal in a field that holds a credential
+  by definition (`authorization`, `client_secret`, `password`, and the rest).
+
+### 20.7 Runs are derived
+
+A run's response bodies, timings and pass/fail land in the index and are gone
+at the next reindex. Nothing about a run is committed. Two reasons, and the
+first is sufficient on its own: a response body is the likeliest place in the
+entire product for a real token or real personal data to appear, and git
+history does not forget. The second is that a run is a fact about one machine
+at one moment, not about the project — and every run would otherwise be a diff,
+which is a merge conflict for nothing.
+
+### 20.8 Where it sits
+
+Morse is the third item in the navigation, after Home and Docs and before
+Board. It is a workspace-level surface, not an issue-level one: scenarios
+describe the product's API, and issues link to them the way they link to
+documents.
+
+---
+
 ## Appendix A — The "Hello World" Flow
 
 To make it concrete, this is what using DIT feels like:
@@ -2671,6 +3023,7 @@ Note: there is no desktop application to install, no "unidentified developer" di
 | Source of truth | Markdown + YAML frontmatter | Reviewable in a PR, durable, already NoSQL |
 | Lexical index | SQLite + FTS5 (triggers, not updates from Rust), gitignored | A query engine + mature FTS in a single file |
 | Vector index | A separate `vectors.sqlite`, background, optional | Its rebuild takes minutes, not seconds — it must not block the UI |
+| **API scenarios (Morse)** | **Endpoints derived from the OpenAPI spec at a recorded commit; scenarios authored as declarative `dit-morse` fences; chaining by selector, never by script; no request sent except by explicit command against a locally allowed host** (§20, ADR 0022) | The scenario is reviewed in the diff that breaks it, and goes stale out loud. Scripting in a pulled file would be RCE by pull request |
 | Schema flexibility | A JSON text column + VIRTUAL generated columns | Schema-less for additions; a full rebuild when `fields.yaml` changes |
 | ID | ULID; short ref from the **random part**, not the prefix | The ULID prefix is pure timestamp — systematic collisions |
 | File unit | One folder per issue; one file per comment and per AI suggestion | Structural conflict prevention |
