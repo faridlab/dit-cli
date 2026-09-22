@@ -80,6 +80,43 @@ pub struct StoredFlowShape {
     pub problem: Option<String>,
 }
 
+/// One Morse scenario as the index holds it: the fence's own bytes, where
+/// they were found, and why they could not be used if they could not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredMorseScenario {
+    pub scenario: String,
+    pub path: String,
+    pub line: usize,
+    /// Empty when the fence did not parse far enough to state them.
+    pub spec_id: String,
+    pub pin: String,
+    pub env: Option<String>,
+    pub body: String,
+    /// Why the fence itself could not be read. Distinct from the two below:
+    /// this one means DIT never got as far as a scenario.
+    pub problem: Option<String>,
+    /// How many commits have touched the spec since the pin. Computed at
+    /// reindex and stored here rather than answered from git on the read
+    /// path, so reads still come only from the index (I2).
+    pub stale_by: Option<usize>,
+    /// Why the scenario cannot be run as written — one reason per line.
+    pub broken: Option<String>,
+}
+
+/// One registered spec as last read (§20.2). `head` is the commit of the
+/// repo holding it at the time the catalogue was built — in Mode A that is
+/// the linked code repo, not this workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredMorseSpec {
+    pub spec_id: String,
+    pub repo: Option<String>,
+    pub path: String,
+    pub head: Option<String>,
+    pub title: Option<String>,
+    pub version: Option<String>,
+    pub problem: Option<String>,
+}
+
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS issues (
   id          TEXT PRIMARY KEY,
@@ -187,6 +224,46 @@ CREATE TABLE IF NOT EXISTS flow_shapes (
   line     INTEGER NOT NULL,
   shape    TEXT NOT NULL,
   problem  TEXT
+);
+
+-- Morse (§20, ADR 0022). Both tables are a catalogue, not a copy: the
+-- operations are rebuilt from the OpenAPI document at every reindex and the
+-- document stays the only source of truth for them (I5). Nothing here is
+-- ever written back to a file, and reading either table never fetches
+-- anything (I11).
+CREATE TABLE IF NOT EXISTS morse_specs (
+  spec_id  TEXT PRIMARY KEY,
+  repo     TEXT,
+  path     TEXT NOT NULL,
+  head     TEXT,
+  title    TEXT,
+  version  TEXT,
+  problem  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS morse_operations (
+  spec_id      TEXT NOT NULL,
+  operation_id TEXT NOT NULL,
+  method       TEXT NOT NULL,
+  path         TEXT NOT NULL,
+  summary      TEXT,
+  PRIMARY KEY (spec_id, operation_id)
+);
+
+-- One scenario per name, like flow shapes: a second fence for the same
+-- scenario is a warning rather than a merge, because two chains under one
+-- name have no defined resolution.
+CREATE TABLE IF NOT EXISTS morse_scenarios (
+  scenario TEXT PRIMARY KEY,
+  path     TEXT NOT NULL,
+  line     INTEGER NOT NULL,
+  spec_id  TEXT NOT NULL,
+  pin      TEXT NOT NULL,
+  env      TEXT,
+  body     TEXT NOT NULL,
+  problem  TEXT,
+  stale_by INTEGER,
+  broken   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS state (
@@ -489,6 +566,192 @@ impl Index {
             out.insert(id, count as usize);
         }
         Ok(out)
+    }
+
+    /// Replace one spec's catalogue: the spec row and every operation it
+    /// describes. Called once per spec per reindex, so the catalogue can
+    /// only ever say what the document at `head` says.
+    pub fn replace_morse_spec(
+        &mut self,
+        spec: &StoredMorseSpec,
+        operations: &[dit_model::SpecOperation],
+    ) -> Result<(), IndexError> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "DELETE FROM morse_operations WHERE spec_id = ?1",
+            params![spec.spec_id],
+        )?;
+        tx.execute(
+            "INSERT OR REPLACE INTO morse_specs \
+             (spec_id, repo, path, head, title, version, problem) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            params![
+                spec.spec_id,
+                spec.repo,
+                spec.path,
+                spec.head,
+                spec.title,
+                spec.version,
+                spec.problem
+            ],
+        )?;
+        for op in operations {
+            tx.execute(
+                "INSERT OR REPLACE INTO morse_operations \
+                 (spec_id, operation_id, method, path, summary) VALUES (?1,?2,?3,?4,?5)",
+                params![
+                    spec.spec_id,
+                    op.operation_id,
+                    op.method,
+                    op.path,
+                    op.summary
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Forget every spec and its operations, ahead of a rebuild.
+    pub fn clear_morse_specs(&mut self) -> Result<(), IndexError> {
+        self.conn.execute("DELETE FROM morse_operations", [])?;
+        self.conn.execute("DELETE FROM morse_specs", [])?;
+        Ok(())
+    }
+
+    /// Every registered spec, by id.
+    pub fn morse_specs(&self) -> Result<Vec<StoredMorseSpec>, IndexError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT spec_id, repo, path, head, title, version, problem \
+             FROM morse_specs ORDER BY spec_id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(StoredMorseSpec {
+                spec_id: r.get(0)?,
+                repo: r.get(1)?,
+                path: r.get(2)?,
+                head: r.get(3)?,
+                title: r.get(4)?,
+                version: r.get(5)?,
+                problem: r.get(6)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(IndexError::from)
+    }
+
+    /// One spec's operations, in the order a person reads them: by path,
+    /// then by method.
+    pub fn morse_operations(
+        &self,
+        spec_id: &str,
+    ) -> Result<Vec<dit_model::SpecOperation>, IndexError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT operation_id, method, path, summary FROM morse_operations \
+             WHERE spec_id = ?1 ORDER BY path, method",
+        )?;
+        let rows = stmt.query_map(params![spec_id], |r| {
+            Ok(dit_model::SpecOperation {
+                operation_id: r.get(0)?,
+                method: r.get(1)?,
+                path: r.get(2)?,
+                summary: r.get(3)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(IndexError::from)
+    }
+
+    /// Record one scenario, or the reason its fence could not be read. The
+    /// first fence for a scenario wins, exactly as for flow shapes.
+    pub fn upsert_morse_scenario(
+        &mut self,
+        scenario: &StoredMorseScenario,
+    ) -> Result<bool, IndexError> {
+        let taken: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT path FROM morse_scenarios WHERE scenario = ?1",
+                params![scenario.scenario],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(taken) = taken {
+            if taken != scenario.path {
+                return Ok(false);
+            }
+        }
+        self.conn.execute(
+            "INSERT OR REPLACE INTO morse_scenarios \
+             (scenario, path, line, spec_id, pin, env, body, problem, stale_by, broken) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![
+                scenario.scenario,
+                scenario.path,
+                scenario.line as i64,
+                scenario.spec_id,
+                scenario.pin,
+                scenario.env,
+                scenario.body,
+                scenario.problem,
+                scenario.stale_by.map(|n| n as i64),
+                scenario.broken
+            ],
+        )?;
+        Ok(true)
+    }
+
+    /// Record what the health pass worked out for one scenario. Separate
+    /// from the upsert because the fence is read before the catalogue it is
+    /// judged against exists.
+    pub fn set_morse_health(
+        &mut self,
+        scenario: &str,
+        stale_by: Option<usize>,
+        broken: &[String],
+    ) -> Result<(), IndexError> {
+        let joined = (!broken.is_empty()).then(|| broken.join("\n"));
+        self.conn.execute(
+            "UPDATE morse_scenarios SET stale_by = ?2, broken = ?3 WHERE scenario = ?1",
+            params![scenario, stale_by.map(|n| n as i64), joined],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_morse_scenarios(&mut self) -> Result<(), IndexError> {
+        self.conn.execute("DELETE FROM morse_scenarios", [])?;
+        Ok(())
+    }
+
+    /// Forget the scenarios one document declared — what editing or deleting
+    /// it means, before its current fences are re-read.
+    pub fn clear_morse_scenarios_at(&mut self, path: &str) -> Result<(), IndexError> {
+        self.conn
+            .execute("DELETE FROM morse_scenarios WHERE path = ?1", params![path])?;
+        Ok(())
+    }
+
+    /// Every scenario, by name.
+    pub fn morse_scenarios(&self) -> Result<Vec<StoredMorseScenario>, IndexError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT scenario, path, line, spec_id, pin, env, body, problem, stale_by, broken \
+             FROM morse_scenarios ORDER BY scenario",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(StoredMorseScenario {
+                scenario: r.get(0)?,
+                path: r.get(1)?,
+                line: r.get::<_, i64>(2)? as usize,
+                spec_id: r.get(3)?,
+                pin: r.get(4)?,
+                env: r.get(5)?,
+                body: r.get(6)?,
+                problem: r.get(7)?,
+                stale_by: r.get::<_, Option<i64>>(8)?.map(|n| n as usize),
+                broken: r.get(9)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(IndexError::from)
     }
 
     /// Forget every shape, ahead of a rebuild.
@@ -1587,6 +1850,100 @@ mod tests {
 
     const ID: &str = "01K3M9ZXQ2R7VN8P4TDBCEFGHJ";
     const OTHER: &str = "01K3M9ZXQ2ZZZZZZZZZZZZZZZZ";
+
+    #[test]
+    fn a_spec_catalogue_is_replaced_whole_rather_than_merged() {
+        let mut index = Index::in_memory().unwrap();
+        let spec = |problem: Option<&str>| StoredMorseSpec {
+            spec_id: "auth".into(),
+            repo: Some("backend".into()),
+            path: "services/auth/openapi.yaml".into(),
+            head: Some("a3f9c2d".into()),
+            title: Some("Acme Auth".into()),
+            version: Some("1.4.0".into()),
+            problem: problem.map(str::to_owned),
+        };
+        let op = |id: &str, path: &str| dit_model::SpecOperation {
+            operation_id: id.into(),
+            method: "POST".into(),
+            path: path.into(),
+            summary: None,
+        };
+        index
+            .replace_morse_spec(
+                &spec(None),
+                &[op("createUser", "/users"), op("loginUser", "/s")],
+            )
+            .unwrap();
+        assert_eq!(index.morse_operations("auth").unwrap().len(), 2);
+
+        // The document dropped an operation. The catalogue must drop it too:
+        // it is derived, so a leftover row would be the index asserting
+        // something the source of truth no longer says.
+        index
+            .replace_morse_spec(&spec(None), &[op("createUser", "/users")])
+            .unwrap();
+        let ops = index.morse_operations("auth").unwrap();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].operation_id, "createUser");
+
+        let stored = index.morse_specs().unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].title.as_deref(), Some("Acme Auth"));
+        assert_eq!(stored[0].repo.as_deref(), Some("backend"));
+
+        index.clear_morse_specs().unwrap();
+        assert!(index.morse_specs().unwrap().is_empty());
+        assert!(index.morse_operations("auth").unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_first_document_to_name_a_scenario_keeps_it() {
+        let mut index = Index::in_memory().unwrap();
+        let at = |path: &str, line: usize, problem: Option<&str>| StoredMorseScenario {
+            scenario: "register".into(),
+            path: path.into(),
+            line,
+            spec_id: "auth".into(),
+            pin: "a3f9c2d".into(),
+            env: Some("local".into()),
+            body: "scenario: register".into(),
+            problem: problem.map(str::to_owned),
+            stale_by: Some(0),
+            broken: None,
+        };
+        assert!(index
+            .upsert_morse_scenario(&at("docs/a.md", 3, None))
+            .unwrap());
+        assert!(
+            !index
+                .upsert_morse_scenario(&at("docs/b.md", 1, None))
+                .unwrap(),
+            "a second document naming the same scenario is a warning, not a merge"
+        );
+        let stored = index.morse_scenarios().unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].path, "docs/a.md");
+
+        // The owning document may move its own fence.
+        assert!(index
+            .upsert_morse_scenario(&at("docs/a.md", 9, None))
+            .unwrap());
+        assert_eq!(index.morse_scenarios().unwrap()[0].line, 9);
+
+        // A fence that did not parse is still recorded, so the screen can
+        // say which document and line to fix rather than showing nothing.
+        assert!(index
+            .upsert_morse_scenario(&at("docs/a.md", 9, Some("line 4: bad")))
+            .unwrap());
+        assert_eq!(
+            index.morse_scenarios().unwrap()[0].problem.as_deref(),
+            Some("line 4: bad")
+        );
+
+        index.clear_morse_scenarios_at("docs/a.md").unwrap();
+        assert!(index.morse_scenarios().unwrap().is_empty());
+    }
 
     #[test]
     fn the_first_fence_for_a_flow_wins_and_a_second_document_is_refused() {
