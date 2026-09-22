@@ -23,6 +23,11 @@ const ALLOWED: &[(&str, &[&str])] = &[
     // needs the frontmatter reader alongside the domain types.
     ("dit-vcs", &["dit-model", "dit-parse"]),
     ("dit-ai", &["dit-model"]),
+    // The one crate allowed to make a request whose destination came from a
+    // file (I11). It takes a resolved plan and returns what happened; it
+    // knows nothing of the index, of git, or of the workspace — so no read
+    // path can reach the network through it.
+    ("dit-morse", &["dit-model", "dit-parse"]),
     (
         "dit-core",
         &[
@@ -33,6 +38,7 @@ const ALLOWED: &[(&str, &[&str])] = &[
             "dit-index",
             "dit-vcs",
             "dit-ai",
+            "dit-morse",
         ],
     ),
     // `dit ui` runs the server's own router in-process — delivery calling

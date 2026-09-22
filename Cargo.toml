@@ -49,6 +49,7 @@ dit-query = { path = "crates/dit-query" }
 dit-store = { path = "crates/dit-store" }
 dit-index = { path = "crates/dit-index" }
 dit-vcs   = { path = "crates/dit-vcs" }
+dit-morse = { path = "crates/dit-morse" }
 dit-ai    = { path = "crates/dit-ai" }
 dit-core  = { path = "crates/dit-core" }
 dit-server = { path = "crates/dit-server" }

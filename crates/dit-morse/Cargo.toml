@@ -1,0 +1,18 @@
+[package]
+name    = "dit-morse"
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dit-model = { workspace = true }
+dit-parse = { workspace = true }
+thiserror = { workspace = true }
+# The only outbound HTTP in the workspace whose destination can come from a
+# file (I11). `ureq` is already the workspace's client, pinned, and blocking —
+# which matches `dit-core`'s blocking API (§16.1).
+ureq      = { workspace = true }
