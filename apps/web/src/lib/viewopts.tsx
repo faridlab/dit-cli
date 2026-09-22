@@ -24,6 +24,37 @@ export interface TimelineOptions {
   who: string | null;
 }
 
+/** The pseudo-flow the API understands: every flow's members together. */
+export const ALL_FLOWS = "__all__";
+
+/** Which fact the node colours stand for. Every one of these is already in
+ *  the data, so switching lens costs the schema nothing. */
+export type FlowPaint = "state" | "lane" | "type" | "priority";
+export const FLOW_PAINTS: readonly FlowPaint[] = ["state", "lane", "type", "priority"];
+
+/** What the Flow diagram is showing and what the reader has picked out of
+ *  it. The canvas draws it, the sidebar section reads and writes it, and the
+ *  header stepper walks it — three surfaces, one selection. */
+export interface FlowOptions {
+  /** The flow being drawn; `ALL_FLOWS` is the union. */
+  flow: string;
+  /** The node the lens is on, by issue id. */
+  selected: string | null;
+  /** The two ends of the route probe, by issue id. */
+  from: string | null;
+  to: string | null;
+  /** Legend isolation: when non-empty, only these keys draw lit. */
+  isolate: ReadonlySet<string>;
+  /** Which dimension the node colours mean. */
+  paint: FlowPaint;
+  /** The guided-reading beat, by index; null when the story is not running. */
+  chapter: number | null;
+  /** Bumped whenever a selection should also scroll the node into view, so
+   *  clicking a node on the canvas does not yank the canvas under the
+   *  pointer but picking one from the pane or the finder does. */
+  center: number;
+}
+
 export interface BoardOptions {
   groupBy: BoardGroupBy;
   cards: { labels: boolean; due: boolean; epic: boolean };
@@ -54,6 +85,18 @@ interface ViewOptions {
   selected: ReadonlySet<string>;
   toggleSelected: (id: string) => void;
   setSelected: (ids: ReadonlySet<string>) => void;
+
+  flow: FlowOptions;
+  setFlow: (name: string) => void;
+  selectFlowNode: (id: string | null, options?: { center?: boolean }) => void;
+  setFlowProbe: (end: "from" | "to", id: string | null) => void;
+  clearFlowProbe: () => void;
+  toggleFlowIsolate: (semantic: string) => void;
+  setFlowPaint: (paint: FlowPaint) => void;
+  setFlowChapter: (chapter: number | null) => void;
+  clearFlowLens: () => void;
+  /** Seed the whole reading at once — what a pasted link restores. */
+  applyFlowReading: (next: Partial<FlowOptions>) => void;
 
   timeline: TimelineOptions;
   setTimelineRange: (range: TimelineRange) => void;
@@ -108,6 +151,16 @@ export function ViewOptionsProvider({ children }: { children: ReactNode }) {
     hidden: new Set(),
   });
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [flow, setFlowState] = useState<FlowOptions>({
+    flow: ALL_FLOWS,
+    selected: null,
+    from: null,
+    to: null,
+    isolate: new Set(),
+    paint: "state",
+    chapter: null,
+    center: 0,
+  });
   const [timeline, setTimeline] = useState<TimelineOptions>({ range: "30d", kinds: new Set(), who: null });
   const [docSource, setDocSourceState] = useState(() => remembered(DOC_SOURCE_KEY, ["0", "1"], "0") === "1");
   const [openAs, setOpenAsState] = useState<OpenAs>(() => remembered(OPEN_AS_KEY, ["panel", "page"], "panel"));
@@ -143,6 +196,37 @@ export function ViewOptionsProvider({ children }: { children: ReactNode }) {
       toggleSelected: (id) => setSelected((s) => toggled(s, id)),
       setSelected,
 
+      flow,
+      // Another flow is another graph: the selection and the probe ends
+      // would point at nodes that are no longer on screen.
+      setFlow: (name) =>
+        setFlowState((f) => ({ ...f, flow: name, selected: null, from: null, to: null })),
+      selectFlowNode: (id, options) =>
+        setFlowState((f) => ({
+          ...f,
+          selected: id,
+          center: options?.center ? f.center + 1 : f.center,
+        })),
+      setFlowProbe: (end, id) => setFlowState((f) => ({ ...f, [end]: id })),
+      clearFlowProbe: () => setFlowState((f) => ({ ...f, from: null, to: null })),
+      toggleFlowIsolate: (semantic) =>
+        setFlowState((f) => ({ ...f, isolate: toggled(f.isolate, semantic) })),
+      setFlowPaint: (paint) => setFlowState((f) => ({ ...f, paint, isolate: new Set() })),
+      // Running the story puts the selection down: a beat and a pinned node
+      // are two different answers to "what am I looking at".
+      setFlowChapter: (chapter) =>
+        setFlowState((f) => ({ ...f, chapter, selected: chapter === null ? f.selected : null })),
+      applyFlowReading: (next) => setFlowState((f) => ({ ...f, ...next })),
+      clearFlowLens: () =>
+        setFlowState((f) => ({
+          ...f,
+          selected: null,
+          from: null,
+          to: null,
+          isolate: new Set(),
+          chapter: null,
+        })),
+
       timeline,
       setTimelineRange: (range) => setTimeline((t) => ({ ...t, range })),
       toggleTimelineKind: (kind) => setTimeline((t) => ({ ...t, kinds: toggled(t.kinds, kind) })),
@@ -160,7 +244,7 @@ export function ViewOptionsProvider({ children }: { children: ReactNode }) {
         remember(OPEN_AS_KEY, next);
       },
     }),
-    [filters, sort, setSort, board, selected, timeline, docSource, openAs],
+    [filters, sort, setSort, board, selected, flow, timeline, docSource, openAs],
   );
 
   return <ViewOptionsContext.Provider value={value}>{children}</ViewOptionsContext.Provider>;

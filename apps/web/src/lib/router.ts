@@ -51,8 +51,24 @@ export type Route =
   | { name: "timeline"; issue?: string | null; seq?: number | null }
   | { name: "roadmap"; issue?: string | null }
   | { name: "gantt"; issue?: string | null }
-  /** The flow diagram (ADR 0019): issues as nodes, blocked_by as edges. */
-  | { name: "flow"; issue?: string | null }
+  /** The flow diagram (ADR 0019): issues as nodes, blocked_by as edges.
+   *  A reading of the diagram — which flow, what is selected, the traced
+   *  route, the isolated colours, the paint dimension — rides in the URL so
+   *  it can be pasted into a thread and reopened exactly (ADR 0021). */
+  | {
+      name: "flow";
+      issue?: string | null;
+      /** Flow name, or `__all__` for the union. */
+      f?: string | null;
+      /** The selected node's issue id. */
+      n?: string | null;
+      /** The route probe's two ends, `from~to`. */
+      r?: string | null;
+      /** Isolated semantics, comma-separated. */
+      k?: string | null;
+      /** Which dimension the node colours mean. */
+      paint?: string | null;
+    }
   | { name: "issue"; id: string; from?: PeekHost | null }
   /** The composer; `type` preselects the issue type (the roadmap's "New epic"). */
   | { name: "new-issue"; type?: string | null }
@@ -101,7 +117,14 @@ export function routeToHash(route: Route): string {
     case "gantt":
       return `#/gantt${query([["issue", route.issue]])}`;
     case "flow":
-      return `#/flow${query([["issue", route.issue]])}`;
+      return `#/flow${query([
+        ["f", route.f],
+        ["n", route.n],
+        ["r", route.r],
+        ["k", route.k],
+        ["paint", route.paint],
+        ["issue", route.issue],
+      ])}`;
     case "issue":
       return `#/issue/${encodeURIComponent(route.id)}${query([["from", route.from]])}`;
     case "new-issue":
@@ -160,7 +183,17 @@ export function parseHash(hash: string): Route {
   }
   if (first === "roadmap") return { name: "roadmap", issue };
   if (first === "gantt") return { name: "gantt", issue };
-  if (first === "flow") return { name: "flow", issue };
+  if (first === "flow") {
+    return {
+      name: "flow",
+      issue,
+      f: nonEmpty("f"),
+      n: nonEmpty("n"),
+      r: nonEmpty("r"),
+      k: nonEmpty("k"),
+      paint: nonEmpty("paint"),
+    };
+  }
   if (first === "new") return { name: "new-issue", type: nonEmpty("type") };
   if (first === "settings") return { name: "settings" };
   // Home is the landing view: capture, triage, orient — the board is one
@@ -213,7 +246,8 @@ export function withPeek(route: Route, id: string | null): Route {
     case "gantt":
       return { name: "gantt", issue: id };
     case "flow":
-      return { name: "flow", issue: id };
+      // Opening an issue must not throw away the reading the diagram is in.
+      return { ...route, issue: id };
     default: {
       const host = peekHost(route);
       if (host === "home") return { name: "home", issue: id };
@@ -231,6 +265,18 @@ export function navigate(route: Route): void {
   // Setting the hash fires hashchange; the listener updates state. If the
   // hash is already current nothing happens, which is what we want.
   window.location.hash = routeToHash(route);
+}
+
+/** Rewrite the current history entry instead of pushing a new one, and tell
+ *  the listeners. Reading state — a selection, a traced route, an isolated
+ *  colour — changes many times a minute: every one of those is worth putting
+ *  in a shareable link, and none of them is worth a press of Back. */
+export function replaceRoute(route: Route): void {
+  const hash = routeToHash(route);
+  if (window.location.hash === hash) return;
+  window.history.replaceState(null, "", hash);
+  // replaceState fires nothing, and the app reads the route from this event.
+  window.dispatchEvent(new Event("hashchange"));
 }
 
 export function useRoute(): Route {

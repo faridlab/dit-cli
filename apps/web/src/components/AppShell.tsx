@@ -28,6 +28,7 @@ import { RoadmapOptionsProvider, RoadmapPane } from "./panes/RoadmapPane";
 import { TimelinePane } from "./panes/TimelinePane";
 import { BoardPane } from "./panes/BoardPane";
 import { DocsPane } from "./panes/DocsPane";
+import { FlowPane } from "./panes/FlowPane";
 import { HomePane } from "./panes/HomePane";
 import { IssuesPane } from "./panes/IssuesPane";
 import { SearchPane } from "./panes/SearchPane";
@@ -393,11 +394,10 @@ function Shell() {
       </>
     );
   } else if (route.name === "flow") {
-    section = { title: "Flow", node: null };
+    section = { title: "Flow", node: <FlowPane onOpen={openIssue} /> };
     right = (
       <HeaderHint>
-        orchestrations as diagrams · nodes are issues, arrows are blocked_by · updates live on any
-        write
+        click a node to trace it · f finds · 0 fits · [ ] walk the critical path
       </HeaderHint>
     );
   } else if (route.name === "settings") {
