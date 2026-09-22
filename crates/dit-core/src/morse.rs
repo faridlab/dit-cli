@@ -14,7 +14,8 @@
 use std::path::Path;
 
 use dit_index::{StoredMorseScenario, StoredMorseSpec};
-use dit_model::{MorseScenario, SpecEntry};
+use dit_model::{MorseScenario, SpecEntry, StepTarget};
+use dit_morse::{LocalConfig, PlannedStep, Policy, RunOutcome, RunPlan};
 use dit_vcs::Repo;
 
 use crate::{Dit, DitError};
@@ -78,6 +79,30 @@ pub struct MorseScenarioView {
     /// in a committed file would be a secret in git history (§20.6).
     pub requires: Vec<String>,
     pub health: ScenarioHealth,
+    /// The most recent run, if this workspace has one since its last
+    /// reindex. Derived and disposable (§20.7) — it says what one machine
+    /// saw at one moment, which is why it never reaches a file.
+    pub last_run: Option<LastRun>,
+}
+
+/// A run, reduced to what a screen shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LastRun {
+    pub ran_at: i64,
+    pub passed: bool,
+    pub refused: Option<String>,
+    pub steps: Vec<RunStepLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunStepLine {
+    pub id: String,
+    pub method: String,
+    pub status: Option<u16>,
+    pub duration_ms: u64,
+    pub passed: bool,
+    /// Why it failed, or what it captured — whichever there is to say.
+    pub detail: String,
 }
 
 /// Everything the Morse screen and `dit morse check` read.
@@ -137,6 +162,7 @@ impl Dit {
 
         let mut scenarios = Vec::new();
         for stored in self.index.morse_scenarios()? {
+            let last_run = self.index.morse_run(&stored.scenario)?;
             let parsed = dit_parse::parse_morse_scenario(&stored.body).ok();
             let health = if let Some(detail) = &stored.problem {
                 ScenarioHealth::Unreadable {
@@ -165,6 +191,12 @@ impl Dit {
                     .unwrap_or_default(),
                 requires: parsed.map(|s| s.requires).unwrap_or_default(),
                 health,
+                last_run: last_run.map(|row| LastRun {
+                    ran_at: row.ran_at,
+                    passed: row.passed,
+                    refused: row.refused,
+                    steps: row.steps.lines().filter_map(parse_run_line).collect(),
+                }),
             });
         }
         Ok(MorseReport { specs, scenarios })
@@ -396,4 +428,356 @@ fn unbound_reasons(scenario: &MorseScenario) -> Vec<String> {
             }
         })
         .collect()
+}
+
+// ---- Morse 2: running a scenario (§20.4, §20.5) ----------------------------
+
+/// What `dit morse sync` did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncOutcome {
+    pub run: RunOutcome,
+    /// The commit the pin was moved to, when it moved. `None` means the run
+    /// was not green and the pin was left exactly where it was — a pin that
+    /// advanced on a red run would be a claim nobody made.
+    pub moved_to: Option<String>,
+    /// The document the pin lives in, so a caller can say what it changed.
+    pub path: String,
+}
+
+impl Dit {
+    /// Run one scenario against a live environment. Nothing in DIT calls
+    /// this: it exists for `dit morse run`, `dit morse sync` and the Run
+    /// control, which is the whole of §20.5.
+    pub fn morse_run(&mut self, scenario: &str, env: Option<&str>) -> Result<RunOutcome, DitError> {
+        let plan = self.plan(scenario, env)?;
+        let policy = Policy {
+            allow: self.morse_local(env.unwrap_or("default"))?,
+            timeout_secs: 30,
+        };
+        let outcome = dit_morse::run(&plan, &policy);
+        self.record_run(&outcome)?;
+        Ok(outcome)
+    }
+
+    /// Keep the last run in the index, so the screen shows what the terminal
+    /// just did and a reload does not lose it. Nothing of it reaches a file.
+    fn record_run(&mut self, outcome: &RunOutcome) -> Result<(), DitError> {
+        let steps = outcome
+            .steps
+            .iter()
+            .map(|s| {
+                let detail = if s.failures.is_empty() && s.error.is_none() {
+                    s.captured
+                        .iter()
+                        .map(|(n, _)| format!("captured {n}"))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                } else {
+                    // Values are never kept — only that a capture happened,
+                    // and why a step failed.
+                    s.error
+                        .clone()
+                        .into_iter()
+                        .chain(s.failures.iter().cloned())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                };
+                format!(
+                    "{}\t{}\t{}\t{}\t{}\t{}",
+                    s.id,
+                    s.method,
+                    s.status.map_or_else(|| "-".to_owned(), |v| v.to_string()),
+                    s.duration_ms,
+                    if s.passed() { "ok" } else { "fail" },
+                    detail.replace('\t', " ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.index.record_morse_run(&dit_index::StoredMorseRun {
+            scenario: outcome.scenario.clone(),
+            ran_at: now_seconds(),
+            passed: outcome.passed(),
+            refused: outcome.refused.clone(),
+            steps,
+        })?;
+        Ok(())
+    }
+
+    /// Run a scenario and, only if every step passed, move its `commit:` pin
+    /// to where the spec stands now. The pin then means "this was proven to
+    /// work at this commit" rather than "these operations still exist"
+    /// (§20.4), which is why nothing else may move it.
+    pub fn morse_sync(
+        &mut self,
+        scenario: &str,
+        env: Option<&str>,
+        author: &str,
+    ) -> Result<SyncOutcome, DitError> {
+        let run = self.morse_run(scenario, env)?;
+        let stored = self.stored_scenario(scenario)?;
+        if !run.passed() {
+            return Ok(SyncOutcome {
+                run,
+                moved_to: None,
+                path: stored.path,
+            });
+        }
+        let parsed = dit_parse::parse_morse_scenario(&stored.body)
+            .map_err(|e| DitError::Refuse(format!("scenario `{scenario}`: {e}")))?;
+        let entry = self.spec_entry(&parsed.spec.id)?;
+        let repo = self.spec_repo(&entry).map_err(DitError::Refuse)?;
+        let head = repo
+            .get()
+            .head()
+            .map_err(|e| DitError::Refuse(format!("the spec's repo has no HEAD: {e}")))?;
+
+        let body = self.read_doc(&stored.path)?;
+        let updated = repin(&body, scenario, &head).ok_or_else(|| {
+            DitError::Refuse(format!(
+                "the `commit:` of scenario `{scenario}` could not be found in {}",
+                stored.path
+            ))
+        })?;
+        let mut tx = self.transaction(author)?;
+        tx.write_doc(&stored.path, &updated)?;
+        tx.commit(&format!(
+            "dit morse sync {scenario}: verified green against {}",
+            &head[..7.min(head.len())]
+        ))?;
+        Ok(SyncOutcome {
+            run,
+            moved_to: Some(head),
+            path: stored.path,
+        })
+    }
+
+    /// Trust a host on this machine. Written straight to the gitignored
+    /// local file — never through a transaction, because a host becoming
+    /// trusted must not be something that travels in a commit to everyone
+    /// else's checkout. Returns false when it was already allowed.
+    pub fn morse_allow(&self, host: &str) -> Result<bool, DitError> {
+        let path = self.repo.root().join(crate::MORSE_LOCAL_PATH);
+        let mut local = match std::fs::read_to_string(&path) {
+            Ok(text) => LocalConfig::parse(&text)
+                .map_err(|e| DitError::Refuse(format!("{}: {e}", crate::MORSE_LOCAL_PATH)))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => LocalConfig::default(),
+            Err(e) => return Err(e.into()),
+        };
+        if !local.allow(host) {
+            return Ok(false);
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        dit_store::atomic::write(&path, &local.write())?;
+        Ok(true)
+    }
+
+    /// The hosts this machine allows, including anything the two CI
+    /// environment variables add.
+    pub fn morse_allowed_hosts(&self) -> Result<Vec<String>, DitError> {
+        Ok(self.morse_local("default")?.allow_hosts)
+    }
+
+    fn stored_scenario(&self, scenario: &str) -> Result<StoredMorseScenario, DitError> {
+        self.index
+            .morse_scenarios()?
+            .into_iter()
+            .find(|s| s.scenario == scenario)
+            .ok_or_else(|| DitError::NotFound(format!("scenario `{scenario}`")))
+    }
+
+    fn spec_entry(&self, id: &str) -> Result<SpecEntry, DitError> {
+        self.config
+            .specs
+            .iter()
+            .find(|e| e.id == id)
+            .cloned()
+            .ok_or_else(|| {
+                DitError::Refuse(format!(
+                    "`spec: {id}` is not registered — add it under `specs:` in .dit/config.yaml"
+                ))
+            })
+    }
+
+    /// This machine's environments and allowed hosts, with the two CI
+    /// environment variables folded in. Read from the gitignored local file,
+    /// never from anything that travels with the repository.
+    fn morse_local(&self, env_name: &str) -> Result<LocalConfig, DitError> {
+        let path = self.repo.root().join(crate::MORSE_LOCAL_PATH);
+        let mut local = match std::fs::read_to_string(&path) {
+            Ok(text) => LocalConfig::parse(&text)
+                .map_err(|e| DitError::Refuse(format!("{}: {e}", crate::MORSE_LOCAL_PATH)))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => LocalConfig::default(),
+            Err(e) => return Err(e.into()),
+        };
+        local.overlay(
+            env_name,
+            std::env::var(dit_morse::ALLOW_HOSTS_VAR).ok().as_deref(),
+            std::env::var(dit_morse::VARS_VAR).ok().as_deref(),
+        );
+        Ok(local)
+    }
+
+    /// Turn a stored scenario into something that can be sent: every step
+    /// resolved against the spec at HEAD, the base URL taken from the API's
+    /// own `servers:` entry, and the values from this machine.
+    fn plan(&self, scenario: &str, env: Option<&str>) -> Result<RunPlan, DitError> {
+        let stored = self.stored_scenario(scenario)?;
+        if let Some(problem) = &stored.problem {
+            return Err(DitError::Refuse(format!(
+                "scenario `{scenario}` does not parse ({}:{}): {problem}",
+                stored.path, stored.line
+            )));
+        }
+        let parsed = dit_parse::parse_morse_scenario(&stored.body)
+            .map_err(|e| DitError::Refuse(format!("scenario `{scenario}`: {e}")))?;
+        let env_name = env.or(parsed.env.as_deref());
+
+        let entry = self.spec_entry(&parsed.spec.id)?;
+        let repo = self.spec_repo(&entry).map_err(DitError::Refuse)?;
+        let text = repo
+            .get()
+            .show_text(&format!("HEAD:{}", entry.path))
+            .ok_or_else(|| {
+                DitError::Refuse(format!("`{}` is not in its repo at HEAD", entry.path))
+            })?;
+        let spec = dit_parse::parse_openapi(&text)
+            .map_err(|e| DitError::Refuse(format!("{}: {e}", entry.path)))?;
+
+        let local = self.morse_local(env_name.unwrap_or("default"))?;
+        let local_env = env_name.and_then(|name| local.envs.get(name));
+        let base_url = local_env
+            .and_then(|e| e.server.clone())
+            .or_else(|| spec.server_for(env_name).map(|s| s.url.clone()))
+            .ok_or_else(|| {
+                DitError::Refuse(format!(
+                    "nothing says where `{}` lives — the spec has no `servers:` entry and \
+                     no environment overrides it",
+                    parsed.spec.id
+                ))
+            })?;
+
+        let mut steps = Vec::new();
+        for step in &parsed.steps {
+            let (method, path) = match &step.operation {
+                StepTarget::Inline(id) => {
+                    let found = parsed
+                        .requests
+                        .iter()
+                        .find(|r| &r.id == id)
+                        .ok_or_else(|| {
+                            DitError::Refuse(format!("step `{}` names no request", step.id))
+                        })?;
+                    (found.method.clone(), found.path.clone())
+                }
+                StepTarget::Operation(op) => {
+                    let found = spec.operation(&op.operation).ok_or_else(|| {
+                        DitError::Refuse(format!(
+                            "step `{}` calls `{}`, which the spec no longer describes",
+                            step.id,
+                            op.qualified()
+                        ))
+                    })?;
+                    (found.method.clone(), found.path.clone())
+                }
+            };
+            steps.push(PlannedStep {
+                id: step.id.clone(),
+                method,
+                path,
+                headers: step.headers.clone(),
+                query: step.query.clone(),
+                body: step.body.clone(),
+                expect: step.expect.clone(),
+                capture: step.capture.clone(),
+            });
+        }
+
+        Ok(RunPlan {
+            scenario: parsed.scenario.clone(),
+            base_url,
+            vars: local_env.map(|e| e.vars.clone()).unwrap_or_default(),
+            steps,
+        })
+    }
+}
+
+/// Rewrite the `commit:` of one scenario's fence, leaving every other byte
+/// alone. Surgical rather than re-serialised, for the same reason issue files
+/// are: a document holds a person's prose, and a rewrite would take it.
+fn repin(document: &str, scenario: &str, commit: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut in_fence = false;
+    let mut is_ours = false;
+    let mut done = false;
+    for line in document.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            if in_fence {
+                in_fence = false;
+                is_ours = false;
+            } else {
+                in_fence = true;
+                is_ours = trimmed.trim_start_matches('`').trim() == dit_parse::MORSE_FENCE;
+            }
+            out.push_str(line);
+            continue;
+        }
+        if in_fence && is_ours && trimmed.starts_with("scenario:") {
+            let named = trimmed["scenario:".len()..]
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'');
+            is_ours = named == scenario;
+        }
+        if in_fence && is_ours && !done && trimmed.starts_with("spec:") {
+            if let Some(replaced) = replace_commit(line, commit) {
+                out.push_str(&replaced);
+                done = true;
+                continue;
+            }
+        }
+        out.push_str(line);
+    }
+    done.then_some(out)
+}
+
+/// Swap the value of `commit:` inside a `spec: { id: .., commit: .. }` line.
+fn replace_commit(line: &str, commit: &str) -> Option<String> {
+    let at = line.find("commit:")?;
+    let after = &line[at + "commit:".len()..];
+    let start = after.len() - after.trim_start().len();
+    let value = after[start..].trim_start();
+    let end = value.find([',', '}', ' ', '\n']).unwrap_or(value.len());
+    let mut out = String::from(&line[..at + "commit:".len()]);
+    out.push_str(&after[..start]);
+    out.push_str(commit);
+    out.push_str(&value[end..]);
+    Some(out)
+}
+
+fn parse_run_line(line: &str) -> Option<RunStepLine> {
+    let mut parts = line.split('\t');
+    let id = parts.next()?.to_owned();
+    let method = parts.next()?.to_owned();
+    let status = parts.next()?.parse::<u16>().ok();
+    let duration_ms = parts.next()?.parse::<u64>().unwrap_or(0);
+    let passed = parts.next()? == "ok";
+    Some(RunStepLine {
+        id,
+        method,
+        status,
+        duration_ms,
+        passed,
+        detail: parts.next().unwrap_or_default().to_owned(),
+    })
+}
+
+fn now_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }

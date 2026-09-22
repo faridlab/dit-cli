@@ -15,6 +15,7 @@ dit-query = { workspace = true }
 dit-store = { workspace = true }
 dit-index = { workspace = true }
 dit-vcs   = { workspace = true }
+dit-morse = { workspace = true }
 dit-ai    = { workspace = true }
 thiserror = { workspace = true }
 tracing   = { workspace = true }

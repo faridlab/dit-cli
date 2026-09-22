@@ -60,7 +60,13 @@ pub use flow::{
     EdgeDisposition, FlowBoard, FlowClaim, FlowEdge, FlowLane, FlowNode, FlowOutsideBlocker,
     FlowSummary,
 };
-pub use morse::{MorseReport, MorseScenarioView, MorseSpecView, ScenarioHealth};
+pub use morse::{
+    LastRun, MorseReport, MorseScenarioView, MorseSpecView, RunStepLine, ScenarioHealth,
+    SyncOutcome,
+};
+// Delivery reports what a run did, so the shapes it reports come through
+// the facade rather than making every caller depend on the adapter.
+pub use dit_morse::{RunOutcome, StepOutcome};
 pub use watch::spawn as spawn_watcher;
 pub use workflow::InboxItem;
 
@@ -1667,6 +1673,7 @@ impl Dit {
             // scenario is judged against it.
             self.index.clear_flow_shapes()?;
             self.index.clear_morse_scenarios()?;
+            self.index.clear_morse_runs()?;
             self.refresh_morse_specs()?;
             for root in dit_model::DOC_ROOTS {
                 let rel = self.store.layout().content_root_rel(root);

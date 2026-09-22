@@ -3418,3 +3418,186 @@ fn init_gitignores_the_morse_environment_file_before_it_can_exist() {
         .expect("doctor must notice");
     assert_eq!(found.level, DiagnosticLevel::Error, "{}", found.message);
 }
+
+// ---- Morse 2: running, and the pin that only a green run may move ----------
+
+/// A server that answers each connection with the next canned response.
+/// Real sockets rather than a stub: what is under test is whether the whole
+/// path — index, spec, local config, runner — reaches a server at all.
+fn serve(responses: Vec<(u16, &'static str)>) -> u16 {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for (index, stream) in listener.incoming().enumerate() {
+            let Ok(mut stream) = stream else { break };
+            {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let mut len = 0usize;
+                loop {
+                    let mut header = String::new();
+                    reader.read_line(&mut header).unwrap();
+                    let header = header.trim_end();
+                    if header.is_empty() {
+                        break;
+                    }
+                    if let Some(v) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                if len > 0 {
+                    let mut body = vec![0u8; len];
+                    reader.read_exact(&mut body).unwrap();
+                }
+            }
+            let (status, body) = responses.get(index).copied().unwrap_or((500, "{}"));
+            let response = format!(
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+            if index + 1 >= responses.len() {
+                break;
+            }
+        }
+    });
+    port
+}
+
+/// Point the workspace's `local` environment at a port, and allow it.
+fn point_at(root: &Path, port: u16) {
+    std::fs::write(
+        root.join(dit_core::MORSE_LOCAL_PATH),
+        format!(
+            "envs:\n  local:\n    server: \"http://127.0.0.1:{port}\"\n    vars:\n      email: \"dev@acme.test\"\n      password: \"hunter2\"\nallow_hosts:\n  - 127.0.0.1\n"
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_run_reaches_the_server_the_environment_points_at_and_carries_values_along() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, pin) = morse_workspace(tmp.path());
+    write_doc(
+        &mut dit,
+        "docs/api/register.md",
+        &SCENARIO.replace("PIN", &pin),
+    );
+    let port = serve(vec![
+        (201, r#"{"data":{"id":"u_7"}}"#),
+        (200, r#"{"token":"t0k"}"#),
+        (200, r#"{"id":"u_7"}"#),
+    ]);
+    point_at(tmp.path(), port);
+
+    let outcome = dit.morse_run("register", None).unwrap();
+    assert!(outcome.passed(), "{outcome:#?}");
+    assert_eq!(outcome.steps.len(), 3);
+    assert!(
+        outcome.steps[2].url.ends_with("/me"),
+        "the path came from the spec, not from the fence: {}",
+        outcome.steps[2].url
+    );
+}
+
+#[test]
+fn a_green_run_moves_the_pin_and_the_scenario_reads_fresh_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, pin) = morse_workspace(tmp.path());
+    write_doc(
+        &mut dit,
+        "docs/api/register.md",
+        &SCENARIO.replace("PIN", &pin),
+    );
+    // The spec moves, so the scenario goes stale.
+    let repo = Repo::open(tmp.path()).unwrap();
+    std::fs::write(
+        tmp.path().join("api/openapi.yaml"),
+        format!("{SPEC_V1}  /health:\n    get:\n      operationId: health\n"),
+    )
+    .unwrap();
+    repo.add(".").unwrap();
+    repo.commit("add a health endpoint").unwrap();
+    dit.reindex(ReindexMode::All).unwrap();
+    assert!(matches!(
+        dit.morse_report().unwrap().scenarios[0].health,
+        dit_core::ScenarioHealth::Stale { .. }
+    ));
+
+    let port = serve(vec![
+        (201, r#"{"data":{"id":"u_7"}}"#),
+        (200, r#"{"token":"t0k"}"#),
+        (200, r#"{"id":"u_7"}"#),
+    ]);
+    point_at(tmp.path(), port);
+
+    let head = repo.head().unwrap();
+    let synced = dit.morse_sync("register", None, "farid").unwrap();
+    assert!(synced.run.passed());
+    assert_eq!(synced.moved_to.as_deref(), Some(head.as_str()));
+
+    dit.reindex(ReindexMode::All).unwrap();
+    let report = dit.morse_report().unwrap();
+    assert_eq!(
+        report.scenarios[0].health,
+        dit_core::ScenarioHealth::Fresh,
+        "the pin now says this was proven against the spec as it stands"
+    );
+    // And only the pin moved: the document a person wrote is otherwise intact.
+    let body = dit.read_doc("docs/api/register.md").unwrap();
+    assert!(body.contains("# Register"), "{body}");
+    assert!(body.contains("requires: [email, password]"), "{body}");
+    assert!(body.contains(&format!("commit: {head}")), "{body}");
+}
+
+#[test]
+fn a_red_run_leaves_the_pin_exactly_where_it_was() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, pin) = morse_workspace(tmp.path());
+    write_doc(
+        &mut dit,
+        "docs/api/register.md",
+        &SCENARIO.replace("PIN", &pin),
+    );
+    let port = serve(vec![(500, r#"{"error":"boom"}"#)]);
+    point_at(tmp.path(), port);
+
+    let synced = dit.morse_sync("register", None, "farid").unwrap();
+    assert!(!synced.run.passed());
+    assert_eq!(
+        synced.moved_to, None,
+        "a pin that advanced on a red run would be a claim nobody made"
+    );
+    let body = dit.read_doc("docs/api/register.md").unwrap();
+    assert!(body.contains(&format!("commit: {pin}")), "{body}");
+}
+
+#[test]
+fn a_host_this_machine_never_allowed_stops_the_run_and_names_the_way_out() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, pin) = morse_workspace(tmp.path());
+    write_doc(
+        &mut dit,
+        "docs/api/register.md",
+        &SCENARIO.replace("PIN", &pin),
+    );
+    let port = serve(vec![(200, "{}")]);
+    // An environment that points somewhere but allows nothing — what a fresh
+    // clone of someone else's scenario looks like.
+    std::fs::write(
+        tmp.path().join(dit_core::MORSE_LOCAL_PATH),
+        format!("envs:\n  local:\n    server: \"http://127.0.0.1:{port}\"\n    vars:\n      email: a\n      password: b\n"),
+    )
+    .unwrap();
+
+    let outcome = dit.morse_run("register", None).unwrap();
+    assert!(!outcome.passed());
+    assert!(outcome.steps.is_empty(), "nothing was attempted");
+    let refused = outcome.refused.unwrap();
+    assert!(refused.contains("dit morse allow 127.0.0.1"), "{refused}");
+}

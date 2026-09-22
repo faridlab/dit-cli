@@ -44,9 +44,11 @@ pub enum DitError {
         count: usize,
         listing: String,
     },
-    /// The action would take over something DIT does not own (e.g. `dit init`
-    /// into a tree that already has an `issues/` directory). Nothing was
-    /// written — the message names the way out.
+    /// The action cannot be carried out as asked, and nothing was written —
+    /// either it would take over something DIT does not own (`dit init` into
+    /// a tree that already has an `issues/` directory), or the workspace does
+    /// not hold what the request assumes (a Morse scenario naming a spec that
+    /// is not registered). In both cases the message names the way out.
     #[error("{0}")]
     Refuse(String),
     /// A named issue template is not in `.dit/templates/`. Distinct from
