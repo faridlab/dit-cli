@@ -18,6 +18,10 @@ start: string | null,
  */
 blocked_by: Array<string>, 
 /**
+ * Non-gating relations (ADR 0020): what feeds this issue.
+ */
+fed_by: Array<string>, 
+/**
  * The lane this issue belongs to (ADR 0015); absent = Unlaned.
  */
 lane: string | null, 

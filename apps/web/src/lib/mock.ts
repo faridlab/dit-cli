@@ -561,6 +561,7 @@ const ISSUES: IssueDto[] = Array.from({ length: 36 }, (_, index) => {
     // and enough unscheduled work for the tray to be worth having.
     start: n % 3 === 0 ? isoDate((n % 17) - 4) : null,
     blocked_by: [],
+    fed_by: [],
     lane: null,
     flows: [],
     claimed_by: null,
@@ -592,6 +593,7 @@ for (const [i, epic] of EPICS.entries()) {
     due: null,
     start: null,
     blocked_by: [],
+    fed_by: [],
     lane: null,
     flows: [],
     claimed_by: null,
@@ -996,6 +998,7 @@ export function installMockApi(): void {
         due: null,
         start: null,
         blocked_by: [],
+        fed_by: [],
         lane: (body.lane as string | null) ?? null,
         flows: (body.flows as string[]) ?? [],
         claimed_by: null,

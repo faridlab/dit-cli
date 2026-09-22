@@ -37,6 +37,10 @@ start?: string | null,
  */
 blocked_by?: Array<string>, 
 /**
+ * The non-gating relation (ADR 0020). Replaces the whole list.
+ */
+fed_by?: Array<string>, 
+/**
  * The lane id (ADR 0015); `null` or `""` clears back to Unlaned.
  */
 lane?: string | null, 

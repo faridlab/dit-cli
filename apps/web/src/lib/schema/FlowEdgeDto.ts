@@ -4,4 +4,16 @@ export type FlowEdgeDto = { from: string, to: string,
 /**
  * `satisfied` | `unsatisfied` | `broken`.
  */
-disposition: string, };
+disposition: string, 
+/**
+ * True for `blocked_by`, false for the non-gating `fed_by`.
+ */
+gating: boolean, 
+/**
+ * The blocker sits in a later column than what it blocks.
+ */
+backward: boolean, 
+/**
+ * What the fence says this arrow means.
+ */
+label: string | null, };
