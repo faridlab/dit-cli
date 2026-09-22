@@ -54,6 +54,7 @@ pub fn app(state: Arc<AppState>) -> Router {
             axum::routing::patch(patch_release),
         )
         .route("/api/board", get(get_board))
+        .route("/api/morse", get(get_morse))
         .route("/api/flow", get(list_flows))
         .route("/api/flow/{name}", get(get_flow))
         .route("/api/settings", get(get_settings).put(put_settings))
@@ -596,6 +597,19 @@ async fn post_comment(
     })
     .await?;
     Ok((StatusCode::CREATED, Json(comment)))
+}
+
+/// Morse's read model (§20): the derived catalogue and every scenario's
+/// verdict. A read — it answers from the index and sends nothing.
+async fn get_morse(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<dto::MorseReportDto>, ApiError> {
+    let report = read_dit(&state, move |dit| {
+        let report = dit.morse_report().map_err(ServerError::Dit)?;
+        Ok(dto::morse_report_dto(&report))
+    })
+    .await?;
+    Ok(Json(report))
 }
 
 /// Every flow in the workspace with its member count (ADR 0019).

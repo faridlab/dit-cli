@@ -442,6 +442,117 @@ pub struct ClaimReportDto {
     pub note: String,
 }
 
+/// Morse (§20, ADR 0022). A read-only view: the catalogue derived from each
+/// registered OpenAPI document, and every scenario judged against it. No
+/// endpoint here sends a request — Morse 1 has no egress at all (I11).
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct MorseOperationDto {
+    pub operation_id: String,
+    pub method: String,
+    pub path: String,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct MorseSpecDto {
+    pub id: String,
+    /// The linked repo holding it (Mode A), absent for this workspace.
+    pub repo: Option<String>,
+    pub path: String,
+    pub title: Option<String>,
+    pub version: Option<String>,
+    pub head: Option<String>,
+    pub operations: Vec<MorseOperationDto>,
+    /// Why the document could not be read. A spec with a problem is still
+    /// listed: a service whose document went missing is worth saying.
+    pub problem: Option<String>,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct MorseScenarioDto {
+    pub scenario: String,
+    pub path: String,
+    pub line: usize,
+    pub spec_id: String,
+    pub pin: String,
+    pub env: Option<String>,
+    pub steps: Vec<String>,
+    /// Variable *names* the environment must provide — never values.
+    pub requires: Vec<String>,
+    /// `fresh` | `stale` | `broken` | `unreadable`.
+    pub health: String,
+    /// Commits the spec has moved since the pin, when stale.
+    pub stale_by: Option<usize>,
+    /// Why it cannot be run as written, or why the fence did not parse.
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct MorseReportDto {
+    pub specs: Vec<MorseSpecDto>,
+    pub scenarios: Vec<MorseScenarioDto>,
+    /// Nothing broken or unreadable. Stale does not make it dirty.
+    pub clean: bool,
+}
+
+pub fn morse_report_dto(report: &dit_core::MorseReport) -> MorseReportDto {
+    MorseReportDto {
+        clean: report.is_clean(),
+        specs: report
+            .specs
+            .iter()
+            .map(|s| MorseSpecDto {
+                id: s.id.clone(),
+                repo: s.repo.clone(),
+                path: s.path.clone(),
+                title: s.title.clone(),
+                version: s.version.clone(),
+                head: s.head.clone(),
+                operations: s
+                    .operations
+                    .iter()
+                    .map(|o| MorseOperationDto {
+                        operation_id: o.operation_id.clone(),
+                        method: o.method.clone(),
+                        path: o.path.clone(),
+                        summary: o.summary.clone(),
+                    })
+                    .collect(),
+                problem: s.problem.clone(),
+            })
+            .collect(),
+        scenarios: report
+            .scenarios
+            .iter()
+            .map(|s| {
+                let (stale_by, reasons) = match &s.health {
+                    dit_core::ScenarioHealth::Stale { commits } => (Some(*commits), Vec::new()),
+                    dit_core::ScenarioHealth::Broken { reasons } => (None, reasons.clone()),
+                    dit_core::ScenarioHealth::Unreadable { detail } => (None, vec![detail.clone()]),
+                    dit_core::ScenarioHealth::Fresh => (None, Vec::new()),
+                };
+                MorseScenarioDto {
+                    scenario: s.scenario.clone(),
+                    path: s.path.clone(),
+                    line: s.line,
+                    spec_id: s.spec_id.clone(),
+                    pin: s.pin.clone(),
+                    env: s.env.clone(),
+                    steps: s.steps.clone(),
+                    requires: s.requires.clone(),
+                    health: s.health.label().to_owned(),
+                    stale_by,
+                    reasons,
+                }
+            })
+            .collect(),
+    }
+}
+
 /// The flow diagram (ADR 0019): every flow with its member count.
 #[derive(Debug, Serialize, TS)]
 #[ts(export)]
