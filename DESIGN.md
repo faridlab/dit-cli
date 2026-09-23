@@ -2466,7 +2466,8 @@ Companion measure: `dit validate` flags changes to `.dit/.gitattributes` and `.d
 
 The operative words are *of its own accord*, and §20 is where they are tested. A Morse
 scenario names a URL, and that is the point of it — but no reindex, watcher, `dit doctor`,
-CI run, or opened document ever sends it. Only `dit morse run` and the Run control do,
+CI run, or opened document ever sends it. Only `dit morse run`, `send` and `sync`, and the
+Run and Send controls, do,
 against a host the person running them has separately allowed on that machine, in a
 gitignored local file. Parsing is not fetching. A scenario that arrives in a pull request
 is inert until someone decides otherwise (ADR 0022).
@@ -2757,6 +2758,11 @@ steps:
       status: 200
       jsonpath:
         $.id: "{{user_id}}"
+  - id: profile
+    operation: auth/getUser             # GET /users/{id}
+    params: { id: "{{user_id}}" }
+    headers: { Authorization: "Bearer {{token}}" }
+    expect: { status: 200 }
 ```
 ````
 
@@ -2766,6 +2772,15 @@ response header, or the status. `expect` compares against a literal or a bound
 name. `{{name}}` substitutes into path parameters, query values, headers and
 body values, and **never** into the scheme, host or port, so no captured value
 can send the next request somewhere else.
+
+**A path parameter is named, never inferred.** The spec writes its path in
+OpenAPI's own syntax, `/users/{id}`, and the step fills each `{name}` from its
+`params:` map (ADR 0023). A value is percent-encoded as one segment, so a
+captured `../admin` stays one segment. A parameter with no entry refuses the
+step before anything is built, naming it, and `dit morse check` reports the
+scenario broken for the same reason. Filling `{id}` from a variable that
+happens to be called `id` was rejected: renaming a capture would then silently
+change which record a request touches.
 
 **There is no expression language and no escape hatch.** No `script`, no
 `pre_request`, no `transform`. This is the single most important constraint in
@@ -2849,7 +2864,8 @@ list is in ADR 0022 and repeated here because it is load-bearing:
 | `dit reindex`, the file watcher, the indexer, the merge driver | `dit morse run <scenario>` |
 | `dit doctor`, `dit validate`, `dit ready` | The Run control on the Morse screen |
 | `dit morse check` — it reads and reports, never sends | `dit morse sync <scenario>`, which runs the chain before moving the pin (§20.4) |
-| Opening the document, hovering a step, rendering the fence's NodeView | |
+| Opening the document, hovering a step, rendering the fence's NodeView | `dit morse send <spec>/<operationId>`, and the Send control on an operation's tab (ADR 0023) |
+| Opening a tab, selecting an environment, editing a draft | |
 
 Parsing is not fetching. Beyond that: a host must be present in the **local,
 gitignored** allowlist before it can be reached — a scenario arriving in a pull
@@ -2860,6 +2876,14 @@ as the response it is, for the scenario's own `expect` to see, because
 following one would mean deciding mid-flight that a second host is as trusted
 as the first. Egress is confined to one adapter crate, `dit-morse`, the way I3
 confines git to `dit-vcs`, and no read path can reach it.
+
+**Send is one operation, through the same gates.** A draft sent from a tab is
+a one-step plan: the operation must resolve in the catalogue at HEAD, so the
+method and path come from the spec; the base URL comes from the spec or this
+machine's environment, and the draft has no field that could name one. It is
+never committed. This adds no reach an injected script lacked — it could
+already write a fence through the docs endpoint and press Run — and it still
+cannot choose a host (ADR 0023).
 
 **The browser may fire a run; it may not decide what to trust.** The Morse
 screen's Run control posts to the server, which runs the scenario exactly as
@@ -2970,6 +2994,28 @@ Morse is the third item in the navigation, after Home and Docs and before
 Board. It is a workspace-level surface, not an issue-level one: scenarios
 describe the product's API, and issues link to them the way they link to
 documents.
+
+### 20.9 The workbench
+
+The screen is laid out the way people arriving from Postman expect (ADR 0023):
+an explorer of specs grouped by OpenAPI tag, scenarios grouped by document,
+this machine's environments and recent runs; tabs for operations, steps,
+scenarios, specs and environments; and a request tab with Docs, Params,
+Headers, Body, Expect and Capture over a response panel. What differs is
+where everything lands:
+
+| On the screen | Where it lives |
+|---|---|
+| An operation's method, path, parameters and body fields | The spec at HEAD — derived, never stored |
+| A draft in an operation tab | The browser, until **Save to scenario** writes it into a fence |
+| An edit in a step's tab | The fence, re-serialised and committed after a pause, prose untouched |
+| The environment picker | Names, servers and which variables are set — never a value |
+| The response panel | Status, time, size, each check, capture names — never the body (§20.7) |
+| Expect and Capture | Where Postman has Scripts. There is no Scripts tab |
+
+A fence containing a `#` comment is not rewritten from the screen, because a
+re-serialised fence would drop the comment; the tab points at the document
+instead.
 
 ---
 
