@@ -7,7 +7,8 @@
 import { SlidersVertical } from "lucide-react";
 import { useViewOptions, type BoardGroupBy, type BoardOptions, type CardSort } from "../../lib/viewopts";
 import { useBoardModel } from "../../views/BoardView";
-import { CheckSquare, IBtn, MenuButton, Row, SectionHeading, Sp, type MenuItem } from "../chrome";
+import { CheckSquare, IBtn, MenuButton, Row, type MenuItem } from "../chrome";
+import { PaneSection } from "../PaneSection";
 
 const GROUPS: Array<[BoardGroupBy, string, string | null]> = [
   ["status", "Status", "workflow"],
@@ -47,16 +48,18 @@ export function BoardPane() {
 
   return (
     <>
-      <SectionHeading size="sm">
-        Columns · by {board.groupBy}
-        <Sp />
-        <MenuButton items={display} align="end">
-          <IBtn title="Display options">
-            <SlidersVertical className="i" aria-hidden />
-          </IBtn>
-        </MenuButton>
-      </SectionHeading>
-      <div className="sb-body">
+      <PaneSection
+        id="board.columns"
+        title={`Columns · by ${board.groupBy}`}
+        count={`${columns.filter((c) => !board.hidden.has(c.key)).length}/${columns.length}`}
+        actions={
+          <MenuButton items={display} align="end">
+            <IBtn title="Display options">
+              <SlidersVertical className="i" aria-hidden />
+            </IBtn>
+          </MenuButton>
+        }
+      >
         {columns.map((column) => {
           const on = !board.hidden.has(column.key);
           return (
@@ -71,20 +74,18 @@ export function BoardPane() {
             </Row>
           );
         })}
+      </PaneSection>
 
-        <SectionHeading size="sm" className="mt-[10px]">
-          Cards
-        </SectionHeading>
+      <PaneSection id="board.cards" title="Cards">
         {CARD_OPTIONS.map(([key, label]) => (
           <Row key={key} onClick={() => toggleCardOption(key)}>
             <CheckSquare on={board.cards[key]} />
             <span className="lbl">{label}</span>
           </Row>
         ))}
+      </PaneSection>
 
-        <SectionHeading size="sm" className="mt-[10px]">
-          Group by
-        </SectionHeading>
+      <PaneSection id="board.group" title="Group by">
         {GROUPS.map(([key, label, hint]) => (
           <Row key={key} on={board.groupBy === key} onClick={() => setGroupBy(key)}>
             <CheckSquare on={board.groupBy === key} radio />
@@ -94,7 +95,7 @@ export function BoardPane() {
             </span>
           </Row>
         ))}
-      </div>
+      </PaneSection>
     </>
   );
 }

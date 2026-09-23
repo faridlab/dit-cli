@@ -5,7 +5,8 @@
 // looking at six months" is not a fact about the plan.
 
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
-import { Btn, CheckSquare, HeadingNote, Row, SectionHeading, Sp } from "../chrome";
+import { Btn, CheckSquare, Row } from "../chrome";
+import { PaneSection } from "../PaneSection";
 import { StatusPill } from "../badges";
 import { useReleases } from "../../lib/queries";
 import type { RoadmapHorizon } from "../../lib/schedule";
@@ -83,8 +84,7 @@ export function RoadmapPane() {
 
   return (
     <>
-      <SectionHeading size="sm">Horizon</SectionHeading>
-      <div className="sb-body">
+      <PaneSection id="roadmap.horizon" title="Horizon">
         <div style={{ display: "flex", gap: 4, padding: "2px 8px 6px" }}>
           {HORIZONS.map(([horizon, label]) => (
             <Btn
@@ -97,33 +97,28 @@ export function RoadmapPane() {
             </Btn>
           ))}
         </div>
+      </PaneSection>
 
-        <SectionHeading size="sm">Lanes</SectionHeading>
+      <PaneSection id="roadmap.lanes" title="Lanes">
         {LANES.map(([key, label]) => (
           <Row key={key} on={options.lanes === key} onClick={() => options.set("lanes", key)}>
             <CheckSquare on={options.lanes === key} radio />
             <span className="lbl">{label}</span>
           </Row>
         ))}
+      </PaneSection>
 
-        <SectionHeading size="sm" className="mt-2">
-          Show
-        </SectionHeading>
+      <PaneSection id="roadmap.show" title="Show">
         {SHOW.map(([key, label]) => (
           <Row key={key} onClick={() => options.set(key, !options[key])}>
             <CheckSquare on={options[key]} />
             <span className="lbl">{label}</span>
           </Row>
         ))}
+      </PaneSection>
 
-        <SectionHeading size="sm" className="mt-2">
-          Releases
-          <Sp />
-          {/* The heading is uppercase; a path is not. */}
-          <HeadingNote className="font-mono text-[10.5px] font-normal normal-case tracking-normal text-faint">
-            .dit/releases/
-          </HeadingNote>
-        </SectionHeading>
+      {/* The heading is uppercase; a path is not. */}
+      <PaneSection id="roadmap.releases" title="Releases" count={<span className="mono">.dit/releases/</span>} fill>
         {list.length === 0 ? (
           <p className="empty" style={{ padding: "4px 8px" }}>
             No releases yet — add .dit/releases/&lt;version&gt;/release.md
@@ -145,7 +140,7 @@ export function RoadmapPane() {
             </Row>
           ))
         )}
-      </div>
+      </PaneSection>
     </>
   );
 }

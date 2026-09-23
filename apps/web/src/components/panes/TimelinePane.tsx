@@ -16,7 +16,8 @@ import {
   Zap,
 } from "lucide-react";
 import { Avatar } from "../badges";
-import { Btn, CheckSquare, Row, Sp } from "../chrome";
+import { Btn, CheckSquare, Row } from "../chrome";
+import { PaneSection } from "../PaneSection";
 import { workspaceTimeline, type TimelineBucket } from "../../lib/activity";
 import { useActivity, useWorkspaceComments } from "../../lib/queries";
 import { useViewOptions, type TimelineRange } from "../../lib/viewopts";
@@ -58,8 +59,7 @@ export function TimelinePane(_props: { seq: number | null }) {
 
   return (
     <>
-      <div className="sb-h">Range</div>
-      <div className="sb-body">
+      <PaneSection id="timeline.range" title="Range">
         <div style={{ display: "flex", gap: 4, padding: "2px 8px 6px" }}>
           {RANGES.map(([value, label]) => (
             <Btn
@@ -72,17 +72,13 @@ export function TimelinePane(_props: { seq: number | null }) {
             </Btn>
           ))}
         </div>
+      </PaneSection>
 
-        <div className="sb-h">
-          Kinds
-          <Sp />
-          <span
-            className="dql"
-            style={{ textTransform: "none", letterSpacing: 0, fontWeight: 400, fontSize: 11 }}
-          >
-            {nothingPicked ? "all" : `${timeline.kinds.size} of ${KINDS.length}`}
-          </span>
-        </div>
+      <PaneSection
+        id="timeline.kinds"
+        title="Kinds"
+        count={nothingPicked ? "all" : `${timeline.kinds.size} of ${KINDS.length}`}
+      >
         {KINDS.map(([kind, label, Icon]) => (
           <Row key={kind} onClick={() => toggleTimelineKind(kind)} title={label}>
             {/* With nothing picked every kind is shown, so every box reads as
@@ -95,10 +91,9 @@ export function TimelinePane(_props: { seq: number | null }) {
             <span className="lbl">{label}</span>
           </Row>
         ))}
+      </PaneSection>
 
-        <div className="sb-h" style={{ marginTop: 8 }}>
-          People
-        </div>
+      <PaneSection id="timeline.people" title="People" count={authors.length || null} fill>
         {authors.length === 0 ? (
           <p className="empty" style={{ padding: "2px 8px 0", fontSize: 11.5 }}>
             Nobody yet — people appear here once the feed has loaded.
@@ -116,10 +111,9 @@ export function TimelinePane(_props: { seq: number | null }) {
             <span className="cnt">{count}</span>
           </Row>
         ))}
+      </PaneSection>
 
-        <div className="sb-h" style={{ marginTop: 8 }}>
-          Source
-        </div>
+      <PaneSection id="timeline.source" title="Source" defaultCollapsed>
         <p
           className="empty"
           style={{ padding: "2px 8px 0", fontSize: 11.5, lineHeight: 1.5, color: "var(--muted)" }}
@@ -127,7 +121,7 @@ export function TimelinePane(_props: { seq: number | null }) {
           Everything here is read from git: <span className="mono">field_events</span> ordered by{" "}
           <span className="mono">seq</span> and comment files. Nothing on this screen is stored.
         </p>
-      </div>
+      </PaneSection>
     </>
   );
 }

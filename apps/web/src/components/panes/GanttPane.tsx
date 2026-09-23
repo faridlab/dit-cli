@@ -7,7 +7,8 @@
 // the plan, so none of it is written to the repo.
 
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
-import { Btn, CheckSquare, Row, SectionHeading } from "../chrome";
+import { Btn, CheckSquare, Row } from "../chrome";
+import { PaneSection } from "../PaneSection";
 import { useIssues, useSchema } from "../../lib/queries";
 import { doneIds, isDone, POOL_LIMIT } from "../../lib/lists";
 import type { GanttZoom } from "../../lib/schedule";
@@ -92,8 +93,7 @@ export function GanttPane() {
 
   return (
     <>
-      <SectionHeading size="sm">Zoom</SectionHeading>
-      <div className="sb-body">
+      <PaneSection id="gantt.zoom" title="Zoom">
         <div style={{ display: "flex", gap: 4, padding: "2px 8px 6px" }}>
           {ZOOMS.map(([zoom, label]) => (
             <Btn
@@ -106,28 +106,27 @@ export function GanttPane() {
             </Btn>
           ))}
         </div>
+      </PaneSection>
 
-        <SectionHeading size="sm">Group rows by</SectionHeading>
+      <PaneSection id="gantt.group" title="Group rows by">
         {GROUPS.map(([key, label]) => (
           <Row key={key} on={options.groupBy === key} onClick={() => options.set("groupBy", key)}>
             <CheckSquare on={options.groupBy === key} radio />
             <span className="lbl">{label}</span>
           </Row>
         ))}
+      </PaneSection>
 
-        <SectionHeading size="sm" className="mt-2">
-          Show
-        </SectionHeading>
+      <PaneSection id="gantt.show" title="Show">
         {SHOW.map(([key, label]) => (
           <Row key={key} onClick={() => options.set(key, !options[key])}>
             <CheckSquare on={options[key]} />
             <span className="lbl">{label}</span>
           </Row>
         ))}
+      </PaneSection>
 
-        <SectionHeading size="sm" className="mt-2">
-          How dates work
-        </SectionHeading>
+      <PaneSection id="gantt.how" title="How dates work" count={`${undated} undated`}>
         <p
           className="empty"
           style={{ padding: "2px 8px 0", fontSize: 11.5, lineHeight: 1.5, color: "var(--muted)" }}
@@ -137,7 +136,7 @@ export function GanttPane() {
           never stored. Dragging a bar commits the real fields. {undated} open{" "}
           {undated === 1 ? "issue has" : "issues have"} no dates.
         </p>
-      </div>
+      </PaneSection>
     </>
   );
 }

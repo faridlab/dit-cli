@@ -17,7 +17,18 @@ import { ViewOptionsProvider, useViewOptions } from "../lib/viewopts";
 import { shortSha } from "../lib/format";
 import { CommandPalette } from "./CommandPalette";
 import { IssuePeek } from "./issue/IssuePeek";
-import { Sidebar, SHORTCUT_VIEWS, type SidebarMode } from "./Sidebar";
+import { ActivityBar } from "./ActivityBar";
+import { SidePanel, useInboxCount } from "./SidePanel";
+import {
+  activityOf,
+  defaultRoute,
+  hasSidePanel,
+  readPanelWidth,
+  SHORTCUT_VIEWS,
+  withoutPeek,
+  writePanelWidth,
+  type ActivityId,
+} from "../lib/workbench";
 import { StatusBar } from "./StatusBar";
 import { Header, crumbsFor } from "./Header";
 import { DisplayButton, FilterButton, HeaderHint, SortButton } from "./HeaderMenus";
@@ -28,6 +39,7 @@ import { RoadmapOptionsProvider, RoadmapPane } from "./panes/RoadmapPane";
 import { TimelinePane } from "./panes/TimelinePane";
 import { BoardPane } from "./panes/BoardPane";
 import { DocsPane } from "./panes/DocsPane";
+import { DocsOutline, DocsRecent } from "./panes/DocsSections";
 import { FlowPane } from "./panes/FlowPane";
 import { HomePane } from "./panes/HomePane";
 import { IssuesPane } from "./panes/IssuesPane";
@@ -108,10 +120,11 @@ function Shell() {
   const options = useViewOptions();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
-  const [sidebarMode, setSidebarMode] = useState<SidebarMode>("expanded");
-  const toggleSidebar = useCallback(() => {
-    setSidebarMode((mode) => (mode === "hidden" ? "expanded" : "hidden"));
-  }, []);
+  // The side panel: open or folded, and as wide as the reader left it.
+  const [panelOpen, setPanelOpen] = useState(true);
+  const [panelWidth, setPanelWidth] = useState(readPanelWidth);
+  const toggleSidebar = useCallback(() => setPanelOpen((open) => !open), []);
+  const inbox = useInboxCount();
 
   const workspace = status.data
     ? (status.data.repo.split("/").filter(Boolean).pop() ?? status.data.repo)
@@ -298,6 +311,26 @@ function Shell() {
     [docsTabs, docsP, selectDoc],
   );
 
+  // -- the activity bar --------------------------------------------------------
+  // Each icon returns to the screen last open under it — Work to the list
+  // you were filtering, Plan to the Gantt you left — the way VS Code keeps
+  // each view where it was.
+  const activity = activityOf(route);
+  const lastRoute = useRef<Partial<Record<ActivityId, Route>>>({});
+  lastRoute.current[activity] = withoutPeek(route);
+  const activate = useCallback(
+    (id: ActivityId) => {
+      if (id === activity) {
+        // The lit icon folds its panel, as in VS Code. Morse has none.
+        if (hasSidePanel(id)) setPanelOpen((open) => !open);
+        return;
+      }
+      setPanelOpen(true);
+      navigate(lastRoute.current[id] ?? defaultRoute(id));
+    },
+    [activity, navigate],
+  );
+
   // -- the workspace menu ----------------------------------------------------
   const workspaceMenu = useMemo<MenuItem[]>(
     () => [
@@ -357,6 +390,7 @@ function Shell() {
     section = {
       title: "Docs",
       node: (
+        <>
         <DocsPane
           p={route.p}
           onSelect={previewDoc}
@@ -365,6 +399,9 @@ function Shell() {
           onDeleted={(path) => closeDocTab(path, { force: true })}
           isDirty={docsTabs.isDirty}
         />
+        <DocsOutline p={route.p} />
+        <DocsRecent p={route.p} onSelect={previewDoc} />
+        </>
       ),
     };
     extraCrumb = route.p ? (route.p.split("/").pop() ?? route.p) : null;
@@ -426,14 +463,31 @@ function Shell() {
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-app text-ink">
       <div className="flex min-h-0 flex-1">
-        <Sidebar
-          route={route}
-          mode={sidebarMode}
-          section={section}
-          onNavigate={navigate}
-          onOpenPalette={() => setPaletteOpen(true)}
+        <ActivityBar
+          active={activity}
+          panelOpen={panelOpen && hasSidePanel(activity)}
+          badges={{ work: inbox }}
+          onActivate={activate}
           workspaceMenu={workspaceMenu}
+          workspace={workspace}
         />
+        {hasSidePanel(activity) ? (
+          <SidePanel
+            activity={activity}
+            route={route}
+            open={panelOpen}
+            width={panelWidth}
+            onWidth={(width, done) => {
+              setPanelWidth(width);
+              if (done) writePanelWidth(width);
+            }}
+            onNavigate={navigate}
+            onFold={() => setPanelOpen(false)}
+            onOpenPalette={() => setPaletteOpen(true)}
+          >
+            {section?.node ?? null}
+          </SidePanel>
+        ) : null}
         {/* `.main` is relative so the issue panel can sit over the view
             without taking the list off screen. */}
         <main className="main flex-1">
@@ -523,7 +577,7 @@ function Shell() {
         onNewIssue={openNewIssue}
         onOpenDoc={previewDoc}
         onToggleSidebar={toggleSidebar}
-        sidebarHidden={sidebarMode === "hidden"}
+        sidebarHidden={!panelOpen}
         onNotes={() => setNotesOpen(true)}
         cli={cliFor(route)}
       />

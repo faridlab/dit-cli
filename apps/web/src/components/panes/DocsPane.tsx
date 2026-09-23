@@ -8,7 +8,7 @@
 // folder, delete with a second confirming click — and dragging a page onto
 // a folder moves it through one commit.
 //
-// The markup follows the approved workbench design: an `.sb-h` heading
+// The markup follows the approved workbench design: a PaneSection heading
 // with three small buttons, then `.sb-body.tree` of `.row` buttons indented
 // through the `--d` custom property, and a hint paragraph at the bottom.
 
@@ -52,13 +52,8 @@ import {
 import { cn } from "../../lib/cn";
 import type { DocEntryDto } from "../../lib/types";
 import { ErrorBox, Loading } from "../states";
-import {
-  ContextMenuFor,
-  MenuButton,
-  SectionHeading,
-  Sp,
-  type MenuItem,
-} from "../chrome";
+import { ContextMenuFor, MenuButton, type MenuItem } from "../chrome";
+import { PaneSection } from "../PaneSection";
 
 const DOC_ROOTS = ["docs", "notes", "epics", "changelogs"] as const;
 const FILE_DRAG_PREFIX = "file:";
@@ -842,10 +837,12 @@ export function DocsPane({
   };
 
   return (
-    <>
-      <SectionHeading size="sm">
-        Pages
-        <Sp />
+    <PaneSection
+      id="docs.pages"
+      title="Pages"
+      fill
+      actions={
+        <>
         <MenuButton items={newPageItems(targetDir)} align="end">
           <button type="button" title={`New page in ${targetDir}/`}>
             <Plus className="i" aria-hidden />
@@ -863,7 +860,9 @@ export function DocsPane({
         >
           <ChevronsUpDown className="i" aria-hidden />
         </button>
-      </SectionHeading>
+        </>
+      }
+    >
 
       <div
         className="sb-body tree"
@@ -900,6 +899,6 @@ export function DocsPane({
           select it and fold it. Double-click blank space for a new page.
         </p>
       </div>
-    </>
+    </PaneSection>
   );
 }

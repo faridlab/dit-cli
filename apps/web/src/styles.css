@@ -511,28 +511,9 @@ kbd{font:10.5px var(--mono);border:1px solid var(--edge-2);border-bottom-width:2
 mark{background:var(--mark);color:inherit;border-radius:2px;padding:0 1px}
 
 /* ---------- shell ---------- */
-.sidebar{width:252px;background:var(--bg);border-right:1px solid var(--edge);display:flex;flex-direction:column;min-height:0;transition:width .22s cubic-bezier(.2,0,0,1),opacity .15s;overflow:hidden}
-.sidebar.collapsed{width:0;border-color:transparent;opacity:0}
-.sidebar > *{width:252px}
-.sb-top{padding:12px 12px 6px;display:flex;flex-direction:column;gap:8px}
-.ws{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--r);width:100%;text-align:left}
-.ws:hover{background:var(--hover)}
-.ws .logo{width:22px;height:22px;border-radius:6px;background:var(--accent);color:var(--on-accent);display:grid;place-items:center;font:600 10px var(--mono);letter-spacing:.02em}
-.ws .name{font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ws .branch{font:11px var(--mono);color:var(--muted);display:flex;align-items:center;gap:3px}
 .sb-search{display:flex;align-items:center;gap:8px;height:32px;padding:0 9px;border:1px solid var(--edge);background:var(--surface);border-radius:var(--r);color:var(--muted);width:100%;text-align:left}
 .sb-search:hover{border-color:var(--edge-2)}
 .sb-search span{flex:1}
-.nav{padding:4px 8px;display:flex;flex-direction:column;gap:1px}
-.nav a,.nav button.navitem{display:flex;align-items:center;gap:9px;height:30px;padding:0 8px;border-radius:var(--r);color:var(--ink-2);width:100%;text-align:left}
-.nav a:hover{background:var(--hover);color:var(--ink)}
-.nav a.on{background:var(--active);color:var(--accent-ink);font-weight:500}
-.nav a .lbl{flex:1}
-.nav a .cnt{font:11px var(--mono);color:var(--muted)}
-.nav a.on .cnt{color:var(--accent-ink)}
-.nav a kbd{opacity:0;transition:opacity .12s}
-.nav a:hover kbd{opacity:1}
-.sb-section{padding:10px 8px 4px;min-height:0;display:flex;flex-direction:column;flex:1}
 .sb-h{display:flex;align-items:center;gap:6px;padding:4px 8px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
 .sb-h .sp{flex:1}
 .sb-h button{color:var(--muted);display:grid;place-items:center;width:20px;height:20px;border-radius:4px}
@@ -546,7 +527,6 @@ mark{background:var(--mark);color:inherit;border-radius:2px;padding:0 1px}
 .chk{width:14px;height:14px;border-radius:3px;border:1px solid var(--edge-2);display:grid;place-items:center;color:transparent;flex:none;background:var(--surface)}
 .chk.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 .chk svg{width:10px;height:10px;stroke-width:3}
-.sb-bottom{padding:8px;border-top:1px solid var(--edge);display:flex;flex-direction:column;gap:2px}
 .tree .row{padding-left:calc(8px + var(--d,0)*14px)}
 .tree .row svg{color:var(--muted)}
 .tree .row.on{background:var(--active);color:var(--accent-ink)}
@@ -834,8 +814,6 @@ mark{background:var(--mark);color:inherit;border-radius:2px;padding:0 1px}
 .toast.show{opacity:1;transform:translate(-50%,0)}
 
 @media (max-width:900px){
-  .sidebar{position:absolute;z-index:20;height:calc(100% - 26px);box-shadow:var(--shadow-lg)}
-  .sidebar.collapsed{width:0}
   .menu-btn{display:inline-flex}
   .page{grid-template-columns:1fr}.page .rail{border-left:0;border-top:1px solid var(--edge)}
   .home,.doc,.settings,.search{padding-left:16px;padding-right:16px}
@@ -1014,42 +992,82 @@ mark{background:var(--mark);color:inherit;border-radius:2px;padding:0 1px}
 .ti:hover .lbl{text-decoration:underline;color:var(--ink)}
 @media (max-width:900px){.asof{grid-template-columns:1fr}.tle{grid-template-columns:22px 40px minmax(0,1fr)}.tle .tw,.tle .ti{display:none}.gleft{width:200px}.rlbl{width:170px}}
 
-/* ---------- sidebar: one scroll region, bottom row pinned ---------- */
-.sb-scroll{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;scrollbar-gutter:stable}
-/* The nav holds its ground; the view's own section is the only part that
-   scrolls, because it is the only part that grows without limit. Both are
-   flex columns, so both need their rows pinned to their natural height —
-   otherwise constraining either one squashes its contents instead of
-   scrolling them. */
-.sidebar .nav{flex:none;scrollbar-gutter:stable}
-.sidebar .nav > *{flex:none}
-.sb-section{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding-bottom:12px;scrollbar-gutter:stable}
-/* The section is a flex column AND the scroll container, so its headings and
-   lists must keep their natural height. Without this they shrink to fit the
-   viewport and their contents draw over each other. */
-.sb-section > *{flex:none}
-/* The measured half of the rail: nav, the line the reader drags, section. */
-.sb-shell{flex:1;min-height:0;display:flex;flex-direction:column}
-.sb-split{flex:none;height:9px;cursor:row-resize;display:grid;place-items:center;
-  touch-action:none;position:relative}
-.sb-split::before{content:"";position:absolute;left:8px;right:8px;top:4px;height:1px;
-  background:var(--edge)}
-.sb-split .grip{box-shadow:0 0 0 3px var(--bg)}
-/* The grip is always drawn. A control that only appears once the pointer is
-   already on it is a control nobody finds: the reader has to know it is
-   there before they have a reason to go there. */
-.sb-split .grip{position:relative;width:28px;height:3px;border-radius:99px;
-  background:var(--edge-2);transition:background .12s,width .12s}
-.sb-split:hover .grip,.sb-split:focus-visible .grip{background:var(--muted);width:40px}
-.sb-split:focus-visible{outline:none}
-.sb-split:focus-visible::before{background:var(--accent)}
-.sb-body{overflow:visible}
-.sb-bottom{flex:none;background:var(--bg)}
-.sidebar .nav a kbd,.sidebar .nav .row kbd{flex:none}
-/* The React shell is a flex column (sidebar + main above the status bar);
-   the sidebar collapses to zero width so the header's toggle is the only
-   way back, as in the design. */
-.sidebar.collapsed > * { pointer-events: none; }
+/* ---------- the workbench: activity bar · side panel · sections ----------
+   Three regions, VS Code-style. The activity bar holds one icon per kind of
+   place; the side panel holds that place's sub-menu on top and the open
+   view's own sections split below it. Ported from the approved prototype. */
+.ab{width:48px;flex:none;background:var(--dit-panel);border-right:1px solid var(--edge);display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 0}
+.ab-logo{width:36px;height:36px;border-radius:8px;display:grid;place-items:center;margin-bottom:8px}
+.ab-logo:hover{background:var(--hover)}
+.ab-i{position:relative;width:40px;height:40px;border-radius:8px;display:grid;place-items:center;color:var(--muted)}
+.ab-i svg.i{width:20px;height:20px;stroke-width:1.6}
+.ab-i:hover{color:var(--ink);background:var(--hover)}
+.ab-i.on{color:var(--ink)}
+.ab-i.on::before{content:"";position:absolute;left:-4px;top:8px;bottom:8px;width:2px;border-radius:2px;background:var(--accent)}
+.ab-i.on.folded::before{background:var(--edge-2)}
+.ab-i:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.ab-badge{position:absolute;right:2px;bottom:4px;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--accent);color:var(--on-accent);font:600 9.5px/16px var(--sans);text-align:center;pointer-events:none}
+.ab-tip{position:absolute;left:46px;top:50%;transform:translateY(-50%);display:grid;grid-template-columns:auto auto;gap:2px 10px;align-items:center;min-width:180px;max-width:260px;background:var(--raised);border:1px solid var(--edge);box-shadow:var(--shadow-lg);padding:6px 9px;border-radius:7px;text-align:left;font-size:12px;color:var(--ink);pointer-events:none;opacity:0;transition:opacity .1s .35s;z-index:90;white-space:normal}
+.ab-tip b{font-weight:600}
+.ab-tip kbd{justify-self:end}
+.ab-tip span{grid-column:1/-1;color:var(--muted);font-size:11.5px;line-height:1.4}
+.ab-i:hover .ab-tip,.ab-i:focus-visible .ab-tip{opacity:1}
+.ab-sp{flex:1}
+
+.spanel{flex:none;position:relative;background:var(--bg);border-right:1px solid var(--edge);min-height:0;overflow:hidden;transition:width .18s cubic-bezier(.2,0,0,1)}
+.spanel.folded{border-color:transparent}
+.spanel.folded > *{pointer-events:none}
+.sp-inner{height:100%;display:flex;flex-direction:column;min-height:0}
+.sp-h{display:flex;align-items:center;gap:6px;height:36px;padding:0 6px 0 14px;flex:none;font-size:11px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+.sp-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sp-fold{width:24px;height:24px;border-radius:5px;display:grid;place-items:center;color:var(--muted)}
+.sp-fold:hover{background:var(--hover);color:var(--ink)}
+.sp-fold svg.i{width:14px;height:14px}
+.sp-search{margin:0 10px 6px;width:auto;flex:none}
+.sp-menu{flex:none;display:flex;flex-direction:column;gap:1px;padding:2px 8px 8px}
+.sp-row{display:flex;align-items:center;gap:9px;height:30px;padding:0 8px;border-radius:var(--r);color:var(--ink-2);text-align:left}
+.sp-row:hover{background:var(--hover);color:var(--ink)}
+.sp-row.on{background:var(--active);color:var(--accent-ink);font-weight:500}
+.sp-row .lbl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sp-row .cnt{font:11px var(--mono);color:var(--muted)}
+.sp-row.on .cnt{color:var(--accent-ink)}
+.sp-row.child{padding-left:33px;height:28px;font-size:12.5px}
+.sp-views{flex:1;min-height:0;display:flex;flex-direction:column;border-top:1px solid var(--edge);overflow:hidden}
+/* Inside the panel's edge: the panel clips its overflow, so a handle that
+   hung past it would be half unreachable. */
+.sp-resize{position:absolute;top:0;right:0;bottom:0;width:5px;cursor:col-resize;z-index:5;touch-action:none}
+.sp-resize:hover,.sp-resize.drag{background:var(--accent);opacity:.45}
+.spanel.folded .sp-resize{display:none}
+
+/* One view in the lower split. It hugs its content until someone drags it;
+   the view a panel is mostly for (`fill`) takes the room nobody else uses. */
+.ps{display:flex;flex-direction:column;min-height:0;flex:0 1 auto;border-bottom:1px solid var(--edge);position:relative}
+.ps.fill.open{flex:1 1 auto}
+.ps:not(.open){flex:none}
+.ps:last-child{border-bottom:0}
+.ps-sash{position:absolute;left:0;right:0;top:-3px;height:6px;cursor:row-resize;z-index:4;touch-action:none}
+.ps:first-child .ps-sash,.ps:not(.open) .ps-sash{display:none}
+.ps-sash:hover,.ps-sash.drag{background:var(--accent);opacity:.45}
+.ps-h{display:flex;align-items:center;gap:4px;height:28px;padding:0 6px 0 4px;flex:none}
+.ps-h:hover{background:var(--hover)}
+.ps-t{flex:1;min-width:0;display:flex;align-items:center;gap:4px;height:100%;text-align:left;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-2)}
+.ps-t .lbl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ps-t .chev{width:12px;height:12px;color:var(--muted);transition:transform .12s}
+.ps.open .ps-t .chev{transform:rotate(90deg)}
+.ps-cnt{font:11px var(--mono);color:var(--faint);white-space:nowrap}
+.ps-cnt a{color:inherit}
+.ps-acts{display:flex;align-items:center;gap:2px}
+.ps-acts button{color:var(--muted);display:grid;place-items:center;min-width:20px;height:20px;border-radius:4px}
+.ps-acts button:hover{background:var(--hover);color:var(--ink)}
+.ps-b{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding:2px 8px 10px;scrollbar-gutter:stable}
+.ps-b > .sb-body{padding:0}
+.ps-b .row.ol-2{padding-left:22px}.ps-b .row.ol-3{padding-left:36px}.ps-b .row.ol-4{padding-left:50px}
+.ps-b .row.ol svg{color:var(--faint)}
+@media (prefers-reduced-motion:reduce){.spanel,.ps-t .chev{transition:none}.ab-tip{transition:none}}
+@media (max-width:900px){
+  .spanel{position:absolute;left:48px;top:0;bottom:26px;z-index:20;box-shadow:var(--shadow-lg)}
+  .spanel.folded{box-shadow:none}
+}
 .content { display: flex; flex-direction: column; }
 /* Centered pages sit in a flex column: without an explicit width a
    `margin: 0 auto` child shrinks to its content instead of its max-width. */
@@ -1314,7 +1332,8 @@ mark{background:var(--mark);color:inherit;border-radius:2px;padding:0 1px}
 .fguide-list .t strong{display:block;color:var(--ink);font-weight:600;font-size:12.5px}
 
 /* the presentation stage: the diagram is the only thing on the screen */
-html[data-present] .sidebar,
+html[data-present] .ab,
+html[data-present] .spanel,
 html[data-present] .hdr,
 html[data-present] .status{display:none}
 html[data-present] .wflow{padding:8px}

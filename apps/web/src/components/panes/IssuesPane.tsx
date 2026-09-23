@@ -14,7 +14,8 @@ import { useOpenPool, useSchema, useStatus } from "../../lib/queries";
 import { navigate, routeToHash } from "../../lib/router";
 import { useViewOptions } from "../../lib/viewopts";
 import { TypeBadge } from "../badges";
-import { CheckSquare, ContextMenuFor, IBtn, MenuButton, Row, SectionHeading, Sp, type MenuItem } from "../chrome";
+import { CheckSquare, ContextMenuFor, IBtn, MenuButton, Row, type MenuItem } from "../chrome";
+import { PaneSection } from "../PaneSection";
 
 export const SAVED_VIEWS_KEY = "dit.views";
 
@@ -122,14 +123,15 @@ export function IssuesPane({
 
   return (
     <>
-      <SectionHeading size="sm">
-        Filters
-        <Sp />
-        <IBtn title="Clear all filters" aria-label="Clear all filters" onClick={clearFilters}>
-          <X className="i" aria-hidden />
-        </IBtn>
-      </SectionHeading>
-      <div className="sb-body">
+      <PaneSection
+        id="issues.filters"
+        title="Filters"
+        actions={
+          <IBtn title="Clear all filters" aria-label="Clear all filters" onClick={clearFilters}>
+            <X className="i" aria-hidden />
+          </IBtn>
+        }
+      >
         <Row
           on={filters.mine}
           onClick={toggleMine}
@@ -141,10 +143,9 @@ export function IssuesPane({
           <span className="lbl">Assigned to me</span>
           <span className="cnt mono">@me</span>
         </Row>
+      </PaneSection>
 
-        <SectionHeading size="sm" className="mt-2">
-          Context
-        </SectionHeading>
+      <PaneSection id="issues.context" title="Context" count={contexts.length || null}>
         {contexts.map((context) => (
           <Row
             key={context}
@@ -162,10 +163,9 @@ export function IssuesPane({
             No @context labels on open issues yet.
           </p>
         ) : null}
+      </PaneSection>
 
-        <SectionHeading size="sm" className="mt-2">
-          Type
-        </SectionHeading>
+      <PaneSection id="issues.type" title="Type">
         {ISSUE_TYPES.map((type) => (
           <Row key={type} on={filters.types.has(type)} onClick={() => toggleType(type)} title={`type = ${type}`}>
             <CheckSquare on={filters.types.has(type)} />
@@ -174,10 +174,13 @@ export function IssuesPane({
             <span className="cnt">{typeCount(type)}</span>
           </Row>
         ))}
+      </PaneSection>
 
-        <SectionHeading size="sm" className="mt-2">
-          Saved views
-          <Sp />
+      <PaneSection
+        id="issues.views"
+        title="Saved views"
+        count={views.length || null}
+        actions={
           <MenuButton items={saveItems}>
             <IBtn
               title="Save the current filters as a view — kept in this browser"
@@ -186,7 +189,8 @@ export function IssuesPane({
               <Plus className="i" aria-hidden />
             </IBtn>
           </MenuButton>
-        </SectionHeading>
+        }
+      >
         {views.map((view, index) => (
           <ContextMenuFor key={`${view[0]}:${index}`} items={viewItems(index, view)}>
             <a
@@ -199,7 +203,12 @@ export function IssuesPane({
             </a>
           </ContextMenuFor>
         ))}
-      </div>
+        {views.length === 0 ? (
+          <p className="empty" style={{ padding: "4px 8px" }}>
+            None yet — set some filters and press + to keep them.
+          </p>
+        ) : null}
+      </PaneSection>
     </>
   );
 }

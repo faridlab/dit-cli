@@ -10,7 +10,7 @@ import { GitCommitHorizontal } from "lucide-react";
 import { useActivity, useIssues, useOpenPool, useSchema } from "../../lib/queries";
 import { relativeTime, resolveIdValue } from "../../lib/format";
 import type { IssueDto, StatusDto } from "../../lib/types";
-import { Sp } from "../chrome";
+import { PaneSection } from "../PaneSection";
 import { AssigneeCircles, IssueHandle } from "../badges";
 import { routeToHash } from "../../lib/router";
 
@@ -49,21 +49,17 @@ function WaitingOn({
   const query = statuses.map((s) => `status = ${s.id}`).join(" OR ");
 
   return (
-    <>
-      <div className="sb-h">
-        Waiting on
-        <Sp />
-        {statuses.length > 0 ? (
-          <a
-            className="cnt mono"
-            style={{ fontWeight: 400 }}
-            href={routeToHash({ name: "search", q: query })}
-            title={query}
-          >
+    <PaneSection
+      id="home.waiting"
+      title="Waiting on"
+      count={
+        statuses.length > 0 ? (
+          <a className="mono" href={routeToHash({ name: "search", q: query })} title={query}>
             {waiting.length}
           </a>
-        ) : null}
-      </div>
+        ) : null
+      }
+    >
       <div className="sb-body">
         {waiting.length === 0 ? (
           <p className="empty" style={{ padding: "4px 8px" }}>
@@ -79,7 +75,7 @@ function WaitingOn({
           ))
         )}
       </div>
-    </>
+    </PaneSection>
   );
 }
 
@@ -110,24 +106,7 @@ function Activity({
   );
 
   return (
-    <>
-      <div className="sb-h" style={{ marginTop: 6 }}>
-        Activity
-        <Sp />
-        <span
-          className="dql"
-          style={{
-            fontWeight: 400,
-            textTransform: "none",
-            letterSpacing: 0,
-            fontFamily: "var(--mono)",
-            fontSize: 10.5,
-            color: "var(--faint)",
-          }}
-        >
-          field_events
-        </span>
-      </div>
+    <PaneSection id="home.activity" title="Activity" count={<span className="mono">field_events</span>} fill>
       <div className="sb-body">
         {activity.isPending ? (
           <p className="empty" style={{ padding: "4px 8px" }}>
@@ -171,7 +150,7 @@ function Activity({
           ))
         )}
       </div>
-    </>
+    </PaneSection>
   );
 }
 

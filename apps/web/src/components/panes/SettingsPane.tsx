@@ -3,7 +3,8 @@
 // the pane stays small and static — no tree to manage.
 
 import { ChevronRight } from "lucide-react";
-import { Row, SectionHeading } from "../chrome";
+import { Row } from "../chrome";
+import { PaneSection } from "../PaneSection";
 
 const SECTIONS: { id: string; label: string }[] = [
   { id: "s-layout", label: "Where files live" },
@@ -23,8 +24,7 @@ function jump(id: string) {
 
 export function SettingsPane() {
   return (
-    <>
-      <SectionHeading size="sm">Settings</SectionHeading>
+    <PaneSection id="settings.sections" title="On this page" fill>
       <div className="sb-body">
         {SECTIONS.map((section) => (
           <Row key={section.id} className="jump" onClick={() => jump(section.id)}>
@@ -33,6 +33,6 @@ export function SettingsPane() {
           </Row>
         ))}
       </div>
-    </>
+    </PaneSection>
   );
 }

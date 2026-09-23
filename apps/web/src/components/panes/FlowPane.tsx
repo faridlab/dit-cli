@@ -18,6 +18,7 @@ import {
   Waypoints,
 } from "lucide-react";
 import { Btn, Row, Sp } from "../chrome";
+import { PaneSection } from "../PaneSection";
 import { cn } from "../../lib/cn";
 import { ALL_FLOWS, useViewOptions } from "../../lib/viewopts";
 import { semanticOf } from "../../lib/flowgraph";
@@ -35,8 +36,7 @@ export function FlowPane({ onOpen }: { onOpen: (id: string) => void }) {
 
   return (
     <>
-      <div className="sb-h">Flows</div>
-      <div className="sb-body">
+      <PaneSection id="flow.flows" title="Flows" count={model.flows.data?.length ?? null}>
         {model.flows.data?.map((f) => (
           <Row key={f.name} on={opts.flow === f.name} onClick={() => setFlow(f.name)}>
             <Waypoints className="i" aria-hidden />
@@ -49,12 +49,9 @@ export function FlowPane({ onOpen }: { onOpen: (id: string) => void }) {
           <span className="lbl">all flows</span>
           <span className="cnt">{data?.nodes.length ?? 0}</span>
         </Row>
+      </PaneSection>
 
-        <div className="sb-h">
-          Critical path
-          <Sp />
-          <span className="dql">{Math.max(0, model.mainPath.length - 1)} hops</span>
-        </div>
+      <PaneSection id="flow.path" title="Critical path" count={`${Math.max(0, model.mainPath.length - 1)} hops`}>
         {model.mainPath.length === 0 ? (
           <p className="sb-note">No dependencies on this board yet.</p>
         ) : (
@@ -70,27 +67,34 @@ export function FlowPane({ onOpen }: { onOpen: (id: string) => void }) {
             </Btn>
           </div>
         )}
+      </PaneSection>
 
-        <div className="sb-h">
-          Route
-          <Sp />
-          {opts.from !== null || opts.to !== null ? (
+      <PaneSection
+        id="flow.route"
+        title="Route"
+        actions={
+          opts.from !== null || opts.to !== null ? (
             <button type="button" className="dql lnk" onClick={clearFlowProbe}>
               clear
             </button>
-          ) : null}
-        </div>
+          ) : null
+        }
+      >
         <RouteProbe model={model} onGo={go} />
+      </PaneSection>
 
-        <div className="sb-h">
-          Selected
-          <Sp />
-          {selected !== null ? (
+      <PaneSection
+        id="flow.selected"
+        title="Selected"
+        fill
+        actions={
+          selected !== null ? (
             <button type="button" className="dql lnk" onClick={clearFlowLens}>
               clear
             </button>
-          ) : null}
-        </div>
+          ) : null
+        }
+      >
         {selected === null ? (
           <p className="sb-note">
             Click a node to light up everything it waits on and everything waiting on it. Press{" "}
@@ -195,7 +199,7 @@ export function FlowPane({ onOpen }: { onOpen: (id: string) => void }) {
             ) : null}
           </div>
         )}
-      </div>
+      </PaneSection>
     </>
   );
 }
