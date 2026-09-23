@@ -23,3 +23,4 @@ run them.
 | `delete_modify_conflict` | The merge driver is never invoked |
 | `rename_modify_conflict` | The merge driver is never invoked |
 | `df_conflict_branch_names` | `dit` + `dit/<x>` cannot coexist as refs |
+| `spec_with_path_parameter` (`crates/dit-core/tests/core.rs`) | A spec path's `{id}` was sent to the server literally — nothing filled it (ADR 0023) |

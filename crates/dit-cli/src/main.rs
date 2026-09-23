@@ -258,6 +258,31 @@ enum MorseCmd {
         #[arg(long)]
         env: Option<String>,
     },
+    /// Fire one operation from a spec, without a scenario — the terminal twin
+    /// of the Send control (ADR 0023). The method and path come from the
+    /// spec, the server from the spec or the environment, and the host must
+    /// be allowed on this machine. Prints the response here; nothing is
+    /// written.
+    Send {
+        /// `<spec>/<operationId>`, e.g. `party/getParty`.
+        operation: String,
+        #[arg(long)]
+        env: Option<String>,
+        /// A path parameter, `name=value` — fills `{name}` in the spec's path.
+        #[arg(long = "param", value_name = "NAME=VALUE")]
+        params: Vec<String>,
+        #[arg(long = "query", value_name = "NAME=VALUE")]
+        query: Vec<String>,
+        /// `Name: value`. Use `{{name}}` for anything secret.
+        #[arg(long = "header", value_name = "NAME: VALUE")]
+        headers: Vec<String>,
+        /// A JSON request body.
+        #[arg(long)]
+        body: Option<String>,
+        /// The status to expect. Without one, any response counts as sent.
+        #[arg(long)]
+        status: Option<u16>,
+    },
     /// Trust a host on this machine. Written to `.dit/morse.local.yaml`,
     /// which is gitignored: a scenario arriving in a pull request cannot
     /// bring its own permission with it. With no host, lists what is
@@ -966,6 +991,56 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
                     ExitCode::FAILURE
                 })
             }
+            MorseCmd::Send {
+                operation,
+                env,
+                params,
+                query,
+                headers,
+                body,
+                status,
+            } => {
+                let operation = dit_core::OperationRef::parse(&operation).ok_or_else(|| {
+                    DitError::Refuse(format!("`{operation}` is not `<spec>/<operationId>`"))
+                })?;
+                let pairs = |items: &[String], sep: char| -> Result<Vec<_>, DitError> {
+                    items
+                        .iter()
+                        .map(|item| {
+                            let (k, v) = item.split_once(sep).ok_or_else(|| {
+                                DitError::Refuse(format!("`{item}` is not `name{sep}value`"))
+                            })?;
+                            Ok((
+                                k.trim().to_owned(),
+                                dit_core::MorseValue::Str(v.trim().to_owned()),
+                            ))
+                        })
+                        .collect()
+                };
+                let draft = dit_core::SendDraft {
+                    operation,
+                    params: pairs(&params, '=')?,
+                    query: pairs(&query, '=')?,
+                    headers: pairs(&headers, ':')?,
+                    body: body
+                        .as_deref()
+                        .map(dit_core::morse_value_from_json)
+                        .transpose()?,
+                    expect: dit_core::Expect {
+                        status,
+                        json: Vec::new(),
+                    },
+                    capture: Vec::new(),
+                };
+                let mut dit = open()?;
+                let outcome = dit.morse_send(&draft, env.as_deref())?;
+                print_run(&outcome);
+                Ok(if outcome.passed() {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                })
+            }
             MorseCmd::Sync { scenario, env } => {
                 let mut dit = open()?;
                 let me = me_for(&dit, explicit.as_deref());
@@ -1658,6 +1733,13 @@ fn print_run(outcome: &dit_core::RunOutcome) {
             // Captured values are printed: a run is a debugging session, and
             // hiding what was carried forward is what makes one long.
             println!("      captured {name} = {value}");
+        }
+        // So is the body — this terminal asked, and it is the one place a
+        // response may be read (§20.7). The page never receives it.
+        if let Some(body) = step.body.as_deref().filter(|b| !b.is_empty()) {
+            for line in body.lines() {
+                println!("      | {line}");
+            }
         }
     }
     if outcome.passed() {

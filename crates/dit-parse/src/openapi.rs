@@ -10,7 +10,7 @@
 //! Nothing here fetches anything. It is handed bytes that were already read
 //! from a git ref, and returns data (I11).
 
-use dit_model::{OpenApiSpec, SpecOperation, SpecServer};
+use dit_model::{OpenApiSpec, SpecField, SpecOperation, SpecParam, SpecServer};
 
 use crate::yaml::{Yaml, YamlError};
 
@@ -124,6 +124,7 @@ fn operations(root: &Yaml) -> Result<Vec<SpecOperation>, OpenApiError> {
         let Yaml::Map(methods) = item else {
             continue;
         };
+        let shared = item.get("parameters");
         for (method, op) in methods {
             let lower = method.to_ascii_lowercase();
             if !METHODS.contains(&lower.as_str()) {
@@ -138,15 +139,121 @@ fn operations(root: &Yaml) -> Result<Vec<SpecOperation>, OpenApiError> {
             if operation_id.is_empty() {
                 continue;
             }
+            let mut params = parameters(root, op.get("parameters"));
+            for shared in parameters(root, shared) {
+                if !params
+                    .iter()
+                    .any(|p| p.name == shared.name && p.location == shared.location)
+                {
+                    params.push(shared);
+                }
+            }
             out.push(SpecOperation {
                 operation_id,
                 method: lower.to_ascii_uppercase(),
                 path: path.clone(),
                 summary: op.get("summary").and_then(str_value),
+                tag: op
+                    .get("tags")
+                    .and_then(Yaml::as_seq)
+                    .and_then(|t| t.first())
+                    .and_then(str_value),
+                params,
+                body: body_fields(root, op.get("requestBody")),
+                responses: match op.get("responses") {
+                    // A quoted key (`'201':`, which is how most documents write
+                    // them) keeps its quotes in this reader's tree.
+                    Some(Yaml::Map(codes)) => codes
+                        .iter()
+                        .map(|(c, _)| c.trim_matches(['\'', '"']).to_owned())
+                        .collect(),
+                    _ => Vec::new(),
+                },
             });
         }
     }
     Ok(out)
+}
+
+/// How deep a chain of `$ref`s is followed. A document may refer to itself
+/// in a cycle; this is what stops that from being a hang.
+const MAX_REF_DEPTH: usize = 8;
+
+/// Follow a local `$ref` (`#/components/...`) to what it names. A reference
+/// to any other document is left unresolved: following it would be DIT
+/// fetching a file of its own accord (I7, I11).
+fn deref<'a>(root: &'a Yaml, mut node: &'a Yaml) -> Option<&'a Yaml> {
+    for _ in 0..MAX_REF_DEPTH {
+        let Some(target) = node.get("$ref").and_then(Yaml::as_str) else {
+            return Some(node);
+        };
+        let pointer = target.trim().strip_prefix("#/")?;
+        let mut at = root;
+        for part in pointer.split('/') {
+            let part = part.replace("~1", "/").replace("~0", "~");
+            at = at.get(&part)?;
+        }
+        node = at;
+    }
+    None
+}
+
+fn parameters(root: &Yaml, node: Option<&Yaml>) -> Vec<SpecParam> {
+    let Some(items) = node.and_then(Yaml::as_seq) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let p = deref(root, item)?;
+            Some(SpecParam {
+                name: p.get("name").and_then(str_value)?,
+                location: p.get("in").and_then(str_value)?,
+                required: p.get("required").and_then(Yaml::as_str) == Some("true"),
+            })
+        })
+        .collect()
+}
+
+fn body_fields(root: &Yaml, node: Option<&Yaml>) -> Vec<SpecField> {
+    let Some(schema) = node
+        .and_then(|b| deref(root, b))
+        .and_then(|b| b.get("content"))
+        .and_then(|c| c.get("application/json"))
+        .and_then(|j| j.get("schema"))
+        .and_then(|s| deref(root, s))
+    else {
+        return Vec::new();
+    };
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(Yaml::as_seq)
+        .map(|r| r.iter().filter_map(Yaml::as_str).collect())
+        .unwrap_or_default();
+    let Some(Yaml::Map(props)) = schema.get("properties") else {
+        return Vec::new();
+    };
+    props
+        .iter()
+        .map(|(name, prop)| {
+            let resolved = deref(root, prop);
+            let kind = resolved
+                .and_then(|p| p.get("type"))
+                .and_then(str_value)
+                .unwrap_or_else(|| {
+                    if resolved.and_then(|p| p.get("properties")).is_some() {
+                        "object".to_owned()
+                    } else {
+                        "any".to_owned()
+                    }
+                });
+            SpecField {
+                name: name.clone(),
+                kind,
+                required: required.contains(&name.as_str()),
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -210,6 +317,102 @@ paths:
             Some("https://api.acme.com"),
             "an unmatched environment falls back to the first server"
         );
+    }
+
+    /// The shape a generated document has: parameters and bodies reached
+    /// through `$ref`, which is how serpa's 45 documents are all written.
+    const WITH_REFS: &str = r#"openapi: 3.0.3
+paths:
+  /api/v1/party/parties/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdParam'
+    put:
+      tags:
+        - Parties
+      operationId: updateParty
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - name: X-Trace
+          in: header
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PartyInput'
+      responses:
+        '200': { description: ok }
+        '404': { description: gone }
+    get:
+      operationId: getParty
+      parameters:
+        - $ref: 'https://evil.example/params.yaml#/Id'
+components:
+  parameters:
+    IdParam:
+      name: id
+      in: path
+      required: true
+    PageParam:
+      name: page
+      in: query
+  schemas:
+    PartyInput:
+      type: object
+      required: [name, party_kind]
+      properties:
+        name:
+          type: string
+        party_kind:
+          $ref: '#/components/schemas/Kind'
+        active:
+          type: boolean
+    Kind:
+      type: string
+"#;
+
+    #[test]
+    fn an_operation_carries_what_a_form_needs_with_local_refs_resolved() {
+        let spec = parse_openapi(WITH_REFS).unwrap();
+        let op = spec.operation("updateParty").unwrap();
+        assert_eq!(op.tag.as_deref(), Some("Parties"));
+        let params: Vec<(&str, &str, bool)> = op
+            .params
+            .iter()
+            .map(|p| (p.name.as_str(), p.location.as_str(), p.required))
+            .collect();
+        assert_eq!(
+            params,
+            vec![
+                ("page", "query", false),
+                ("X-Trace", "header", false),
+                ("id", "path", true)
+            ],
+            "the operation's own parameters, then the path item's shared ones"
+        );
+        let body: Vec<(&str, &str, bool)> = op
+            .body
+            .iter()
+            .map(|f| (f.name.as_str(), f.kind.as_str(), f.required))
+            .collect();
+        assert_eq!(
+            body,
+            vec![
+                ("name", "string", true),
+                ("party_kind", "string", true),
+                ("active", "boolean", false)
+            ]
+        );
+        assert_eq!(op.responses, vec!["200".to_owned(), "404".to_owned()]);
+    }
+
+    #[test]
+    fn a_ref_to_another_document_is_not_followed() {
+        // Following it would be DIT fetching something of its own accord
+        // (I7, I11). The shared path parameter still comes through.
+        let spec = parse_openapi(WITH_REFS).unwrap();
+        let op = spec.operation("getParty").unwrap();
+        let names: Vec<&str> = op.params.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["id"]);
     }
 
     #[test]

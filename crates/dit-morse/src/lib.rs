@@ -9,8 +9,8 @@
 //! be handed a workspace in the first place.
 //!
 //! Nothing here runs unless someone asked, in that moment. The caller is
-//! `dit morse run`, `dit morse sync`, or the Run control — never reindex, the
-//! watcher, `doctor`, or a server read handler.
+//! `dit morse run`, `send` or `sync`, or the Run and Send controls — never
+//! reindex, the watcher, `doctor`, or a server read handler.
 
 pub mod jsonpath;
 pub mod local;

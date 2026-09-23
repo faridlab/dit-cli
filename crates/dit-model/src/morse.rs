@@ -71,6 +71,32 @@ pub fn variables_in(text: &str) -> Vec<String> {
     out
 }
 
+/// The `{name}` segments of a path, in OpenAPI's own syntax, in the order
+/// written. A `{{reference}}` is a template, not a parameter, and is skipped.
+pub fn path_params(path: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = path;
+    while let Some(open) = rest.find('{') {
+        let after = &rest[open + 1..];
+        if let Some(inner) = after.strip_prefix('{') {
+            match inner.find(VAR_CLOSE) {
+                Some(close) => rest = &inner[close + VAR_CLOSE.len()..],
+                None => break,
+            }
+            continue;
+        }
+        let Some(close) = after.find('}') else {
+            break;
+        };
+        let name = after[..close].trim();
+        if !name.is_empty() {
+            out.push(name.to_owned());
+        }
+        rest = &after[close + 1..];
+    }
+    out
+}
+
 /// Which spec's operation a step calls. `operationId` is unique only inside
 /// one OpenAPI document, so a workspace with more than one spec needs the
 /// namespace for a step to resolve at all.
@@ -183,6 +209,10 @@ pub struct Expect {
 pub struct MorseStep {
     pub id: String,
     pub operation: StepTarget,
+    /// Values for the `{name}` segments of the operation's path, which the
+    /// spec writes in OpenAPI's own syntax. Named, never inferred from a
+    /// variable that happens to share the name (ADR 0023).
+    pub params: Vec<(String, MorseValue)>,
     pub headers: Vec<(String, MorseValue)>,
     pub query: Vec<(String, MorseValue)>,
     pub body: Option<MorseValue>,
@@ -222,6 +252,9 @@ impl MorseScenario {
         let mut out = Vec::new();
         for step in &self.steps {
             let mut names = Vec::new();
+            for (_, v) in &step.params {
+                names.extend(v.variables());
+            }
             for (_, v) in &step.headers {
                 names.extend(v.variables());
             }
@@ -338,6 +371,9 @@ impl MorseScenario {
             let mut scan = |field: &str, value: &MorseValue| {
                 collect_secrets(&step.id, field, value, &mut out);
             };
+            for (name, value) in &step.params {
+                scan(name, value);
+            }
             for (name, value) in &step.headers {
                 scan(name, value);
             }
@@ -443,6 +479,7 @@ mod tests {
                 spec: "auth".into(),
                 operation: id.into(),
             }),
+            params: vec![],
             headers: vec![],
             query: vec![],
             body,
@@ -470,6 +507,7 @@ mod tests {
             steps: vec![MorseStep {
                 id: "one".into(),
                 operation: StepTarget::Inline("r".into()),
+                params: vec![],
                 headers: headers
                     .iter()
                     .map(|(k, v)| ((*k).to_owned(), MorseValue::Str((*v).to_owned())))
@@ -527,6 +565,19 @@ mod tests {
     fn a_token_prefix_anywhere_is_caught_even_in_an_innocent_field() {
         let leaked = with_headers(&[("X-Thing", "ghp_0123456789abcdefghij")], None);
         assert_eq!(leaked.suspected_secrets().len(), 1);
+    }
+
+    #[test]
+    fn path_parameters_are_the_single_brace_segments_only() {
+        assert_eq!(
+            path_params("/parties/{id}/contacts/{contact_id}"),
+            vec!["id".to_owned(), "contact_id".to_owned()]
+        );
+        assert!(
+            path_params("/users/{{id}}").is_empty(),
+            "a template reference is not a parameter"
+        );
+        assert!(path_params("/health").is_empty());
     }
 
     #[test]
@@ -629,6 +680,30 @@ mod tests {
         assert!(
             unbound[0].captured_later,
             "the chain is in the wrong order, which is a different fix from a missing variable"
+        );
+    }
+
+    #[test]
+    fn a_path_parameter_reading_a_capture_is_part_of_the_chain() {
+        let mut fetch = step("fetch", None, &[]);
+        fetch.params = vec![("id".into(), MorseValue::Str("{{party_id}}".into()))];
+        let scenario = MorseScenario {
+            scenario: "party".into(),
+            spec: SpecPin {
+                id: "party".into(),
+                commit: "a".into(),
+            },
+            env: None,
+            requires: vec![],
+            requests: vec![],
+            steps: vec![fetch, step("create", None, &[("party_id", "$.data.id")])],
+        };
+        let unbound = scenario.unbound_variables();
+        assert_eq!(unbound.len(), 1, "{unbound:?}");
+        assert_eq!(unbound[0].name, "party_id");
+        assert!(
+            unbound[0].captured_later,
+            "a path parameter is read like any other field, so order matters for it too"
         );
     }
 

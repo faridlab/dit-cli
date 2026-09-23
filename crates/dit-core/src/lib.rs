@@ -54,15 +54,21 @@ pub use dit_model::{
     Readiness, Release, ReleasePatch, ReleaseStatus, StatusCategory, StoredFieldEvent, Workflow,
     WorkflowStatus, CONTENT_ROOTS, DOC_ROOTS, GENERATED_INDEX_MARKER,
 };
+pub use dit_model::{
+    Capture, Expect, ExpectRule, JsonCheck, MorseScenario, MorseStep, MorseValue, OperationRef,
+    Selector, SpecField, SpecOperation, SpecParam, SpecServer, StepTarget,
+};
 pub use dit_model::{FlowGroup, FlowPhase, FlowShape, PHASE_LABEL_PREFIX};
 pub use dit_vcs::{SyncOptions, SyncReport};
 pub use flow::{
     EdgeDisposition, FlowBoard, FlowClaim, FlowEdge, FlowLane, FlowNode, FlowOutsideBlocker,
     FlowSummary,
 };
+pub use morse::{morse_selector, morse_value_from_json, morse_value_to_json};
 pub use morse::{
-    LastRun, MorseReport, MorseScenarioView, MorseSpecView, RunStepLine, ScenarioHealth,
-    SyncOutcome,
+    LastRun, MorseEnvView, MorseEnvsView, MorseReport, MorseRunRecord, MorseScenarioDetail,
+    MorseScenarioView, MorseSpecView, RunStepLine, ScenarioHealth, SendDraft, SyncOutcome,
+    SEND_KEY_PREFIX,
 };
 // Delivery reports what a run did, so the shapes it reports come through
 // the facade rather than making every caller depend on the adapter.

@@ -296,6 +296,7 @@ fn step(node: &Yaml, id: &str, requests: &[InlineRequest]) -> Result<MorseStep, 
     Ok(MorseStep {
         id: id.to_owned(),
         operation,
+        params: pairs("params"),
         headers: pairs("headers"),
         query: pairs("query"),
         body: node.get("body").map(value),
@@ -318,6 +319,17 @@ fn expect_rule(node: &Yaml) -> Option<ExpectRule> {
 
 /// The three things a capture may read. Reads only — a transform here is
 /// where a scripting language starts, and there is no fourth form.
+pub fn parse_selector(raw: &str) -> Option<Selector> {
+    selector(raw.trim())
+}
+
+/// A parsed YAML or JSON tree as a fence value. Public so a caller holding a
+/// JSON body — the Morse screen's Body tab — lands in the same shape a fence
+/// does.
+pub fn morse_value(node: &Yaml) -> MorseValue {
+    value(node)
+}
+
 fn selector(raw: &str) -> Option<Selector> {
     if raw == "status" {
         return Some(Selector::Status);
@@ -453,6 +465,22 @@ steps:
   - id: me
     operation: auth/getCurrentUser
 "#;
+
+    #[test]
+    fn a_step_names_its_path_parameters() {
+        let s = parse_morse_scenario(
+            "scenario: a\nspec: { id: party, commit: y }\nsteps:\n  - id: fetch\n    operation: party/getParty\n    params: { id: \"{{party_id}}\", version: 2 }\n",
+        )
+        .unwrap();
+        assert_eq!(
+            s.steps[0].params,
+            vec![
+                ("id".to_owned(), MorseValue::Str("{{party_id}}".into())),
+                ("version".to_owned(), MorseValue::Str("2".into())),
+            ],
+            "the `{{name}}` segments of the spec's path are filled from here, in order written"
+        );
+    }
 
     #[test]
     fn an_endpoint_no_document_describes_can_be_written_in_the_fence() {

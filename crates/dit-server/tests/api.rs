@@ -984,3 +984,61 @@ async fn deleting_an_issue_is_a_204_and_then_a_404() {
         String::from_utf8_lossy(&out.stdout)
     );
 }
+
+// ---- The Morse workbench (ADR 0023) ----------------------------------------
+
+#[tokio::test]
+async fn environments_cross_the_wire_as_names_and_never_as_values() {
+    let (app, tmp) = test_app();
+    std::fs::write(
+        tmp.path().join(dit_core::MORSE_LOCAL_PATH),
+        "envs:\n  local:\n    server: \"http://localhost:3000\"\n    vars:\n      token: \"s3cr3t-value\"\nallow_hosts:\n  - localhost\n",
+    )
+    .unwrap();
+    let (status, envs, text) = req(&app, "GET", "/api/morse/envs", None).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(envs["envs"][0]["name"], "local", "{envs}");
+    assert_eq!(envs["envs"][0]["vars"], json!(["token"]), "{envs}");
+    assert_eq!(envs["allow_hosts"], json!(["localhost"]), "{envs}");
+    assert!(
+        !text.contains("s3cr3t-value"),
+        "a value must never reach the page: {text}"
+    );
+}
+
+#[tokio::test]
+async fn a_send_the_server_cannot_make_says_why_and_a_malformed_one_is_a_400() {
+    let (app, _tmp) = test_app();
+    let step = |operation: &str| {
+        json!({ "env": null, "step": {
+            "id": "one", "operation": operation, "request": null,
+            "params": [], "query": [], "headers": [], "body": null,
+            "status": 200, "checks": [], "capture": []
+        }})
+    };
+    let (status, body, text) =
+        req(&app, "POST", "/api/morse/send", Some(step("auth/getUser"))).await;
+    assert!(status.is_client_error(), "{status} {text}");
+    assert!(
+        body["error"].as_str().unwrap_or_default().contains("auth"),
+        "an unregistered spec is named: {body}"
+    );
+
+    let (status, body, _) = req(&app, "POST", "/api/morse/send", Some(step("unqualified"))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    let mut bad_body = step("auth/getUser");
+    bad_body["step"]["body"] = json!("{ not json");
+    let (status, body, _) = req(&app, "POST", "/api/morse/send", Some(bad_body)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+#[tokio::test]
+async fn a_scenario_that_does_not_exist_is_a_404_and_history_starts_empty() {
+    let (app, _tmp) = test_app();
+    let (status, _, text) = req(&app, "GET", "/api/morse/scenarios/nowhere", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{text}");
+    let (status, runs, text) = req(&app, "GET", "/api/morse/runs", None).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(runs, json!([]));
+}

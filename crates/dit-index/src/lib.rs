@@ -115,6 +115,9 @@ pub struct StoredMorseSpec {
     pub title: Option<String>,
     pub version: Option<String>,
     pub problem: Option<String>,
+    /// The document's `servers:`, so the screen can say where a request
+    /// would go — or that a relative `/` names no host at all.
+    pub servers: Vec<dit_model::SpecServer>,
 }
 
 /// The last run of one scenario, as the index holds it. Derived and
@@ -255,15 +258,22 @@ CREATE TABLE IF NOT EXISTS morse_specs (
   head     TEXT,
   title    TEXT,
   version  TEXT,
-  problem  TEXT
+  problem  TEXT,
+  servers  TEXT NOT NULL DEFAULT ''   -- one `url<TAB>description` per line
 );
 
+-- `params`, `body` and `responses` hold one entry per line, tab-separated:
+-- `name<TAB>in<TAB>required`, `name<TAB>type<TAB>required`, `code`.
 CREATE TABLE IF NOT EXISTS morse_operations (
   spec_id      TEXT NOT NULL,
   operation_id TEXT NOT NULL,
   method       TEXT NOT NULL,
   path         TEXT NOT NULL,
   summary      TEXT,
+  tag          TEXT,
+  params       TEXT NOT NULL DEFAULT '',
+  body         TEXT NOT NULL DEFAULT '',
+  responses    TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (spec_id, operation_id)
 );
 
@@ -316,10 +326,37 @@ CREATE TRIGGER IF NOT EXISTS issues_fts_au AFTER UPDATE OF title, body ON issues
 END;
 "#;
 
+/// One record per line, fields tab-separated — the shape `morse_runs`
+/// already stores its steps in. A tab or newline inside a field would split
+/// it, so both are flattened to a space first.
+fn lines(records: impl Iterator<Item = Vec<String>>) -> String {
+    records
+        .map(|fields| {
+            fields
+                .iter()
+                .map(|f| f.replace(['\t', '\n', '\r'], " "))
+                .collect::<Vec<_>>()
+                .join("\t")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn split_lines(text: &str) -> Vec<Vec<String>> {
+    text.lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.split('\t').map(str::to_owned).collect())
+        .collect()
+}
+
+fn flag(on: bool) -> String {
+    if on { "1" } else { "0" }.to_owned()
+}
+
 /// Bumped whenever the schema below changes shape. The index is disposable —
 /// an on-disk file stamped with an older version is dropped and rebuilt from
 /// git rather than migrated in place (§6: SQLite is only an index).
-const INDEX_VERSION: i64 = 6;
+const INDEX_VERSION: i64 = 7;
 
 /// The column list every issue SELECT shares, in a fixed order. Hand-written
 /// SELECTs drifting out of step with the schema is the known failure mode of
@@ -396,6 +433,10 @@ impl Index {
                  DROP TABLE IF EXISTS comments;
                  DROP TABLE IF EXISTS field_events;
                  DROP TABLE IF EXISTS state;
+                 DROP TABLE IF EXISTS morse_specs;
+                 DROP TABLE IF EXISTS morse_operations;
+                 DROP TABLE IF EXISTS morse_scenarios;
+                 DROP TABLE IF EXISTS morse_runs;
                  DROP TABLE IF EXISTS issues;",
             )?;
         }
@@ -610,7 +651,8 @@ impl Index {
         )?;
         tx.execute(
             "INSERT OR REPLACE INTO morse_specs \
-             (spec_id, repo, path, head, title, version, problem) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+             (spec_id, repo, path, head, title, version, problem, servers) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
             params![
                 spec.spec_id,
                 spec.repo,
@@ -618,19 +660,37 @@ impl Index {
                 spec.head,
                 spec.title,
                 spec.version,
-                spec.problem
+                spec.problem,
+                lines(
+                    spec.servers
+                        .iter()
+                        .map(|s| vec![s.url.clone(), s.description.clone().unwrap_or_default()])
+                )
             ],
         )?;
         for op in operations {
             tx.execute(
                 "INSERT OR REPLACE INTO morse_operations \
-                 (spec_id, operation_id, method, path, summary) VALUES (?1,?2,?3,?4,?5)",
+                 (spec_id, operation_id, method, path, summary, tag, params, body, responses) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
                 params![
                     spec.spec_id,
                     op.operation_id,
                     op.method,
                     op.path,
-                    op.summary
+                    op.summary,
+                    op.tag,
+                    lines(op.params.iter().map(|p| vec![
+                        p.name.clone(),
+                        p.location.clone(),
+                        flag(p.required)
+                    ])),
+                    lines(op.body.iter().map(|f| vec![
+                        f.name.clone(),
+                        f.kind.clone(),
+                        flag(f.required)
+                    ])),
+                    op.responses.join("\n"),
                 ],
             )?;
         }
@@ -648,10 +708,11 @@ impl Index {
     /// Every registered spec, by id.
     pub fn morse_specs(&self) -> Result<Vec<StoredMorseSpec>, IndexError> {
         let mut stmt = self.conn.prepare(
-            "SELECT spec_id, repo, path, head, title, version, problem \
+            "SELECT spec_id, repo, path, head, title, version, problem, servers \
              FROM morse_specs ORDER BY spec_id",
         )?;
         let rows = stmt.query_map([], |r| {
+            let servers: String = r.get(7)?;
             Ok(StoredMorseSpec {
                 spec_id: r.get(0)?,
                 repo: r.get(1)?,
@@ -660,6 +721,13 @@ impl Index {
                 title: r.get(4)?,
                 version: r.get(5)?,
                 problem: r.get(6)?,
+                servers: split_lines(&servers)
+                    .into_iter()
+                    .map(|mut f| dit_model::SpecServer {
+                        description: f.pop().filter(|d| !d.is_empty()),
+                        url: f.pop().unwrap_or_default(),
+                    })
+                    .collect(),
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>()
@@ -673,15 +741,46 @@ impl Index {
         spec_id: &str,
     ) -> Result<Vec<dit_model::SpecOperation>, IndexError> {
         let mut stmt = self.conn.prepare(
-            "SELECT operation_id, method, path, summary FROM morse_operations \
-             WHERE spec_id = ?1 ORDER BY path, method",
+            "SELECT operation_id, method, path, summary, tag, params, body, responses \
+             FROM morse_operations WHERE spec_id = ?1 ORDER BY path, method",
         )?;
         let rows = stmt.query_map(params![spec_id], |r| {
+            let params: String = r.get(5)?;
+            let body: String = r.get(6)?;
+            let responses: String = r.get(7)?;
             Ok(dit_model::SpecOperation {
                 operation_id: r.get(0)?,
                 method: r.get(1)?,
                 path: r.get(2)?,
                 summary: r.get(3)?,
+                tag: r.get(4)?,
+                params: split_lines(&params)
+                    .into_iter()
+                    .filter_map(|f| match f.as_slice() {
+                        [name, location, required] => Some(dit_model::SpecParam {
+                            name: name.clone(),
+                            location: location.clone(),
+                            required: required == "1",
+                        }),
+                        _ => None,
+                    })
+                    .collect(),
+                body: split_lines(&body)
+                    .into_iter()
+                    .filter_map(|f| match f.as_slice() {
+                        [name, kind, required] => Some(dit_model::SpecField {
+                            name: name.clone(),
+                            kind: kind.clone(),
+                            required: required == "1",
+                        }),
+                        _ => None,
+                    })
+                    .collect(),
+                responses: responses
+                    .lines()
+                    .filter(|l| !l.is_empty())
+                    .map(str::to_owned)
+                    .collect(),
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>()
@@ -760,6 +859,25 @@ impl Index {
             ],
         )?;
         Ok(())
+    }
+
+    /// Every kept run, newest first — what the History list shows.
+    pub fn morse_runs_all(&self) -> Result<Vec<StoredMorseRun>, IndexError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT scenario, ran_at, passed, refused, steps FROM morse_runs \
+             ORDER BY ran_at DESC, scenario",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(StoredMorseRun {
+                scenario: r.get(0)?,
+                ran_at: r.get(1)?,
+                passed: r.get::<_, i64>(2)? != 0,
+                refused: r.get(3)?,
+                steps: r.get(4)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(IndexError::from)
     }
 
     pub fn morse_run(&self, scenario: &str) -> Result<Option<StoredMorseRun>, IndexError> {
@@ -1921,6 +2039,47 @@ mod tests {
     const OTHER: &str = "01K3M9ZXQ2ZZZZZZZZZZZZZZZZ";
 
     #[test]
+    fn what_a_request_form_needs_survives_the_index() {
+        let mut index = Index::in_memory().unwrap();
+        let spec = StoredMorseSpec {
+            spec_id: "party".into(),
+            repo: None,
+            path: "api/party.yaml".into(),
+            head: None,
+            title: None,
+            version: None,
+            problem: None,
+            servers: vec![dit_model::SpecServer {
+                url: "/".into(),
+                description: Some("Development server".into()),
+            }],
+        };
+        let op = dit_model::SpecOperation {
+            operation_id: "updateParty".into(),
+            method: "PUT".into(),
+            path: "/parties/{id}".into(),
+            summary: Some("Update Party".into()),
+            tag: Some("Parties".into()),
+            params: vec![dit_model::SpecParam {
+                name: "id".into(),
+                location: "path".into(),
+                required: true,
+            }],
+            body: vec![dit_model::SpecField {
+                name: "name".into(),
+                kind: "string".into(),
+                required: true,
+            }],
+            responses: vec!["200".into(), "404".into()],
+        };
+        index
+            .replace_morse_spec(&spec, std::slice::from_ref(&op))
+            .unwrap();
+        assert_eq!(index.morse_operations("party").unwrap(), vec![op]);
+        assert_eq!(index.morse_specs().unwrap()[0].servers, spec.servers);
+    }
+
+    #[test]
     fn a_spec_catalogue_is_replaced_whole_rather_than_merged() {
         let mut index = Index::in_memory().unwrap();
         let spec = |problem: Option<&str>| StoredMorseSpec {
@@ -1931,12 +2090,14 @@ mod tests {
             title: Some("Acme Auth".into()),
             version: Some("1.4.0".into()),
             problem: problem.map(str::to_owned),
+            servers: vec![],
         };
         let op = |id: &str, path: &str| dit_model::SpecOperation {
             operation_id: id.into(),
             method: "POST".into(),
             path: path.into(),
             summary: None,
+            ..Default::default()
         };
         index
             .replace_morse_spec(

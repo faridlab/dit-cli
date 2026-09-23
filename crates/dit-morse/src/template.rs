@@ -76,6 +76,57 @@ pub fn fill_encoded(text: &str, vars: &Vars) -> Result<String, Unbound> {
     Ok(out)
 }
 
+/// Fill the `{name}` segments of a spec's path — OpenAPI's own syntax — from
+/// a step's `params:`. Each value is rendered, then percent-encoded as one
+/// segment. A `{{name}}` reference is left for [`fill_encoded`]; a segment no
+/// entry fills is an error naming it, because sending the literal `{id}` to
+/// a server is a request nobody wrote.
+pub fn fill_path_params(
+    path: &str,
+    params: &[(String, MorseValue)],
+    vars: &Vars,
+) -> Result<String, String> {
+    let mut out = String::new();
+    let mut rest = path;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        if after.starts_with('{') {
+            // A template reference: copy it through whole.
+            let Some(close) = after.find("}}") else {
+                out.push_str(&rest[open..]);
+                return Ok(out);
+            };
+            out.push_str(&rest[open..open + 1 + close + 2]);
+            rest = &after[close + 2..];
+            continue;
+        }
+        let Some(close) = after.find('}') else {
+            out.push_str(&rest[open..]);
+            return Ok(out);
+        };
+        let name = after[..close].trim();
+        let value = params
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value)
+            .ok_or_else(|| {
+                format!(
+                    "path parameter `{name}` has no value — the path is `{path}`; add \
+                     `params: {{ {name}: ... }}` to the step"
+                )
+            })?;
+        let rendered = match value {
+            MorseValue::Str(text) => fill(text, vars).map_err(|e| e.to_string())?,
+            other => to_json(other, vars).map_err(|e| e.to_string())?,
+        };
+        out.push_str(&percent_encode(&rendered));
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
 /// Everything outside the unreserved set, so a substituted value can only
 /// ever be one path segment or one query value.
 pub fn percent_encode(value: &str) -> String {

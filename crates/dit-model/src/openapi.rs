@@ -6,7 +6,7 @@
 //! never copies it (I5, §20.2).
 
 /// One operation a spec describes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SpecOperation {
     /// `operationId`. Unique inside this document only, which is why a step
     /// writes `<spec id>/<operationId>`.
@@ -15,6 +15,35 @@ pub struct SpecOperation {
     pub method: String,
     pub path: String,
     pub summary: Option<String>,
+    /// The first of the operation's `tags:` — how a document groups itself,
+    /// and how the Morse explorer groups 6,000 operations into something a
+    /// person can scan.
+    pub tag: Option<String>,
+    /// Path, query and header parameters, `$ref`s resolved.
+    pub params: Vec<SpecParam>,
+    /// The top-level fields of a JSON request body, `$ref`s resolved. A
+    /// shape to pre-fill a form from, not a validator.
+    pub body: Vec<SpecField>,
+    /// The response codes the document lists, as written (`201`, `4XX`).
+    pub responses: Vec<String>,
+}
+
+/// One parameter an operation takes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpecParam {
+    pub name: String,
+    /// `path`, `query`, `header` or `cookie`, as OpenAPI's `in:` says.
+    pub location: String,
+    pub required: bool,
+}
+
+/// One field of a request body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpecField {
+    pub name: String,
+    /// The schema's `type:`, or `object` / `any` when it gives none.
+    pub kind: String,
+    pub required: bool,
 }
 
 /// One entry of `servers:` — the API's own statement about where it lives.

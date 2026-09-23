@@ -452,6 +452,36 @@ pub struct MorseOperationDto {
     pub method: String,
     pub path: String,
     pub summary: Option<String>,
+    /// The operation's first OpenAPI tag — how the explorer groups it.
+    pub tag: Option<String>,
+    pub params: Vec<MorseParamDto>,
+    /// Top-level JSON body fields, to pre-fill a draft from.
+    pub body: Vec<MorseFieldDto>,
+    pub responses: Vec<String>,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct MorseParamDto {
+    pub name: String,
+    /// `path` | `query` | `header` | `cookie`.
+    pub location: String,
+    pub required: bool,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct MorseFieldDto {
+    pub name: String,
+    pub kind: String,
+    pub required: bool,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct MorseServerDto {
+    pub url: String,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Serialize, TS)]
@@ -464,6 +494,9 @@ pub struct MorseSpecDto {
     pub title: Option<String>,
     pub version: Option<String>,
     pub head: Option<String>,
+    /// The document's `servers:`. A relative `/` names no host, and the
+    /// screen says so before anyone presses Send.
+    pub servers: Vec<MorseServerDto>,
     pub operations: Vec<MorseOperationDto>,
     /// Why the document could not be read. A spec with a problem is still
     /// listed: a service whose document went missing is worth saying.
@@ -481,6 +514,8 @@ pub struct MorseRunStepDto {
     pub method: String,
     pub status: Option<u16>,
     pub duration_ms: u64,
+    /// The response body's size — present only for a run just made.
+    pub bytes: Option<u64>,
     pub passed: bool,
     pub detail: String,
 }
@@ -542,6 +577,14 @@ pub fn morse_report_dto(report: &dit_core::MorseReport) -> MorseReportDto {
                 title: s.title.clone(),
                 version: s.version.clone(),
                 head: s.head.clone(),
+                servers: s
+                    .servers
+                    .iter()
+                    .map(|v| MorseServerDto {
+                        url: v.url.clone(),
+                        description: v.description.clone(),
+                    })
+                    .collect(),
                 operations: s
                     .operations
                     .iter()
@@ -550,6 +593,26 @@ pub fn morse_report_dto(report: &dit_core::MorseReport) -> MorseReportDto {
                         method: o.method.clone(),
                         path: o.path.clone(),
                         summary: o.summary.clone(),
+                        tag: o.tag.clone(),
+                        params: o
+                            .params
+                            .iter()
+                            .map(|p| MorseParamDto {
+                                name: p.name.clone(),
+                                location: p.location.clone(),
+                                required: p.required,
+                            })
+                            .collect(),
+                        body: o
+                            .body
+                            .iter()
+                            .map(|f| MorseFieldDto {
+                                name: f.name.clone(),
+                                kind: f.kind.clone(),
+                                required: f.required,
+                            })
+                            .collect(),
+                        responses: o.responses.clone(),
                     })
                     .collect(),
                 problem: s.problem.clone(),
@@ -596,6 +659,7 @@ fn run_step_dto(step: &dit_core::RunStepLine) -> MorseRunStepDto {
         method: step.method.clone(),
         status: step.status,
         duration_ms: step.duration_ms,
+        bytes: None,
         passed: step.passed,
         detail: step.detail.clone(),
     }
@@ -605,7 +669,11 @@ fn run_step_dto(step: &dit_core::RunStepLine) -> MorseRunStepDto {
 pub fn morse_run_dto(outcome: &dit_core::RunOutcome) -> MorseRunDto {
     MorseRunDto {
         scenario: outcome.scenario.clone(),
-        ran_at: 0,
+        // A run just made happened now; the screen shows it as such.
+        ran_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0),
         passed: outcome.passed(),
         refused: outcome.refused.clone(),
         steps: outcome
@@ -616,6 +684,7 @@ pub fn morse_run_dto(outcome: &dit_core::RunOutcome) -> MorseRunDto {
                 method: s.method.clone(),
                 status: s.status,
                 duration_ms: s.duration_ms,
+                bytes: s.bytes,
                 passed: s.passed(),
                 detail: if s.failures.is_empty() && s.error.is_none() {
                     s.captured
@@ -633,6 +702,328 @@ pub fn morse_run_dto(outcome: &dit_core::RunOutcome) -> MorseRunDto {
                 },
             })
             .collect(),
+    }
+}
+
+// ---- The Morse workbench (ADR 0023) ----------------------------------------
+//
+// A step on the wire, in the fence's own vocabulary. Values are text; a body
+// is JSON text, as the Body tab holds it. Nothing here can name a host: the
+// method and path come from the spec, the base URL from the spec or this
+// machine, never from what the page sends.
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MorsePairDto {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MorseCheckDto {
+    /// A JSONPath into the response body.
+    pub path: String,
+    /// `exists` | `equals`.
+    pub rule: String,
+    /// What `equals` compares with — a literal or a `{{name}}`.
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MorseCaptureDto {
+    pub name: String,
+    /// `$.path`, `header:Name` or `status`.
+    pub from: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MorseStepDto {
+    pub id: String,
+    /// `<spec>/<operationId>`, or absent when the step calls `request`.
+    pub operation: Option<String>,
+    /// An inline request declared in the fence's `requests:`.
+    pub request: Option<String>,
+    pub params: Vec<MorsePairDto>,
+    pub query: Vec<MorsePairDto>,
+    pub headers: Vec<MorsePairDto>,
+    /// JSON text, or absent for no body.
+    pub body: Option<String>,
+    pub status: Option<u16>,
+    pub checks: Vec<MorseCheckDto>,
+    pub capture: Vec<MorseCaptureDto>,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct MorseInlineRequestDto {
+    pub id: String,
+    pub method: String,
+    pub path: String,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct MorseScenarioDetailDto {
+    pub scenario: String,
+    pub path: String,
+    pub line: usize,
+    pub spec_id: String,
+    pub pin: String,
+    pub env: Option<String>,
+    pub requires: Vec<String>,
+    pub requests: Vec<MorseInlineRequestDto>,
+    pub steps: Vec<MorseStepDto>,
+    /// The fence as the document holds it — what the Fence panel shows.
+    pub fence: String,
+    /// False when the fence has a `#` comment, which a form would drop.
+    pub editable: bool,
+}
+
+/// What the Send control posts.
+#[derive(Debug, Deserialize, TS)]
+#[ts(export)]
+pub struct MorseSendDto {
+    pub env: Option<String>,
+    pub step: MorseStepDto,
+}
+
+/// What "Save to scenario" posts for a scenario that does not exist yet.
+#[derive(Debug, Deserialize, TS)]
+#[ts(export)]
+pub struct MorseCreateDto {
+    /// The document the fence is appended to, created if absent.
+    pub doc: String,
+    pub name: String,
+    pub spec_id: String,
+    pub env: Option<String>,
+    pub step: MorseStepDto,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct MorseEnvDto {
+    pub name: String,
+    pub server: Option<String>,
+    /// Variable *names*. A value never crosses this boundary (§20.6).
+    pub vars: Vec<String>,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct MorseEnvsDto {
+    pub envs: Vec<MorseEnvDto>,
+    pub allow_hosts: Vec<String>,
+}
+
+pub fn morse_envs_dto(view: &dit_core::MorseEnvsView) -> MorseEnvsDto {
+    MorseEnvsDto {
+        envs: view
+            .envs
+            .iter()
+            .map(|e| MorseEnvDto {
+                name: e.name.clone(),
+                server: e.server.clone(),
+                vars: e.vars.clone(),
+            })
+            .collect(),
+        allow_hosts: view.allow_hosts.clone(),
+    }
+}
+
+pub fn morse_runs_dto(records: &[dit_core::MorseRunRecord]) -> Vec<MorseRunDto> {
+    records
+        .iter()
+        .map(|r| MorseRunDto {
+            scenario: r.key.clone(),
+            ran_at: r.run.ran_at,
+            passed: r.run.passed,
+            refused: r.run.refused.clone(),
+            steps: r.run.steps.iter().map(run_step_dto).collect(),
+        })
+        .collect()
+}
+
+fn pair_value(value: &dit_core::MorseValue) -> String {
+    match value {
+        dit_core::MorseValue::Str(text) => text.clone(),
+        other => dit_core::morse_value_to_json(other),
+    }
+}
+
+fn pairs_dto(pairs: &[(String, dit_core::MorseValue)]) -> Vec<MorsePairDto> {
+    pairs
+        .iter()
+        .map(|(k, v)| MorsePairDto {
+            key: k.clone(),
+            value: pair_value(v),
+        })
+        .collect()
+}
+
+/// A pair's value back into a fence value. Text stays text; a value that
+/// is a JSON array or object — how a structured one was shown — is read back
+/// into its structure.
+fn pair_from(value: &str) -> dit_core::MorseValue {
+    let trimmed = value.trim_start();
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        if let Ok(parsed) = dit_core::morse_value_from_json(value) {
+            return parsed;
+        }
+    }
+    dit_core::MorseValue::Str(value.to_owned())
+}
+
+fn pairs_from(pairs: &[MorsePairDto]) -> Vec<(String, dit_core::MorseValue)> {
+    pairs
+        .iter()
+        .filter(|p| !p.key.trim().is_empty())
+        .map(|p| (p.key.trim().to_owned(), pair_from(&p.value)))
+        .collect()
+}
+
+pub fn morse_step_dto(step: &dit_core::MorseStep) -> MorseStepDto {
+    let (operation, request) = match &step.operation {
+        dit_core::StepTarget::Operation(op) => (Some(op.qualified()), None),
+        dit_core::StepTarget::Inline(id) => (None, Some(id.clone())),
+    };
+    MorseStepDto {
+        id: step.id.clone(),
+        operation,
+        request,
+        params: pairs_dto(&step.params),
+        query: pairs_dto(&step.query),
+        headers: pairs_dto(&step.headers),
+        body: step.body.as_ref().map(dit_core::morse_value_to_json),
+        status: step.expect.status,
+        checks: step
+            .expect
+            .json
+            .iter()
+            .map(|c| match &c.rule {
+                dit_core::ExpectRule::Exists => MorseCheckDto {
+                    path: c.path.clone(),
+                    rule: "exists".into(),
+                    value: String::new(),
+                },
+                dit_core::ExpectRule::Equals(v) => MorseCheckDto {
+                    path: c.path.clone(),
+                    rule: "equals".into(),
+                    value: v.clone(),
+                },
+            })
+            .collect(),
+        capture: step
+            .capture
+            .iter()
+            .map(|c| MorseCaptureDto {
+                name: c.name.clone(),
+                from: match &c.from {
+                    dit_core::Selector::Status => "status".into(),
+                    dit_core::Selector::Header(h) => format!("header:{h}"),
+                    dit_core::Selector::JsonPath(p) => p.clone(),
+                },
+            })
+            .collect(),
+    }
+}
+
+/// A step from the page, checked the way the fence reader would check it.
+/// Every refusal names the field, so the tab can point at it.
+pub fn morse_step_from(dto: &MorseStepDto) -> Result<dit_core::MorseStep, String> {
+    let id = dto.id.trim();
+    if id.is_empty() || id.contains(char::is_whitespace) {
+        return Err("a step id is one word".into());
+    }
+    let operation = match (&dto.operation, &dto.request) {
+        (Some(op), None) => dit_core::StepTarget::Operation(
+            dit_core::OperationRef::parse(op)
+                .ok_or_else(|| format!("`{op}` is not `<spec>/<operationId>`"))?,
+        ),
+        (None, Some(request)) => dit_core::StepTarget::Inline(request.trim().to_owned()),
+        _ => return Err("a step calls exactly one operation or one request".into()),
+    };
+    let body = match dto.body.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(text) => Some(dit_core::morse_value_from_json(text).map_err(|e| e.to_string())?),
+    };
+    let mut json = Vec::new();
+    for check in &dto.checks {
+        if check.path.trim().is_empty() {
+            continue;
+        }
+        let rule = match check.rule.as_str() {
+            "exists" => dit_core::ExpectRule::Exists,
+            "equals" => dit_core::ExpectRule::Equals(check.value.clone()),
+            other => return Err(format!("`{other}` is not a check — `exists` or `equals`")),
+        };
+        json.push(dit_core::JsonCheck {
+            path: check.path.trim().to_owned(),
+            rule,
+        });
+    }
+    let mut capture = Vec::new();
+    for c in &dto.capture {
+        if c.name.trim().is_empty() {
+            continue;
+        }
+        let from = dit_core::morse_selector(&c.from).ok_or_else(|| {
+            format!(
+                "capture `{}`: `{}` is not a selector — `$.path`, `header:Name` or `status`",
+                c.name, c.from
+            )
+        })?;
+        capture.push(dit_core::Capture {
+            name: c.name.trim().to_owned(),
+            from,
+        });
+    }
+    if let Some(status) = dto.status {
+        if !(100..=599).contains(&status) {
+            return Err(format!("`{status}` is not an HTTP status"));
+        }
+    }
+    Ok(dit_core::MorseStep {
+        id: id.to_owned(),
+        operation,
+        params: pairs_from(&dto.params),
+        query: pairs_from(&dto.query),
+        headers: pairs_from(&dto.headers),
+        body,
+        expect: dit_core::Expect {
+            status: dto.status,
+            json,
+        },
+        capture,
+    })
+}
+
+pub fn morse_scenario_detail_dto(detail: &dit_core::MorseScenarioDetail) -> MorseScenarioDetailDto {
+    let s = &detail.scenario;
+    MorseScenarioDetailDto {
+        scenario: s.scenario.clone(),
+        path: detail.path.clone(),
+        line: detail.line,
+        spec_id: s.spec.id.clone(),
+        pin: s.spec.commit.clone(),
+        env: s.env.clone(),
+        requires: s.requires.clone(),
+        requests: s
+            .requests
+            .iter()
+            .map(|r| MorseInlineRequestDto {
+                id: r.id.clone(),
+                method: r.method.clone(),
+                path: r.path.clone(),
+                summary: r.summary.clone(),
+            })
+            .collect(),
+        steps: s.steps.iter().map(morse_step_dto).collect(),
+        fence: detail.fence.clone(),
+        editable: detail.editable,
     }
 }
 
@@ -1367,4 +1758,41 @@ pub fn to_field_patch(dto: FieldPatchDto) -> Result<FieldPatch, String> {
         claimed_at: None,
         clear,
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod morse_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn a_response_body_and_a_captured_value_never_reach_the_page() {
+        let outcome = dit_core::RunOutcome {
+            scenario: "send:auth/getUser".into(),
+            refused: None,
+            steps: vec![dit_core::StepOutcome {
+                id: "getUser".into(),
+                method: "GET".into(),
+                url: "http://localhost/users/1".into(),
+                status: Some(200),
+                duration_ms: 3,
+                bytes: Some(32),
+                body: Some(r#"{"token":"body-secret"}"#.into()),
+                failures: vec![],
+                captured: vec![("token".into(), "captured-secret".into())],
+                error: None,
+            }],
+        };
+        let wire = serde_json::to_string(&morse_run_dto(&outcome)).unwrap();
+        assert!(!wire.contains("body-secret"), "{wire}");
+        assert!(!wire.contains("captured-secret"), "{wire}");
+        assert!(
+            wire.contains("captured token"),
+            "that it happened does cross: {wire}"
+        );
+        assert!(
+            wire.contains("\"bytes\":32"),
+            "and so does the size: {wire}"
+        );
+    }
 }

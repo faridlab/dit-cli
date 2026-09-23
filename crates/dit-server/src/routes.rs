@@ -60,6 +60,17 @@ pub fn app(state: Arc<AppState>) -> Router {
         // only reach a host this machine already allows — the allowlist is
         // never editable from here (§20.5).
         .route("/api/morse/run/{scenario}", post(run_morse))
+        // Send is the workbench's one-operation twin of Run (ADR 0023): the
+        // same gates, and the page still cannot name a host or trust one.
+        .route("/api/morse/send", post(send_morse))
+        .route("/api/morse/envs", get(get_morse_envs))
+        .route("/api/morse/runs", get(get_morse_runs))
+        .route("/api/morse/scenarios", post(create_morse_scenario))
+        .route("/api/morse/scenarios/{scenario}", get(get_morse_scenario))
+        .route(
+            "/api/morse/scenarios/{scenario}/steps",
+            put(save_morse_step),
+        )
         .route("/api/flow", get(list_flows))
         .route("/api/flow/{name}", get(get_flow))
         .route("/api/settings", get(get_settings).put(put_settings))
@@ -623,13 +634,134 @@ async fn get_morse(
 async fn run_morse(
     State(state): State<Arc<AppState>>,
     Path(scenario): Path<String>,
+    Query(query): Query<EnvQuery>,
 ) -> Result<Json<dto::MorseRunDto>, ApiError> {
     let outcome = write_dit(&state, move |dit| {
-        let outcome = dit.morse_run(&scenario, None).map_err(ServerError::Dit)?;
+        let outcome = dit
+            .morse_run(&scenario, query.env.as_deref())
+            .map_err(ServerError::Dit)?;
         Ok(dto::morse_run_dto(&outcome))
     })
     .await?;
     Ok(Json(outcome))
+}
+
+/// Which of this machine's environments to use. Chosen per request and
+/// never remembered by the server: the choice is the page's, the values
+/// stay in the local file.
+#[derive(Debug, Deserialize)]
+struct EnvQuery {
+    env: Option<String>,
+}
+
+/// Fire one operation as a tab drafted it (ADR 0023). A refused host comes
+/// back as a result, exactly as for Run.
+async fn send_morse(
+    State(state): State<Arc<AppState>>,
+    Json(input): Json<dto::MorseSendDto>,
+) -> Result<Json<dto::MorseRunDto>, ApiError> {
+    let step = dto::morse_step_from(&input.step).map_err(ServerError::BadRequest)?;
+    let dit_core::StepTarget::Operation(operation) = step.operation else {
+        return Err(ServerError::BadRequest(
+            "Send takes an operation from a spec; an inline request is run from its scenario"
+                .into(),
+        )
+        .into());
+    };
+    let draft = dit_core::SendDraft {
+        operation,
+        params: step.params,
+        query: step.query,
+        headers: step.headers,
+        body: step.body,
+        expect: step.expect,
+        capture: step.capture,
+    };
+    let outcome = write_dit(&state, move |dit| {
+        let outcome = dit
+            .morse_send(&draft, input.env.as_deref())
+            .map_err(ServerError::Dit)?;
+        Ok(dto::morse_run_dto(&outcome))
+    })
+    .await?;
+    Ok(Json(outcome))
+}
+
+/// This machine's environments by name, and the hosts it allows. Names
+/// only — a value never leaves the local file through here (§20.6).
+async fn get_morse_envs(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<dto::MorseEnvsDto>, ApiError> {
+    let envs = read_dit(&state, move |dit| {
+        let view = dit.morse_envs().map_err(ServerError::Dit)?;
+        Ok(dto::morse_envs_dto(&view))
+    })
+    .await?;
+    Ok(Json(envs))
+}
+
+async fn get_morse_runs(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<dto::MorseRunDto>>, ApiError> {
+    let runs = read_dit(&state, move |dit| {
+        let runs = dit.morse_runs().map_err(ServerError::Dit)?;
+        Ok(dto::morse_runs_dto(&runs))
+    })
+    .await?;
+    Ok(Json(runs))
+}
+
+async fn get_morse_scenario(
+    State(state): State<Arc<AppState>>,
+    Path(scenario): Path<String>,
+) -> Result<Json<dto::MorseScenarioDetailDto>, ApiError> {
+    let detail = read_dit(&state, move |dit| {
+        let detail = dit.morse_scenario(&scenario).map_err(ServerError::Dit)?;
+        Ok(dto::morse_scenario_detail_dto(&detail))
+    })
+    .await?;
+    Ok(Json(detail))
+}
+
+/// Save one step into its fence — replace by id, or append. One commit.
+async fn save_morse_step(
+    State(state): State<Arc<AppState>>,
+    Path(scenario): Path<String>,
+    Json(input): Json<dto::MorseStepDto>,
+) -> Result<Json<dto::MorseScenarioDetailDto>, ApiError> {
+    let step = dto::morse_step_from(&input).map_err(ServerError::BadRequest)?;
+    let me = state.me();
+    let detail = write_dit(&state, move |dit| {
+        dit.morse_save_step(&scenario, step, &me)
+            .map_err(ServerError::Dit)?;
+        let detail = dit.morse_scenario(&scenario).map_err(ServerError::Dit)?;
+        Ok(dto::morse_scenario_detail_dto(&detail))
+    })
+    .await?;
+    Ok(Json(detail))
+}
+
+async fn create_morse_scenario(
+    State(state): State<Arc<AppState>>,
+    Json(input): Json<dto::MorseCreateDto>,
+) -> Result<(StatusCode, Json<dto::MorseScenarioDetailDto>), ApiError> {
+    let step = dto::morse_step_from(&input.step).map_err(ServerError::BadRequest)?;
+    let me = state.me();
+    let detail = write_dit(&state, move |dit| {
+        dit.morse_create_scenario(
+            &input.doc,
+            &input.name,
+            &input.spec_id,
+            input.env.as_deref(),
+            step,
+            &me,
+        )
+        .map_err(ServerError::Dit)?;
+        let detail = dit.morse_scenario(&input.name).map_err(ServerError::Dit)?;
+        Ok(dto::morse_scenario_detail_dto(&detail))
+    })
+    .await?;
+    Ok((StatusCode::CREATED, Json(detail)))
 }
 
 /// Every flow in the workspace with its member count (ADR 0019).

@@ -6,4 +6,8 @@
  * to appear, so what crosses this boundary is that a capture happened, not
  * what it was (§20.7).
  */
-export type MorseRunStepDto = { id: string, method: string, status: number | null, duration_ms: number, passed: boolean, detail: string, };
+export type MorseRunStepDto = { id: string, method: string, status: number | null, duration_ms: number, 
+/**
+ * The response body's size — present only for a run just made.
+ */
+bytes: number | null, passed: boolean, detail: string, };

@@ -3643,3 +3643,348 @@ fn a_spec_declaring_a_relative_server_says_what_to_do_about_it() {
         "the message has to carry the fix: {err}"
     );
 }
+
+// ---- Path parameters (ADR 0023) --------------------------------------------
+
+/// Add `GET /users/{id}` to the spec, commit it, and return the new pin.
+fn spec_with_path_parameter(root: &Path, dit: &mut Dit) -> String {
+    let repo = Repo::open(root).unwrap();
+    std::fs::write(
+        root.join("api/openapi.yaml"),
+        format!("{SPEC_V1}  /users/{{id}}:\n    get:\n      operationId: getUser\n"),
+    )
+    .unwrap();
+    repo.add(".").unwrap();
+    repo.commit("describe fetching one user").unwrap();
+    dit.reindex(ReindexMode::All).unwrap();
+    repo.head().unwrap()
+}
+
+#[test]
+fn a_step_that_leaves_a_path_parameter_unfilled_is_broken_before_anything_runs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, _) = morse_workspace(tmp.path());
+    let pin = spec_with_path_parameter(tmp.path(), &mut dit);
+    write_doc(
+        &mut dit,
+        "docs/api/user.md",
+        &format!(
+            "```dit-morse\nscenario: fetch\nspec: {{ id: auth, commit: {pin} }}\nsteps:\n  - id: one\n    operation: auth/getUser\n```\n"
+        ),
+    );
+    let report = dit.morse_report().unwrap();
+    match &report.scenarios[0].health {
+        dit_core::ScenarioHealth::Broken { reasons } => {
+            assert_eq!(reasons.len(), 1, "{reasons:?}");
+            assert!(
+                reasons[0].contains("`id`") && reasons[0].contains("params:"),
+                "names the parameter and the fix: {}",
+                reasons[0]
+            );
+        }
+        other => panic!("sending the literal `{{id}}` is a request nobody wrote; got {other:?}"),
+    }
+}
+
+#[test]
+fn a_path_parameter_reaches_the_server_through_the_whole_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, _) = morse_workspace(tmp.path());
+    let pin = spec_with_path_parameter(tmp.path(), &mut dit);
+    write_doc(
+        &mut dit,
+        "docs/api/user.md",
+        &format!(
+            "```dit-morse\nscenario: fetch\nspec: {{ id: auth, commit: {pin} }}\nenv: local\nrequires: [email, password]\nsteps:\n  - id: create\n    operation: auth/createUser\n    body: {{ email: \"{{{{email}}}}\" }}\n    capture: {{ user_id: $.data.id }}\n  - id: one\n    operation: auth/getUser\n    params: {{ id: \"{{{{user_id}}}}\" }}\n    expect: {{ status: 200 }}\n```\n"
+        ),
+    );
+    assert_eq!(
+        dit.morse_report().unwrap().scenarios[0].health,
+        dit_core::ScenarioHealth::Fresh
+    );
+    let port = serve(vec![(201, r#"{"data":{"id":"u_7"}}"#), (200, "{}")]);
+    point_at(tmp.path(), port);
+    let outcome = dit.morse_run("fetch", None).unwrap();
+    assert!(outcome.passed(), "{outcome:#?}");
+    assert!(
+        outcome.steps[1].url.ends_with("/users/u_7"),
+        "the spec's `{{id}}` was filled from `params:`: {}",
+        outcome.steps[1].url
+    );
+}
+
+// ---- The workbench: editing, creating and sending (ADR 0023) --------------
+
+const WITH_PROSE: &str = "# Register\n\nWhy this chain exists, in a person's words.\n\n";
+
+fn step_me_checking(value: &str) -> dit_model::MorseStep {
+    dit_parse::parse_morse_scenario(&format!(
+        "scenario: x\nspec: {{ id: auth, commit: y }}\nsteps:\n  - id: me\n    operation: auth/getCurrentUser\n    headers: {{ Authorization: \"Bearer {{{{token}}}}\" }}\n    expect:\n      status: 200\n      jsonpath:\n        $.name: \"{value}\"\n"
+    ))
+    .unwrap()
+    .steps
+    .remove(0)
+}
+
+#[test]
+fn a_step_saved_from_the_screen_lands_in_its_fence_and_nothing_else_moves() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, pin) = morse_workspace(tmp.path());
+    let doc = format!(
+        "{WITH_PROSE}{}\nAfterword.\n",
+        SCENARIO
+            .replace("PIN", &pin)
+            .trim_start_matches("# Register\n\n")
+    );
+    write_doc(&mut dit, "docs/api/register.md", &doc);
+
+    let detail = dit.morse_scenario("register").unwrap();
+    assert!(detail.editable);
+    assert_eq!(detail.scenario.steps.len(), 3);
+
+    dit.morse_save_step("register", step_me_checking("Ada"), "farid")
+        .unwrap();
+
+    let body = dit.read_doc("docs/api/register.md").unwrap();
+    assert!(
+        body.starts_with(WITH_PROSE),
+        "the prose above is untouched: {body}"
+    );
+    assert!(body.ends_with("```\n\nAfterword.\n"), "and below: {body}");
+    let saved = dit.morse_scenario("register").unwrap().scenario;
+    assert_eq!(
+        saved.steps.len(),
+        3,
+        "an existing step is replaced, not added"
+    );
+    assert_eq!(saved.steps[2], step_me_checking("Ada"));
+    assert_eq!(
+        dit.morse_report().unwrap().scenarios[0].health,
+        dit_core::ScenarioHealth::Fresh,
+        "the index was brought up to date by the same write"
+    );
+}
+
+#[test]
+fn a_new_step_that_reads_a_new_name_adds_it_to_requires() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, pin) = morse_workspace(tmp.path());
+    write_doc(
+        &mut dit,
+        "docs/api/register.md",
+        &SCENARIO.replace("PIN", &pin),
+    );
+    let mut extra = step_me_checking("Ada");
+    extra.id = "again".into();
+    extra.headers = vec![(
+        "X-Api-Key".into(),
+        dit_model::MorseValue::Str("{{api_key}}".into()),
+    )];
+    dit.morse_save_step("register", extra, "farid").unwrap();
+    let saved = dit.morse_scenario("register").unwrap().scenario;
+    assert_eq!(saved.steps.last().unwrap().id, "again");
+    assert_eq!(
+        saved.requires,
+        vec![
+            "email".to_owned(),
+            "password".to_owned(),
+            "api_key".to_owned()
+        ],
+        "a new name is recorded as a name the environment must provide — never a value"
+    );
+}
+
+#[test]
+fn a_fence_with_a_comment_is_not_rewritten_from_the_screen() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, pin) = morse_workspace(tmp.path());
+    write_doc(
+        &mut dit,
+        "docs/api/register.md",
+        &SCENARIO
+            .replace("PIN", &pin)
+            .replace("env: local\n", "env: local   # the dev box\n"),
+    );
+    assert!(!dit.morse_scenario("register").unwrap().editable);
+    let err = dit
+        .morse_save_step("register", step_me_checking("Ada"), "farid")
+        .unwrap_err();
+    assert!(err.to_string().contains("comment"), "{err}");
+    assert!(
+        dit.read_doc("docs/api/register.md")
+            .unwrap()
+            .contains("# the dev box"),
+        "the person's words survive"
+    );
+}
+
+#[test]
+fn a_scenario_created_from_the_screen_is_pinned_where_the_spec_stands() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, _) = morse_workspace(tmp.path());
+    write_doc(&mut dit, "docs/api/auth.md", "# Auth\n\nNotes.\n");
+    // In this workspace the spec lives in the same repo, so HEAD is wherever
+    // the last commit left it — and HEAD is what "pinned now" means.
+    let pin = Repo::open(tmp.path()).unwrap().head().unwrap();
+    let created = dit
+        .morse_create_scenario(
+            "docs/api/auth.md",
+            "whoami",
+            "auth",
+            Some("local"),
+            step_me_checking("Ada"),
+            "farid",
+        )
+        .unwrap();
+    assert_eq!(created.spec.commit, pin, "pinned at the spec's HEAD");
+    assert_eq!(created.requires, vec!["token".to_owned()]);
+    let body = dit.read_doc("docs/api/auth.md").unwrap();
+    assert!(
+        body.starts_with("# Auth\n\nNotes.\n\n```dit-morse\n"),
+        "{body}"
+    );
+    let report = dit.morse_report().unwrap();
+    assert_eq!(report.scenarios[0].scenario, "whoami");
+    assert_eq!(report.scenarios[0].health, dit_core::ScenarioHealth::Fresh);
+
+    let err = dit
+        .morse_create_scenario(
+            "docs/api/other.md",
+            "whoami",
+            "auth",
+            None,
+            step_me_checking("Ada"),
+            "farid",
+        )
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("already"),
+        "names are unique: {err}"
+    );
+}
+
+fn send_draft(op: &str, params: &[(&str, &str)]) -> dit_core::SendDraft {
+    dit_core::SendDraft {
+        operation: dit_model::OperationRef::parse(op).unwrap(),
+        params: params
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), dit_model::MorseValue::Str((*v).to_owned())))
+            .collect(),
+        query: vec![],
+        headers: vec![],
+        body: None,
+        expect: dit_model::Expect {
+            status: Some(200),
+            json: vec![],
+        },
+        capture: vec![],
+    }
+}
+
+#[test]
+fn one_operation_is_sent_through_the_same_gates_as_a_run() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, _) = morse_workspace(tmp.path());
+    spec_with_path_parameter(tmp.path(), &mut dit);
+    let port = serve(vec![(200, r#"{"id":"u_7"}"#)]);
+    point_at(tmp.path(), port);
+
+    let sent = dit
+        .morse_send(&send_draft("auth/getUser", &[("id", "u_7")]), Some("local"))
+        .unwrap();
+    assert!(sent.passed(), "{sent:#?}");
+    assert!(
+        sent.steps[0].url.ends_with("/users/u_7"),
+        "{}",
+        sent.steps[0].url
+    );
+
+    let runs = dit.morse_runs().unwrap();
+    assert_eq!(
+        runs[0].key, "send:auth/getUser",
+        "a send is kept like a run, in the index only"
+    );
+    assert!(runs[0].run.passed);
+
+    // An operation the spec does not describe has no method or path to send.
+    let err = dit
+        .morse_send(&send_draft("auth/nowhere", &[]), Some("local"))
+        .unwrap_err();
+    assert!(err.to_string().contains("auth/nowhere"), "{err}");
+}
+
+#[test]
+fn a_send_to_a_host_this_machine_does_not_allow_sends_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, _) = morse_workspace(tmp.path());
+    std::fs::write(
+        tmp.path().join(dit_core::MORSE_LOCAL_PATH),
+        "envs:\n  local:\n    server: \"http://127.0.0.1:9\"\nallow_hosts: []\n",
+    )
+    .unwrap();
+    let sent = dit
+        .morse_send(&send_draft("auth/getCurrentUser", &[]), Some("local"))
+        .unwrap();
+    assert!(sent
+        .refused
+        .as_deref()
+        .unwrap()
+        .contains("dit morse allow 127.0.0.1"));
+    assert!(sent.steps.is_empty(), "nothing was sent");
+}
+
+#[test]
+fn environments_are_listed_by_name_and_never_by_value() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (dit, _) = morse_workspace(tmp.path());
+    point_at(tmp.path(), 4000);
+    let envs = dit.morse_envs().unwrap();
+    assert_eq!(envs.envs.len(), 1);
+    assert_eq!(envs.envs[0].name, "local");
+    assert_eq!(
+        envs.envs[0].server.as_deref(),
+        Some("http://127.0.0.1:4000")
+    );
+    assert_eq!(
+        envs.envs[0].vars,
+        vec!["email".to_owned(), "password".to_owned()]
+    );
+    assert_eq!(envs.allow_hosts, vec!["127.0.0.1".to_owned()]);
+    assert!(
+        !format!("{envs:?}").contains("hunter2"),
+        "a value never leaves the local file through this"
+    );
+}
+
+#[test]
+fn a_credential_written_out_is_refused_before_it_can_reach_a_commit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, pin) = morse_workspace(tmp.path());
+    write_doc(
+        &mut dit,
+        "docs/api/register.md",
+        &SCENARIO.replace("PIN", &pin),
+    );
+    let mut leaky = step_me_checking("Ada");
+    leaky.headers = vec![(
+        "Authorization".into(),
+        dit_model::MorseValue::Str("Bearer eyJhbGciOiJIUzI1NiJ9.abc.def".into()),
+    )];
+    let err = dit
+        .morse_save_step("register", leaky.clone(), "farid")
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("Authorization") && err.to_string().contains("{{"),
+        "names the field and the fix: {err}"
+    );
+    let err = dit
+        .morse_create_scenario("docs/api/x.md", "leak", "auth", None, leaky, "farid")
+        .unwrap_err();
+    assert!(err.to_string().contains("Authorization"), "{err}");
+    assert!(
+        !dit.read_doc("docs/api/register.md")
+            .unwrap()
+            .contains("eyJ"),
+        "git history does not forget, so nothing was written"
+    );
+}

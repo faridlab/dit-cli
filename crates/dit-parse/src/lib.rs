@@ -20,6 +20,7 @@ pub mod html;
 pub mod issue;
 pub mod json;
 pub mod morse;
+pub mod morse_write;
 pub mod openapi;
 pub mod prosemirror;
 pub mod release;
@@ -34,7 +35,13 @@ pub use issue::{
     apply_patch, issue_from_document, parse_issue, serialize_new_issue, IssueParseError,
 };
 pub use json::{parse as parse_json, JsonError};
-pub use morse::{morse_fences, parse_morse_scenario, scenario_in_fence, MorseError, MORSE_FENCE};
+pub use morse::{
+    morse_fences, morse_value, parse_morse_scenario, parse_selector, scenario_in_fence, MorseError,
+    MORSE_FENCE,
+};
+pub use morse_write::{
+    append_morse_fence, has_comments, replace_morse_fence, write_morse_scenario, MorseWriteError,
+};
 pub use openapi::{parse_openapi, OpenApiError};
 pub use prosemirror::{doc_to_markdown, markdown_to_doc, ProseMirrorError};
 pub use release::{

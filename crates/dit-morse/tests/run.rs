@@ -101,6 +101,7 @@ fn step(id: &str, method: &str, path: &str) -> PlannedStep {
         id: id.into(),
         method: method.into(),
         path: path.into(),
+        params: vec![],
         headers: vec![],
         query: vec![],
         body: None,
@@ -320,4 +321,46 @@ fn a_capture_that_reaches_nothing_fails_the_step_rather_than_binding_empty() {
         "{:?}",
         outcome.steps[0].failures
     );
+}
+
+#[test]
+fn a_path_parameter_is_filled_from_params_and_stays_one_segment() {
+    let (port, seen) = serve(vec![(200, r#"{"data":{}}"#)]);
+    let plan = RunPlan {
+        scenario: "fetch".into(),
+        base_url: format!("http://127.0.0.1:{port}"),
+        vars: [("party_id".to_owned(), "p/1?x".to_owned())]
+            .into_iter()
+            .collect(),
+        steps: vec![PlannedStep {
+            params: vec![("id".into(), MorseValue::Str("{{party_id}}".into()))],
+            ..step("fetch", "GET", "/api/v1/party/parties/{id}")
+        }],
+    };
+    let outcome = run(&plan, &allowing_localhost());
+    assert!(outcome.passed(), "{outcome:?}");
+    let got = seen.recv().unwrap();
+    assert_eq!(
+        got.target, "/api/v1/party/parties/p%2F1%3Fx",
+        "the spec's `{{id}}` is filled, and a captured value cannot add a segment or a query"
+    );
+}
+
+#[test]
+fn a_path_parameter_with_no_value_is_refused_before_anything_is_sent() {
+    let (port, _seen) = serve(vec![(200, "{}")]);
+    let plan = RunPlan {
+        scenario: "fetch".into(),
+        base_url: format!("http://127.0.0.1:{port}"),
+        vars: BTreeMap::new(),
+        steps: vec![step("fetch", "GET", "/parties/{id}/contacts/{contact_id}")],
+    };
+    let outcome = run(&plan, &allowing_localhost());
+    assert!(!outcome.passed());
+    let error = outcome.steps[0].error.clone().unwrap();
+    assert!(
+        error.contains("`id`") && error.contains("params:"),
+        "the message names the parameter and where it goes: {error}"
+    );
+    assert_eq!(outcome.steps[0].status, None, "nothing was sent");
 }

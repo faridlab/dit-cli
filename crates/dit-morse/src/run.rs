@@ -25,7 +25,10 @@ use crate::template::{self, Vars};
 pub struct PlannedStep {
     pub id: String,
     pub method: String,
+    /// The spec's path, `{name}` segments and all.
     pub path: String,
+    /// What fills each `{name}` in `path`.
+    pub params: Vec<(String, MorseValue)>,
     pub headers: Vec<(String, MorseValue)>,
     pub query: Vec<(String, MorseValue)>,
     pub body: Option<MorseValue>,
@@ -67,6 +70,13 @@ pub struct StepOutcome {
     pub url: String,
     pub status: Option<u16>,
     pub duration_ms: u64,
+    /// How large the response body was. Its size, never its content: the
+    /// body stays here, where only the terminal that asked may print it.
+    pub bytes: Option<u64>,
+    /// The response body, for the terminal that asked (§20.7). It is never
+    /// stored and never serialised for a page: the server's wire type has no
+    /// field for it, and a test there says so.
+    pub body: Option<String>,
     /// Assertions that did not hold, in the order they were written.
     pub failures: Vec<String>,
     /// What this step bound for the steps after it.
@@ -177,6 +187,8 @@ fn send(
         url: String::new(),
         status: None,
         duration_ms: 0,
+        bytes: None,
+        body: None,
         failures: Vec::new(),
         captured: Vec::new(),
         error: None,
@@ -283,7 +295,9 @@ fn send(
             return Err(Box::new(outcome).into());
         }
     };
+    outcome.bytes = Some(text.len() as u64);
     let json = dit_parse::parse_json(&text).ok();
+    outcome.body = Some(text);
 
     check(&mut outcome, step, vars, status, json.as_ref());
     capture(&mut outcome, step, status, &headers, json.as_ref());
@@ -396,7 +410,8 @@ fn render(value: &MorseValue, vars: &Vars) -> Result<String, String> {
 /// `<base><path>?<query>`, with every substituted value percent-encoded.
 fn build_url(base: &str, step: &PlannedStep, vars: &Vars) -> Result<String, String> {
     let base = base.trim_end_matches('/');
-    let path = template::fill_encoded(&step.path, vars).map_err(|e| e.to_string())?;
+    let path = template::fill_path_params(&step.path, &step.params, vars)?;
+    let path = template::fill_encoded(&path, vars).map_err(|e| e.to_string())?;
     let mut url = format!("{base}{path}");
     if !step.query.is_empty() {
         let mut parts = Vec::new();
@@ -473,6 +488,7 @@ mod tests {
             id: "s".into(),
             method: "GET".into(),
             path: "/users/{{id}}".into(),
+            params: vec![],
             headers: vec![],
             query: vec![("q".into(), MorseValue::Str("{{id}}".into()))],
             body: None,

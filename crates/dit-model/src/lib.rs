@@ -44,11 +44,11 @@ pub use layout::{
     GENERATED_INDEX_MARKER, ISSUE_BODY_FILE, LEGACY_ISSUE_BODY_FILE, RELEASES_DIR, RELEASE_FILE,
 };
 pub use morse::{
-    variables_in, Capture, Expect, ExpectRule, InlineRequest, JsonCheck, MorseScenario, MorseStep,
-    MorseValue, OperationRef, Selector, SpecPin, StepTarget, SuspectedSecret, UnboundVariable,
-    VAR_CLOSE, VAR_OPEN,
+    path_params, variables_in, Capture, Expect, ExpectRule, InlineRequest, JsonCheck,
+    MorseScenario, MorseStep, MorseValue, OperationRef, Selector, SpecPin, StepTarget,
+    SuspectedSecret, UnboundVariable, VAR_CLOSE, VAR_OPEN,
 };
-pub use openapi::{OpenApiSpec, SpecOperation, SpecServer};
+pub use openapi::{OpenApiSpec, SpecField, SpecOperation, SpecParam, SpecServer};
 pub use readiness::{claim_liveness, readiness, ClaimLiveness, Readiness};
 pub use release::{
     validate_release_version, Release, ReleasePatch, ReleaseStatus, ReleaseVersionError,

@@ -461,6 +461,52 @@ fn i7_no_executable_fields_in_schema() {
         );
     }
 
+    // The third writer (ADR 0023): the fence the Morse screen saves. Every
+    // structural key it can emit is checked against a closed vocabulary.
+    // Keys a person chooses — a header name, a body field, a JSONPath, a
+    // capture name — are data rather than schema, so they are all spelled
+    // `user_*` / `$.user` here and set aside.
+    let fence = dit_parse::write_morse_scenario(
+        &dit_parse::parse_morse_scenario(
+            "scenario: a\nspec: { id: x, commit: y }\nenv: local\nrequires: [n]\nrequests:\n  - { id: r, method: get, path: /p, summary: s }\nsteps:\n  - id: one\n    operation: x/op\n    params: { user_p: v }\n    query: { user_q: v }\n    headers: { user_h: v }\n    body: { user_b: v }\n    expect:\n      status: 200\n      jsonpath:\n        $.user: { exists: true }\n    capture: { user_c: $.user }\n  - id: two\n    request: r\n",
+        )
+        .expect("the fixture fence parses"),
+    )
+    .expect("and writes back");
+    const FENCE_KEYS: &[&str] = &[
+        "scenario",
+        "spec",
+        "id",
+        "commit",
+        "env",
+        "requires",
+        "requests",
+        "method",
+        "path",
+        "summary",
+        "steps",
+        "operation",
+        "request",
+        "params",
+        "query",
+        "headers",
+        "body",
+        "expect",
+        "status",
+        "jsonpath",
+        "exists",
+        "capture",
+    ];
+    for key in schema_keys(&fence) {
+        if key.starts_with("user_") || key.starts_with("$.user") {
+            continue;
+        }
+        assert!(
+            FENCE_KEYS.contains(&key.as_str()),
+            "the fence writer emits `{key}`, which is outside the fence vocabulary:\n{fence}"
+        );
+    }
+
     // And a spec whose `path` is an address is refused before it is stored:
     // a file DIT could fetch of its own accord is the thing I7 exists for.
     let err = dit_parse::parse_config(
@@ -477,6 +523,34 @@ fn i7_no_executable_fields_in_schema() {
 /// almost nothing while there is nothing to contain, and a great deal once
 /// there is. The one allowed caller today is the self-updater, whose address
 /// is a compile-time constant and therefore not repo content at all.
+/// I11, the second half: no server read handler can reach egress. A handler
+/// that answers through `read_dit` holds `&Dit`, and every call that sends
+/// needs `&mut` — so the type system already refuses it. This pins the same
+/// fact in text, where a refactor that loosened the borrow would show up as
+/// a diff to this test rather than as a request fired by a page load.
+#[test]
+fn i11_no_read_path_reaches_egress() {
+    let routes = fs::read_to_string("crates/dit-server/src/routes.rs").unwrap_or_default();
+    assert!(!routes.is_empty(), "the server's routes must be readable");
+    let mut handlers = routes.split("\nasync fn ").skip(1);
+    let mut read_handlers = 0;
+    for handler in handlers.by_ref() {
+        let body = handler.split("\n}\n").next().unwrap_or_default();
+        if !body.contains("read_dit(") {
+            continue;
+        }
+        read_handlers += 1;
+        for egress in ["morse_run(", "morse_send(", "morse_sync("] {
+            assert!(
+                !body.contains(egress),
+                "a read handler reaches `{egress}` — serving a page must never send a request:\n{}",
+                body.lines().next().unwrap_or_default()
+            );
+        }
+    }
+    assert!(read_handlers > 5, "the scan found the read handlers");
+}
+
 #[test]
 fn i11_egress_is_contained() {
     let bad = offenders(

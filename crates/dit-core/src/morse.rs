@@ -14,7 +14,9 @@
 use std::path::Path;
 
 use dit_index::{StoredMorseScenario, StoredMorseSpec};
-use dit_model::{MorseScenario, SpecEntry, StepTarget};
+use dit_model::{
+    Capture, Expect, MorseScenario, MorseStep, MorseValue, OperationRef, SpecEntry, StepTarget,
+};
 use dit_morse::{LocalConfig, PlannedStep, Policy, RunOutcome, RunPlan};
 use dit_vcs::Repo;
 
@@ -32,6 +34,8 @@ pub struct MorseSpecView {
     /// The commit of the repo holding the spec when the catalogue was built.
     pub head: Option<String>,
     pub operations: Vec<dit_model::SpecOperation>,
+    /// The document's `servers:`.
+    pub servers: Vec<dit_model::SpecServer>,
     /// Why the document could not be read, when it could not. A spec with a
     /// problem still appears: a service whose document has gone missing is
     /// something to say out loud, not something to hide.
@@ -157,6 +161,7 @@ impl Dit {
                 version: spec.version,
                 head: spec.head,
                 problem: spec.problem,
+                servers: spec.servers,
             });
         }
 
@@ -226,6 +231,7 @@ impl Dit {
             title: None,
             version: None,
             problem: None,
+            servers: Vec::new(),
         };
         let repo = match self.spec_repo(entry) {
             Ok(repo) => repo,
@@ -250,6 +256,7 @@ impl Dit {
             Ok(spec) => {
                 stored.title = spec.title;
                 stored.version = spec.version;
+                stored.servers = spec.servers;
                 (stored, spec.operations)
             }
             Err(err) => {
@@ -391,19 +398,45 @@ impl Dit {
             // check it against — the parser has already refused the shapes
             // that would be wrong.
             let Some(op) = step.operation.as_operation() else {
+                if let StepTarget::Inline(id) = &step.operation {
+                    if let Some(request) = scenario.requests.iter().find(|r| &r.id == id) {
+                        reasons.extend(unfilled_params(&step.id, &request.path, &step.params));
+                    }
+                }
                 continue;
             };
             let known = self.index.morse_operations(&op.spec)?;
-            if !known.iter().any(|k| k.operation_id == op.operation) {
+            let Some(found) = known.iter().find(|k| k.operation_id == op.operation) else {
                 reasons.push(format!(
                     "step `{}` calls `{}`, which the spec no longer describes",
                     step.id,
                     op.qualified()
                 ));
-            }
+                continue;
+            };
+            reasons.extend(unfilled_params(&step.id, &found.path, &step.params));
         }
         Ok(reasons)
     }
+}
+
+/// Path parameters the step leaves without a value. Sending the literal
+/// `{id}` to a server is a request nobody wrote (ADR 0023).
+fn unfilled_params(
+    step: &str,
+    path: &str,
+    params: &[(String, dit_model::MorseValue)],
+) -> Vec<String> {
+    dit_model::path_params(path)
+        .into_iter()
+        .filter(|name| !params.iter().any(|(key, _)| key == name))
+        .map(|name| {
+            format!(
+                "step `{step}` calls `{path}` and gives path parameter `{name}` no value — add \
+                 `params: {{ {name}: ... }}`"
+            )
+        })
+        .collect()
 }
 
 /// Variables a scenario reads that nothing provides. Pure — the analysis
@@ -634,46 +667,7 @@ impl Dit {
         let parsed = dit_parse::parse_morse_scenario(&stored.body)
             .map_err(|e| DitError::Refuse(format!("scenario `{scenario}`: {e}")))?;
         let env_name = env.or(parsed.env.as_deref());
-
-        let entry = self.spec_entry(&parsed.spec.id)?;
-        let repo = self.spec_repo(&entry).map_err(DitError::Refuse)?;
-        let text = repo
-            .get()
-            .show_text(&format!("HEAD:{}", entry.path))
-            .ok_or_else(|| {
-                DitError::Refuse(format!("`{}` is not in its repo at HEAD", entry.path))
-            })?;
-        let spec = dit_parse::parse_openapi(&text)
-            .map_err(|e| DitError::Refuse(format!("{}: {e}", entry.path)))?;
-
-        let local = self.morse_local(env_name.unwrap_or("default"))?;
-        let local_env = env_name.and_then(|name| local.envs.get(name));
-        let base_url = local_env
-            .and_then(|e| e.server.clone())
-            .or_else(|| spec.server_for(env_name).map(|s| s.url.clone()))
-            .ok_or_else(|| {
-                DitError::Refuse(format!(
-                    "nothing says where `{}` lives — the spec has no `servers:` entry and \
-                     no environment overrides it",
-                    parsed.spec.id
-                ))
-            })?;
-        // A generated spec very often declares `servers: - url: /`, which says
-        // "wherever this is deployed" and names no host at all. That is a
-        // perfectly good document and an impossible instruction, so it is
-        // worth its own sentence rather than failing later as a malformed URL.
-        if !base_url.contains("://") {
-            return Err(DitError::Refuse(format!(
-                "the spec for `{}` says its server is `{base_url}`, which is relative — it names \
-                 no host, so nothing can be sent. Give the `{}` environment a `server:` in \
-                 {}, for example:\n\
-                 \n  envs:\n    {}:\n      server: \"http://localhost:8080\"\n",
-                parsed.spec.id,
-                env_name.unwrap_or("default"),
-                crate::MORSE_LOCAL_PATH,
-                env_name.unwrap_or("default"),
-            )));
-        }
+        let (spec, base_url, vars) = self.target(&parsed.spec.id, env_name)?;
 
         let mut steps = Vec::new();
         for step in &parsed.steps {
@@ -703,6 +697,7 @@ impl Dit {
                 id: step.id.clone(),
                 method,
                 path,
+                params: step.params.clone(),
                 headers: step.headers.clone(),
                 query: step.query.clone(),
                 body: step.body.clone(),
@@ -714,9 +709,406 @@ impl Dit {
         Ok(RunPlan {
             scenario: parsed.scenario.clone(),
             base_url,
-            vars: local_env.map(|e| e.vars.clone()).unwrap_or_default(),
+            vars,
             steps,
         })
+    }
+
+    /// Where a spec's requests go and what this machine supplies for them:
+    /// the document at HEAD, the base URL from the environment's override or
+    /// the spec's own `servers:`, and the environment's values. Nothing here
+    /// comes from a committed DIT file (§20.6), which is why a run and a
+    /// single Send share it.
+    fn target(
+        &self,
+        spec_id: &str,
+        env_name: Option<&str>,
+    ) -> Result<(dit_model::OpenApiSpec, String, dit_morse::template::Vars), DitError> {
+        let entry = self.spec_entry(spec_id)?;
+        let repo = self.spec_repo(&entry).map_err(DitError::Refuse)?;
+        let text = repo
+            .get()
+            .show_text(&format!("HEAD:{}", entry.path))
+            .ok_or_else(|| {
+                DitError::Refuse(format!("`{}` is not in its repo at HEAD", entry.path))
+            })?;
+        let spec = dit_parse::parse_openapi(&text)
+            .map_err(|e| DitError::Refuse(format!("{}: {e}", entry.path)))?;
+
+        let local = self.morse_local(env_name.unwrap_or("default"))?;
+        let local_env = env_name.and_then(|name| local.envs.get(name));
+        let base_url = local_env
+            .and_then(|e| e.server.clone())
+            .or_else(|| spec.server_for(env_name).map(|s| s.url.clone()))
+            .ok_or_else(|| {
+                DitError::Refuse(format!(
+                    "nothing says where `{spec_id}` lives — the spec has no `servers:` entry and \
+                     no environment overrides it"
+                ))
+            })?;
+        // A generated spec very often declares `servers: - url: /`, which says
+        // "wherever this is deployed" and names no host at all. That is a
+        // perfectly good document and an impossible instruction, so it is
+        // worth its own sentence rather than failing later as a malformed URL.
+        if !base_url.contains("://") {
+            return Err(DitError::Refuse(format!(
+                "the spec for `{}` says its server is `{base_url}`, which is relative — it names \
+                 no host, so nothing can be sent. Give the `{}` environment a `server:` in \
+                 {}, for example:\n\
+                 \n  envs:\n    {}:\n      server: \"http://localhost:8080\"\n",
+                spec_id,
+                env_name.unwrap_or("default"),
+                crate::MORSE_LOCAL_PATH,
+                env_name.unwrap_or("default"),
+            )));
+        }
+        let vars = local_env.map(|e| e.vars.clone()).unwrap_or_default();
+        Ok((spec, base_url, vars))
+    }
+}
+
+// ---- The workbench (ADR 0023) ----------------------------------------------
+
+/// One scenario in full, for a form to edit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MorseScenarioDetail {
+    pub scenario: MorseScenario,
+    pub path: String,
+    pub line: usize,
+    /// The fence's text as the document holds it.
+    pub fence: String,
+    /// False when the fence carries a `#` comment: re-serialising it would
+    /// drop a person's words, so it is edited in its document instead.
+    pub editable: bool,
+}
+
+/// One operation as a tab drafted it. It has no field that could name a
+/// host: the method and path come from the spec, the base URL from the spec
+/// or this machine (§20.6, ADR 0023).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SendDraft {
+    pub operation: OperationRef,
+    pub params: Vec<(String, MorseValue)>,
+    pub query: Vec<(String, MorseValue)>,
+    pub headers: Vec<(String, MorseValue)>,
+    pub body: Option<MorseValue>,
+    pub expect: Expect,
+    pub capture: Vec<Capture>,
+}
+
+/// One environment on this machine, by name. The variables are *names*:
+/// their values never leave the local file through this (§20.6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MorseEnvView {
+    pub name: String,
+    pub server: Option<String>,
+    pub vars: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MorseEnvsView {
+    pub envs: Vec<MorseEnvView>,
+    pub allow_hosts: Vec<String>,
+}
+
+/// A run or a send, as History lists it. `key` is the scenario name, or
+/// `send:<spec>/<operationId>` for a single operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MorseRunRecord {
+    pub key: String,
+    pub run: LastRun,
+}
+
+/// The prefix a single operation's run is kept under, so it can never be
+/// mistaken for a scenario's.
+pub const SEND_KEY_PREFIX: &str = "send:";
+
+impl Dit {
+    /// One scenario, parsed, from the index — the body the indexer stored.
+    pub fn morse_scenario(&self, scenario: &str) -> Result<MorseScenarioDetail, DitError> {
+        let stored = self.stored_scenario(scenario)?;
+        if let Some(problem) = &stored.problem {
+            return Err(DitError::Refuse(format!(
+                "scenario `{scenario}` does not parse ({}:{}): {problem}",
+                stored.path, stored.line
+            )));
+        }
+        let parsed = dit_parse::parse_morse_scenario(&stored.body)
+            .map_err(|e| DitError::Refuse(format!("scenario `{scenario}`: {e}")))?;
+        Ok(MorseScenarioDetail {
+            scenario: parsed,
+            editable: !dit_parse::has_comments(&stored.body),
+            fence: stored.body,
+            path: stored.path,
+            line: stored.line,
+        })
+    }
+
+    /// Save one step: replace the step with the same id, or append it. Any
+    /// name the chain now reads that nothing provides is added to
+    /// `requires:` — a name, never a value.
+    pub fn morse_save_step(
+        &mut self,
+        scenario: &str,
+        step: MorseStep,
+        author: &str,
+    ) -> Result<(), DitError> {
+        let detail = self.morse_scenario(scenario)?;
+        if !detail.editable {
+            return Err(DitError::Refuse(format!(
+                "scenario `{scenario}` carries a comment in its fence ({}:{}); a form would drop \
+                 it, so edit this one in the document",
+                detail.path, detail.line
+            )));
+        }
+        let mut updated = detail.scenario;
+        let id = step.id.clone();
+        match updated.steps.iter_mut().find(|s| s.id == id) {
+            Some(existing) => *existing = step,
+            None => updated.steps.push(step),
+        }
+        require_unbound(&mut updated);
+        refuse_secrets(&updated)?;
+        let fence = dit_parse::write_morse_scenario(&updated)
+            .map_err(|e| DitError::Refuse(format!("step `{id}`: {e}")))?;
+        let document = self.read_doc(&detail.path)?;
+        let written =
+            dit_parse::replace_morse_fence(&document, scenario, &fence).ok_or_else(|| {
+                DitError::Refuse(format!(
+                    "the fence for `{scenario}` is no longer in {}",
+                    detail.path
+                ))
+            })?;
+        let mut tx = self.transaction(author)?;
+        tx.write_doc(&detail.path, &written)?;
+        tx.commit(&format!("dit morse: save step {id} of {scenario}"))?;
+        Ok(())
+    }
+
+    /// Start a scenario with one step, as a new fence at the end of a
+    /// document (created if it does not exist). It is pinned where the spec
+    /// stands now, which is what the pin of something just written means.
+    #[allow(clippy::too_many_arguments)]
+    pub fn morse_create_scenario(
+        &mut self,
+        doc: &str,
+        name: &str,
+        spec_id: &str,
+        env: Option<&str>,
+        step: MorseStep,
+        author: &str,
+    ) -> Result<MorseScenario, DitError> {
+        if self
+            .index
+            .morse_scenarios()?
+            .iter()
+            .any(|s| s.scenario == name)
+        {
+            return Err(DitError::Refuse(format!(
+                "a scenario called `{name}` already exists — scenario names are unique in a workspace"
+            )));
+        }
+        let entry = self.spec_entry(spec_id)?;
+        let head = self
+            .spec_repo(&entry)
+            .map_err(DitError::Refuse)?
+            .get()
+            .head()
+            .map_err(|e| DitError::Refuse(format!("the spec's repo has no HEAD: {e}")))?;
+        let mut scenario = MorseScenario {
+            scenario: name.to_owned(),
+            spec: dit_model::SpecPin {
+                id: spec_id.to_owned(),
+                commit: head,
+            },
+            env: env.map(str::to_owned),
+            requires: Vec::new(),
+            requests: Vec::new(),
+            steps: vec![step],
+        };
+        require_unbound(&mut scenario);
+        refuse_secrets(&scenario)?;
+        let fence = dit_parse::write_morse_scenario(&scenario)
+            .map_err(|e| DitError::Refuse(format!("scenario `{name}`: {e}")))?;
+        let document = match self.read_doc(doc) {
+            Ok(text) => text,
+            Err(DitError::NotFound(_)) => format!("# {name}\n"),
+            Err(other) => return Err(other),
+        };
+        let mut tx = self.transaction(author)?;
+        tx.write_doc(doc, &dit_parse::append_morse_fence(&document, &fence))?;
+        tx.commit(&format!("dit morse: new scenario {name}"))?;
+        Ok(scenario)
+    }
+
+    /// Send one operation as a tab drafted it (ADR 0023). A one-step plan
+    /// through the same gates as a run: the operation must resolve at HEAD,
+    /// the host must be allowed here, and nothing is written but the index
+    /// row that says what happened.
+    pub fn morse_send(
+        &mut self,
+        draft: &SendDraft,
+        env: Option<&str>,
+    ) -> Result<RunOutcome, DitError> {
+        let (spec, base_url, vars) = self.target(&draft.operation.spec, env)?;
+        let op = spec.operation(&draft.operation.operation).ok_or_else(|| {
+            DitError::Refuse(format!(
+                "`{}` is not an operation the spec describes at HEAD",
+                draft.operation.qualified()
+            ))
+        })?;
+        let key = format!("{SEND_KEY_PREFIX}{}", draft.operation.qualified());
+        let plan = RunPlan {
+            scenario: key,
+            base_url,
+            vars,
+            steps: vec![PlannedStep {
+                id: draft.operation.operation.clone(),
+                method: op.method.clone(),
+                path: op.path.clone(),
+                params: draft.params.clone(),
+                headers: draft.headers.clone(),
+                query: draft.query.clone(),
+                body: draft.body.clone(),
+                expect: draft.expect.clone(),
+                capture: draft.capture.clone(),
+            }],
+        };
+        let policy = Policy {
+            allow: self.morse_local(env.unwrap_or("default"))?,
+            timeout_secs: 30,
+        };
+        let outcome = dit_morse::run(&plan, &policy);
+        self.record_run(&outcome)?;
+        Ok(outcome)
+    }
+
+    /// This machine's environments, by name, and the hosts it allows.
+    pub fn morse_envs(&self) -> Result<MorseEnvsView, DitError> {
+        let local = self.morse_local("default")?;
+        Ok(MorseEnvsView {
+            envs: local
+                .envs
+                .iter()
+                .map(|(name, env)| MorseEnvView {
+                    name: name.clone(),
+                    server: env.server.clone(),
+                    vars: env.vars.keys().cloned().collect(),
+                })
+                .collect(),
+            allow_hosts: local.allow_hosts,
+        })
+    }
+
+    /// Every run and send this workspace has kept since its last reindex,
+    /// newest first.
+    pub fn morse_runs(&self) -> Result<Vec<MorseRunRecord>, DitError> {
+        Ok(self
+            .index
+            .morse_runs_all()?
+            .into_iter()
+            .map(|row| MorseRunRecord {
+                key: row.scenario,
+                run: LastRun {
+                    ran_at: row.ran_at,
+                    passed: row.passed,
+                    refused: row.refused,
+                    steps: row.steps.lines().filter_map(parse_run_line).collect(),
+                },
+            })
+            .collect())
+    }
+}
+
+/// A JSON body, as the Body tab holds it, in the shape a fence stores. Every
+/// scalar becomes text, exactly as the fence reader does; which ones go out
+/// as numbers is decided when the request is built (`template::to_json`).
+pub fn morse_value_from_json(text: &str) -> Result<MorseValue, DitError> {
+    dit_parse::parse_json(text)
+        .map(|tree| dit_parse::morse_value(&tree))
+        .map_err(|e| DitError::Refuse(format!("the body is not JSON: {e}")))
+}
+
+/// A fence value as indented JSON for the Body tab. Leaves go through the
+/// same rule the sender uses, so what the tab shows as a number is what
+/// would be sent as one; a `{{name}}` is shown as written, never filled.
+pub fn morse_value_to_json(value: &MorseValue) -> String {
+    let mut out = String::new();
+    pretty(value, 0, &mut out);
+    out
+}
+
+fn pretty(value: &MorseValue, depth: usize, out: &mut String) {
+    let pad = |n: usize| "  ".repeat(n);
+    match value {
+        MorseValue::Str(text) => {
+            let as_written: dit_morse::template::Vars = dit_model::variables_in(text)
+                .into_iter()
+                .map(|name| (name.clone(), format!("{{{{{name}}}}}")))
+                .collect();
+            let leaf = dit_morse::template::to_json(value, &as_written)
+                .unwrap_or_else(|_| dit_morse::template::json_string(text));
+            out.push_str(&leaf);
+        }
+        MorseValue::Seq(items) if items.is_empty() => out.push_str("[]"),
+        MorseValue::Map(entries) if entries.is_empty() => out.push_str("{}"),
+        MorseValue::Seq(items) => {
+            out.push_str("[\n");
+            for (i, item) in items.iter().enumerate() {
+                out.push_str(&pad(depth + 1));
+                pretty(item, depth + 1, out);
+                out.push_str(if i + 1 < items.len() { ",\n" } else { "\n" });
+            }
+            out.push_str(&pad(depth));
+            out.push(']');
+        }
+        MorseValue::Map(entries) => {
+            out.push_str("{\n");
+            for (i, (key, item)) in entries.iter().enumerate() {
+                out.push_str(&pad(depth + 1));
+                out.push_str(&dit_morse::template::json_string(key));
+                out.push_str(": ");
+                pretty(item, depth + 1, out);
+                out.push_str(if i + 1 < entries.len() { ",\n" } else { "\n" });
+            }
+            out.push_str(&pad(depth));
+            out.push('}');
+        }
+    }
+}
+
+/// A capture's source as the Capture tab writes it: `$.path`,
+/// `header:Name`, or `status`.
+pub fn morse_selector(text: &str) -> Option<dit_model::Selector> {
+    dit_parse::parse_selector(text)
+}
+
+/// Refuse a scenario carrying a literal that looks like a real credential —
+/// the same judgement `dit doctor`'s `morse-secrets` makes, applied before
+/// the commit rather than after it, because git history does not forget.
+fn refuse_secrets(scenario: &MorseScenario) -> Result<(), DitError> {
+    match scenario.suspected_secrets().first() {
+        None => Ok(()),
+        Some(found) => Err(DitError::Refuse(format!(
+            "step `{}`, `{}`: this looks like {} — put the value in {} and write \
+             `{{{{name}}}}` here instead",
+            found.step,
+            found.field,
+            found.reason,
+            crate::MORSE_LOCAL_PATH
+        ))),
+    }
+}
+
+/// Add to `requires:` every name the chain reads that nothing provides and
+/// no step captures anywhere. A name captured by a *later* step is left
+/// alone: that is a chain in the wrong order, which `check` reports, and
+/// papering over it with an environment variable would hide the mistake.
+fn require_unbound(scenario: &mut MorseScenario) {
+    for unbound in scenario.unbound_variables() {
+        if !unbound.captured_later && !scenario.requires.contains(&unbound.name) {
+            scenario.requires.push(unbound.name);
+        }
     }
 }
 
@@ -796,4 +1188,18 @@ fn now_seconds() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod body_json_tests {
+    use super::*;
+
+    #[test]
+    fn a_body_survives_the_tab_and_keeps_its_references() {
+        let text = "{\n  \"name\": \"Acme, QA\",\n  \"age\": 30,\n  \"id\": \"{{party_id}}\",\n  \"tags\": [\n    \"a\"\n  ],\n  \"meta\": {}\n}";
+        let value = morse_value_from_json(text).unwrap();
+        assert_eq!(morse_value_to_json(&value), text);
+        assert!(morse_value_from_json("{ nope").is_err());
+    }
 }
