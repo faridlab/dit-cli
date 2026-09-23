@@ -35,7 +35,7 @@ import { SearchPane } from "./panes/SearchPane";
 import { SettingsPane } from "./panes/SettingsPane";
 import { BoardView } from "../views/BoardView";
 import { DocsView } from "../views/DocsView";
-import { MorseView } from "../views/MorseView";
+import { MorseView } from "../views/morse/MorseView";
 import { HomeView } from "../views/HomeView";
 import { IssueDetailView } from "../views/IssueDetailView";
 import { IssuesView } from "../views/IssuesView";

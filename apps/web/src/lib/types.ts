@@ -34,6 +34,15 @@ import type { MorseRunDto as WireMorseRunDto } from "./schema/MorseRunDto";
 import type { MorseRunStepDto as WireMorseRunStepDto } from "./schema/MorseRunStepDto";
 import type { MorseScenarioDto as WireMorseScenarioDto } from "./schema/MorseScenarioDto";
 import type { MorseSpecDto as WireMorseSpecDto } from "./schema/MorseSpecDto";
+import type { MorseStepDto as WireMorseStepDto } from "./schema/MorseStepDto";
+import type { MorsePairDto as WireMorsePairDto } from "./schema/MorsePairDto";
+import type { MorseCheckDto as WireMorseCheckDto } from "./schema/MorseCheckDto";
+import type { MorseCaptureDto as WireMorseCaptureDto } from "./schema/MorseCaptureDto";
+import type { MorseScenarioDetailDto as WireMorseScenarioDetailDto } from "./schema/MorseScenarioDetailDto";
+import type { MorseEnvsDto as WireMorseEnvsDto } from "./schema/MorseEnvsDto";
+import type { MorseEnvDto as WireMorseEnvDto } from "./schema/MorseEnvDto";
+import type { MorseSendDto as WireMorseSendDto } from "./schema/MorseSendDto";
+import type { MorseCreateDto as WireMorseCreateDto } from "./schema/MorseCreateDto";
 import type { NewIssueDto } from "./schema/NewIssueDto";
 import type { SchemaDto as WireSchemaDto } from "./schema/SchemaDto";
 import type { SetSettingsDto } from "./schema/SetSettingsDto";
@@ -53,14 +62,23 @@ export interface IssueDto extends WireIssueDto {
   priority: Priority | null;
 }
 
-// Morse (§20): a read model only. Nothing on the wire here can be sent
-// anywhere — Morse 1 has no egress (I11).
+// Morse (§20, ADR 0023). Nothing on the wire names a host, and nothing the
+// server sends back carries a response body or a captured value.
 export type MorseOperationDto = WireMorseOperationDto;
 export type MorseSpecDto = WireMorseSpecDto;
 export type MorseScenarioDto = WireMorseScenarioDto;
 export type MorseReportDto = WireMorseReportDto;
 export type MorseRunDto = WireMorseRunDto;
 export type MorseRunStepDto = WireMorseRunStepDto;
+export type MorseStepDto = WireMorseStepDto;
+export type MorsePairDto = WireMorsePairDto;
+export type MorseCheckDto = WireMorseCheckDto;
+export type MorseCaptureDto = WireMorseCaptureDto;
+export type MorseScenarioDetailDto = WireMorseScenarioDetailDto;
+export type MorseEnvsDto = WireMorseEnvsDto;
+export type MorseEnvDto = WireMorseEnvDto;
+export type MorseSendDto = WireMorseSendDto;
+export type MorseCreateDto = WireMorseCreateDto;
 
 export type CommentDto = WireCommentDto;
 export type FieldEventDto = WireFieldEventDto;

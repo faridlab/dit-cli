@@ -14,8 +14,13 @@ import type {
   FieldPatch,
   IssueDto,
   IssueListDto,
+  MorseCreateDto,
+  MorseEnvsDto,
   MorseReportDto,
   MorseRunDto,
+  MorseScenarioDetailDto,
+  MorseSendDto,
+  MorseStepDto,
   NewIssueInput,
   SchemaDto,
   SetSettingsInput,
@@ -153,9 +158,51 @@ export function getMorse(): Promise<MorseReportDto> {
 /** Fire one scenario. The one call in the UI that reaches the network, and
  *  it only ever reaches a host this machine already allows — the allowlist
  *  is not editable from the browser (§20.5). */
-export function runMorse(scenario: string): Promise<MorseRunDto> {
-  return request<MorseRunDto>(`/api/morse/run/${encodeURIComponent(scenario)}`, {
+export function runMorse(scenario: string, env: string | null): Promise<MorseRunDto> {
+  const query = env ? `?env=${encodeURIComponent(env)}` : "";
+  return request<MorseRunDto>(`/api/morse/run/${encodeURIComponent(scenario)}${query}`, {
     method: "POST",
+  });
+}
+
+/** Fire one operation as a tab drafted it (ADR 0023). The draft has no field
+ *  that could name a host — the server takes method and path from the spec
+ *  and the base URL from the spec or this machine. */
+export function sendMorse(input: MorseSendDto): Promise<MorseRunDto> {
+  return request<MorseRunDto>("/api/morse/send", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+/** This machine's environments by name and the hosts it allows. Variable
+ *  values never reach the page. */
+export function getMorseEnvs(): Promise<MorseEnvsDto> {
+  return request<MorseEnvsDto>("/api/morse/envs");
+}
+
+/** Runs and sends kept in the index since its last rebuild, newest first. */
+export function getMorseRuns(): Promise<MorseRunDto[]> {
+  return request<MorseRunDto[]>("/api/morse/runs");
+}
+
+export function getMorseScenario(name: string): Promise<MorseScenarioDetailDto> {
+  return request<MorseScenarioDetailDto>(`/api/morse/scenarios/${encodeURIComponent(name)}`);
+}
+
+/** Save one step into its fence — replaced by id, or appended. One commit. */
+export function saveMorseStep(scenario: string, step: MorseStepDto): Promise<MorseScenarioDetailDto> {
+  return request<MorseScenarioDetailDto>(
+    `/api/morse/scenarios/${encodeURIComponent(scenario)}/steps`,
+    { method: "PUT", body: JSON.stringify(step) },
+  );
+}
+
+/** Start a scenario with one step, as a new fence at the end of a document. */
+export function createMorseScenario(input: MorseCreateDto): Promise<MorseScenarioDetailDto> {
+  return request<MorseScenarioDetailDto>("/api/morse/scenarios", {
+    method: "POST",
+    body: JSON.stringify(input),
   });
 }
 

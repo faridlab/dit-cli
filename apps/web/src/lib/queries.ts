@@ -13,7 +13,14 @@ import { toast } from "sonner";
 import * as api from "./api";
 import { openQuery } from "./dql";
 import { POOL_LIMIT } from "./lists";
-import type { BoardDto, FieldPatch, NewIssueInput, ReleasePatchInput, SetSettingsInput } from "./types";
+import type {
+  BoardDto,
+  FieldPatch,
+  MorseStepDto,
+  NewIssueInput,
+  ReleasePatchInput,
+  SetSettingsInput,
+} from "./types";
 
 export const queryKeys = {
   status: ["status"] as const,
@@ -37,6 +44,9 @@ export const queryKeys = {
   flows: ["flows"] as const,
   flowBoard: (name: string) => ["flow-board", name] as const,
   morse: ["morse"] as const,
+  morseEnvs: ["morse-envs"] as const,
+  morseRuns: ["morse-runs"] as const,
+  morseScenario: (name: string) => ["morse-scenario", name] as const,
 };
 
 /** Mark everything a commit can change as stale. The schema is deliberately
@@ -54,6 +64,7 @@ export function invalidateWorkspaceData(client: QueryClient) {
     // A commit can change a spec, a fence, or the config that registers
     // either — all three change what Morse reports.
     queryKeys.morse,
+    ["morse-scenario"],
     ["issue"],
     ["comments"],
     ["history"],
@@ -101,8 +112,63 @@ export function useMorse() {
 export function useRunMorse() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (scenario: string) => api.runMorse(scenario),
-    onSettled: () => client.invalidateQueries({ queryKey: queryKeys.morse }),
+    mutationFn: ({ scenario, env }: { scenario: string; env: string | null }) =>
+      api.runMorse(scenario, env),
+    onSettled: () => {
+      void client.invalidateQueries({ queryKey: queryKeys.morse });
+      void client.invalidateQueries({ queryKey: queryKeys.morseRuns });
+    },
+  });
+}
+
+/** Fire one operation (ADR 0023). Nothing is written but the index row. */
+export function useSendMorse() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: api.sendMorse,
+    onSettled: () => client.invalidateQueries({ queryKey: queryKeys.morseRuns }),
+  });
+}
+
+export function useMorseEnvs() {
+  return useQuery({ queryKey: queryKeys.morseEnvs, queryFn: api.getMorseEnvs, staleTime: STALE_TIME_MS });
+}
+
+export function useMorseRuns() {
+  return useQuery({ queryKey: queryKeys.morseRuns, queryFn: api.getMorseRuns, staleTime: STALE_TIME_MS });
+}
+
+export function useMorseScenario(name: string | null) {
+  return useQuery({
+    queryKey: queryKeys.morseScenario(name ?? ""),
+    queryFn: () => api.getMorseScenario(name ?? ""),
+    enabled: name !== null,
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+/** A saved step lands in the fence; the detail it returns replaces the
+ *  cached one, and the report is refreshed for the scenario's verdict. */
+export function useSaveMorseStep() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ scenario, step }: { scenario: string; step: MorseStepDto }) =>
+      api.saveMorseStep(scenario, step),
+    onSuccess: (detail) => {
+      client.setQueryData(queryKeys.morseScenario(detail.scenario), detail);
+      void client.invalidateQueries({ queryKey: queryKeys.morse });
+    },
+  });
+}
+
+export function useCreateMorseScenario() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: api.createMorseScenario,
+    onSuccess: (detail) => {
+      client.setQueryData(queryKeys.morseScenario(detail.scenario), detail);
+      void client.invalidateQueries({ queryKey: queryKeys.morse });
+    },
   });
 }
 
