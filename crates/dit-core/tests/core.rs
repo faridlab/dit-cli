@@ -31,6 +31,20 @@ fn workspace(path: &Path) -> Dit {
     Dit::open(path).unwrap()
 }
 
+/// A repository that is a DIT workspace as far as `dit ai` is concerned: it
+/// carries `.dit/config.yaml`, the marker `dit init` writes.
+fn ai_workspace(path: &Path) -> Dit {
+    let dit = workspace(path);
+    std::fs::create_dir_all(path.join(".dit")).unwrap();
+    std::fs::write(
+        path.join(".dit/config.yaml"),
+        "schema_version: 1\nlayout: root\nnumbering: local\n",
+    )
+    .unwrap();
+    drop(dit);
+    Dit::open(path).unwrap()
+}
+
 fn draft(title: &str) -> IssueDraft {
     IssueDraft {
         title: title.into(),
@@ -2565,7 +2579,7 @@ fn the_critical_path_is_the_chain_with_the_most_work_left() {
 #[test]
 fn agent_docs_write_one_document_and_point_every_agent_file_at_it() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut dit = workspace(tmp.path());
+    let mut dit = ai_workspace(tmp.path());
 
     // A tool file the team already uses, with a hand-written rule in it, and
     // one they do not use at all.
@@ -2622,7 +2636,7 @@ fn agent_docs_write_one_document_and_point_every_agent_file_at_it() {
 #[test]
 fn agent_docs_absorb_the_legacy_protocol_block() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut dit = workspace(tmp.path());
+    let mut dit = ai_workspace(tmp.path());
 
     // A workspace scaffolded before ADR 0021: the protocol lives inline.
     std::fs::write(
@@ -2966,7 +2980,7 @@ fn a_dependency_inside_one_phase_is_ordinary_and_never_flagged() {
 #[test]
 fn naming_a_tool_creates_its_file_because_naming_it_is_the_intent() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut dit = workspace(tmp.path());
+    let mut dit = ai_workspace(tmp.path());
 
     let report = dit
         .write_agent_docs(&dit_core::AgentDocOptions {
@@ -2988,7 +3002,7 @@ fn naming_a_tool_creates_its_file_because_naming_it_is_the_intent() {
 #[test]
 fn an_unknown_tool_is_named_rather_than_silently_doing_nothing() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut dit = workspace(tmp.path());
+    let mut dit = ai_workspace(tmp.path());
 
     let err = dit
         .write_agent_docs(&dit_core::AgentDocOptions {
@@ -3987,4 +4001,305 @@ fn a_credential_written_out_is_refused_before_it_can_reach_a_commit() {
             .contains("eyJ"),
         "git history does not forget, so nothing was written"
     );
+}
+
+/// Fixture `apostrophe_in_a_title`: an issue titled "Work plan's away lane"
+/// was committed, then skipped by the indexer without a word, and no command
+/// could find it. The frontmatter reader took the apostrophe for an opening
+/// quote that never closed. A title is prose; people write apostrophes.
+#[test]
+fn an_issue_titled_with_an_apostrophe_is_indexed_and_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut dit = workspace(dir.path());
+    let mut tx = dit.transaction("farid").unwrap();
+    let id = tx
+        .create_issue(draft("Work plan's away lane showed no leave"))
+        .unwrap();
+    tx.commit("create 1 issue").unwrap();
+    let report = dit.reindex(ReindexMode::All).unwrap();
+    assert_eq!(report.skipped, 0, "{report:?}");
+    assert_eq!(dit.resolve("#1").unwrap(), id);
+    let found = dit.query("", None).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(
+        found[0].issue.title,
+        "Work plan's away lane showed no leave"
+    );
+}
+
+/// A file the indexer cannot read is named, with why. The apostrophe bug was
+/// reported only as "1 file skipped": the issue was committed, no command
+/// found it, and nothing said which file or what was wrong with it.
+#[test]
+fn a_skipped_file_is_named_with_its_reason() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    let mut tx = dit.transaction("farid").unwrap();
+    let id = tx.create_issue(draft("Login timeout")).unwrap();
+    tx.commit("create 1 issue").unwrap();
+    let path = dit.get(id.as_str()).unwrap().unwrap().path;
+
+    // A hand edit that leaves a quote open.
+    let text = std::fs::read_to_string(tmp.path().join(&path)).unwrap();
+    std::fs::write(
+        tmp.path().join(&path),
+        text.replace("title: Login timeout", "title: \"Login timeout"),
+    )
+    .unwrap();
+    let repo = Repo::open(tmp.path()).unwrap();
+    repo.add(&path).unwrap();
+    repo.commit("hand edit").unwrap();
+
+    let report = dit.reindex(ReindexMode::All).unwrap();
+    assert_eq!(report.skipped, 1);
+    assert_eq!(report.skipped_files.len(), 1, "{report:?}");
+    assert_eq!(report.skipped_files[0].path, path);
+    assert!(
+        report.skipped_files[0].reason.contains("title"),
+        "the reason names the key: {:?}",
+        report.skipped_files[0].reason
+    );
+}
+
+/// ADR 0024: a green sync records where it was proven. The environment is
+/// part of the claim — the scenario above is proven on `local`, and nothing
+/// is said about any other environment until someone runs it there.
+#[test]
+fn a_green_sync_records_the_environment_it_was_proven_in() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, pin) = morse_workspace(tmp.path());
+    write_doc(
+        &mut dit,
+        "docs/api/register.md",
+        &SCENARIO.replace("PIN", &pin),
+    );
+    let port = serve(vec![
+        (201, r#"{"data":{"id":"u_7"}}"#),
+        (200, r#"{"token":"t0k"}"#),
+        (200, r#"{"id":"u_7"}"#),
+    ]);
+    point_at(tmp.path(), port);
+
+    let synced = dit.morse_sync("register", None, "farid").unwrap();
+    assert!(synced.run.passed());
+    assert_eq!(synced.env, "local", "the fence's env: names where it ran");
+
+    let body = dit.read_doc("docs/api/register.md").unwrap();
+    let fence = dit_parse::morse_fences(&body).remove(0);
+    let parsed = dit_parse::parse_morse_scenario(&fence.body).unwrap();
+    assert_eq!(parsed.proven.len(), 1, "{body}");
+    assert_eq!(parsed.proven[0].env, "local");
+    assert_eq!(parsed.proven[0].commit, synced.moved_to.clone().unwrap());
+    assert_eq!(parsed.proven[0].on.len(), "2026-09-27".len());
+    assert!(body.contains("# Register"), "the prose is intact: {body}");
+}
+
+#[test]
+fn a_red_sync_records_no_proof() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, pin) = morse_workspace(tmp.path());
+    write_doc(
+        &mut dit,
+        "docs/api/register.md",
+        &SCENARIO.replace("PIN", &pin),
+    );
+    let port = serve(vec![(500, r#"{"error":"boom"}"#)]);
+    point_at(tmp.path(), port);
+
+    let synced = dit.morse_sync("register", None, "farid").unwrap();
+    assert!(!synced.run.passed());
+    let body = dit.read_doc("docs/api/register.md").unwrap();
+    assert!(!body.contains("proven:"), "{body}");
+}
+
+/// ADR 0024: a proof is judged like the pin. Fresh while the spec stands
+/// where it was proven, stale the moment the spec moves — and the other
+/// environment, never proven, is simply absent rather than assumed.
+#[test]
+fn a_proof_reads_fresh_until_the_spec_moves() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, pin) = morse_workspace(tmp.path());
+    write_doc(
+        &mut dit,
+        "docs/api/register.md",
+        &SCENARIO.replace("PIN", &pin),
+    );
+    let port = serve(vec![
+        (201, r#"{"data":{"id":"u_7"}}"#),
+        (200, r#"{"token":"t0k"}"#),
+        (200, r#"{"id":"u_7"}"#),
+    ]);
+    point_at(tmp.path(), port);
+    assert!(dit
+        .morse_sync("register", None, "farid")
+        .unwrap()
+        .run
+        .passed());
+    dit.reindex(ReindexMode::All).unwrap();
+
+    let proofs = dit.morse_report().unwrap().scenarios[0].proofs.clone();
+    assert_eq!(proofs.len(), 1, "{proofs:?}");
+    assert_eq!(proofs[0].env, "local");
+    assert!(proofs[0].holds(), "{proofs:?}");
+
+    let repo = Repo::open(tmp.path()).unwrap();
+    std::fs::write(
+        tmp.path().join("api/openapi.yaml"),
+        format!("{SPEC_V1}  /health:\n    get:\n      operationId: health\n"),
+    )
+    .unwrap();
+    repo.add(".").unwrap();
+    repo.commit("add a health endpoint").unwrap();
+    dit.reindex(ReindexMode::All).unwrap();
+
+    let proofs = dit.morse_report().unwrap().scenarios[0].proofs.clone();
+    assert_eq!(
+        proofs[0].health,
+        dit_core::ProofHealth::Stale { commits: 1 }
+    );
+    assert!(!proofs[0].holds());
+}
+
+/// ADR 0024, end to end: with `proof: required`, an issue whose blockers are
+/// done is still held back until the scenario it needs holds for its env.
+/// This is the week the table in the ADR describes — "done upstream" kept
+/// turning a downstream issue ready against a seam that did not answer.
+#[test]
+fn proof_required_holds_an_issue_until_its_scenario_is_proven_in_its_env() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, pin) = morse_workspace(tmp.path());
+    write_doc(
+        &mut dit,
+        "docs/api/register.md",
+        &SCENARIO.replace("PIN", &pin),
+    );
+    let mut wf = dit_model::Workflow::default_workflow();
+    wf.coordination.readiness.proof = dit_model::ProofMode::Required;
+    let repo = Repo::open(tmp.path()).unwrap();
+    std::fs::create_dir_all(tmp.path().join(".dit/schema")).unwrap();
+    std::fs::write(
+        tmp.path().join(".dit/schema/workflow.yaml"),
+        dit_parse::write_workflow(&wf),
+    )
+    .unwrap();
+    repo.add(".").unwrap();
+    repo.commit("ask for proof").unwrap();
+    dit.reindex(ReindexMode::All).unwrap();
+
+    let screen = issue_with(
+        &mut dit,
+        "Sign-up screen",
+        dit_core::FieldPatch {
+            needs_scenarios: Some(vec!["register".into()]),
+            env: Some("local".into()),
+            ..Default::default()
+        },
+    );
+    let ready = dit.ready(None, None).unwrap();
+    assert!(ready.iter().all(|r| r.issue.issue.id != screen), "unproven");
+    let held = dit.unproven(None).unwrap();
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(held[0].issue.issue.id, screen);
+    assert_eq!(
+        held[0].readiness,
+        dit_model::Readiness::Unproven {
+            scenarios: vec!["register".into()]
+        }
+    );
+
+    let port = serve(vec![
+        (201, r#"{"data":{"id":"u_7"}}"#),
+        (200, r#"{"token":"t0k"}"#),
+        (200, r#"{"id":"u_7"}"#),
+    ]);
+    point_at(tmp.path(), port);
+    assert!(dit
+        .morse_sync("register", None, "farid")
+        .unwrap()
+        .run
+        .passed());
+    dit.reindex(ReindexMode::All).unwrap();
+
+    let ready = dit.ready(None, None).unwrap();
+    assert!(
+        ready.iter().any(|r| r.issue.issue.id == screen),
+        "proven now"
+    );
+    assert!(dit.unproven(None).unwrap().is_empty());
+}
+
+/// `dit ai spec` names every rules file an agent must read: this workspace's
+/// own, nested ones, and those of each linked code repository (read from its
+/// HEAD, never checked out). A committed file is what counts — an untracked
+/// draft in the working tree is nobody's rule yet.
+#[test]
+fn the_agent_spec_names_the_rules_files_here_and_in_linked_repos() {
+    let tmp = tempfile::tempdir().unwrap();
+    let backend = tmp.path().join("backend");
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir_all(&backend).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+
+    let code = Repo::init(&backend).unwrap();
+    code.set_identity("DIT Test", "dit@test.local").unwrap();
+    std::fs::create_dir_all(backend.join("services/auth")).unwrap();
+    std::fs::write(backend.join("services/auth/AGENTS.md"), "# rules\n").unwrap();
+    std::fs::write(backend.join("README.md"), "# backend\n").unwrap();
+    code.add(".").unwrap();
+    code.commit("rules").unwrap();
+
+    let _ = workspace(&ws);
+    std::fs::write(ws.join("CLAUDE.md"), "# workspace rules\n").unwrap();
+    std::fs::create_dir_all(ws.join("apps/web")).unwrap();
+    std::fs::write(ws.join("apps/web/CLAUDE.md"), "# web rules\n").unwrap();
+    std::fs::create_dir_all(ws.join(".dit")).unwrap();
+    std::fs::write(
+        ws.join(".dit/config.yaml"),
+        format!(
+            "schema_version: 1\nlayout: root\nnumbering: local\nrepos:\n  - {{ name: backend, remote: \"{}\" }}\n",
+            backend.display()
+        ),
+    )
+    .unwrap();
+    let repo = Repo::open(&ws).unwrap();
+    repo.add(".").unwrap();
+    repo.commit("rules and a linked repo").unwrap();
+    // Untracked: in the working tree only, not yet anybody's rule.
+    std::fs::write(ws.join("AGENTS.md"), "draft").unwrap();
+
+    let dit = Dit::open(&ws).unwrap();
+    let spec = dit.agent_spec();
+    assert!(spec.contains("- `CLAUDE.md`\n"), "{spec}");
+    assert!(spec.contains("- `apps/web/CLAUDE.md`\n"), "{spec}");
+    assert!(
+        spec.contains("- backend: `services/auth/AGENTS.md`\n"),
+        "{spec}"
+    );
+    assert!(!spec.contains("README"), "only rules files are listed");
+    assert!(
+        !spec.contains("- `AGENTS.md`"),
+        "an untracked draft is not listed"
+    );
+}
+
+/// `dit ai init` in a repository that is not a DIT workspace is refused with
+/// the command that makes it one. Writing a guide to a workspace that does
+/// not exist left agents following rules for issues no command could create,
+/// and an untracked `.dit-cache/` behind.
+#[test]
+fn agent_docs_refuse_a_repository_that_is_not_a_workspace() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    std::fs::write(tmp.path().join("CLAUDE.md"), "# rules\n").unwrap();
+    assert!(!Dit::is_workspace(tmp.path()).unwrap());
+
+    let err = dit
+        .write_agent_docs(&dit_core::AgentDocOptions::default())
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("dit init"), "{msg}");
+    assert!(msg.contains("--ai"), "{msg}");
+    assert!(!tmp.path().join("docs/dit-for-agents.md").exists());
+    let claude = std::fs::read_to_string(tmp.path().join("CLAUDE.md")).unwrap();
+    assert_eq!(claude, "# rules\n", "nothing written before the refusal");
 }

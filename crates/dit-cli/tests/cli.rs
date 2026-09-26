@@ -491,3 +491,69 @@ fn renumber_backfills_legacy_issues_without_moving_existing_numbers() {
     );
     assert!(stdout(&dit(tmp.path(), &["status"])).contains("(clean)"));
 }
+
+/// `dit ai init` outside a workspace is refused, names the command that makes
+/// one, and leaves nothing behind — not a guide, not a `.dit-cache/`.
+#[test]
+fn ai_init_outside_a_workspace_is_refused_and_writes_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(tmp.path())
+            .output()
+            .unwrap()
+    };
+    git(&["init", "-q"]);
+    std::fs::write(tmp.path().join("CLAUDE.md"), "# rules\n").unwrap();
+
+    let out = dit(tmp.path(), &["ai", "init"]);
+    assert!(!out.status.success());
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(said.contains("dit init"), "{said}");
+    assert!(said.contains("--ai"), "{said}");
+    assert!(!tmp.path().join("docs/dit-for-agents.md").exists());
+    assert!(
+        !tmp.path().join(".dit-cache").exists(),
+        "no cache left behind"
+    );
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("CLAUDE.md")).unwrap(),
+        "# rules\n"
+    );
+}
+
+/// `dit init --ai` makes the workspace and installs the agent guide in one
+/// step: the workspace first, so the guide describes something that exists.
+#[test]
+fn init_with_ai_creates_the_workspace_and_installs_the_guide() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("CLAUDE.md"), "# rules\n").unwrap();
+    let out = dit(tmp.path(), &["init", "--ai"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(tmp.path().join(".dit/config.yaml").exists());
+    assert!(tmp.path().join("docs/dit-for-agents.md").exists());
+    let claude = std::fs::read_to_string(tmp.path().join("CLAUDE.md")).unwrap();
+    assert!(claude.starts_with("# rules\n"), "{claude}");
+    assert!(
+        claude.contains("Never edit an issue file by hand"),
+        "{claude}"
+    );
+}
+
+#[test]
+fn ai_spec_prints_a_topic_and_names_the_topics_it_does_not_know() {
+    let tmp = tempfile::tempdir().unwrap();
+    assert!(dit(tmp.path(), &["init"]).status.success());
+    let morse = dit(tmp.path(), &["ai", "spec", "morse"]);
+    assert!(morse.status.success(), "{}", stderr(&morse));
+    assert!(stdout(&morse).contains("dit-morse"), "{}", stdout(&morse));
+
+    let bad = dit(tmp.path(), &["ai", "spec", "nonsense"]);
+    assert!(!bad.status.success());
+    let said = format!("{}{}", stdout(&bad), stderr(&bad));
+    assert!(
+        said.contains("issues") && said.contains("flow") && said.contains("morse"),
+        "{said}"
+    );
+}

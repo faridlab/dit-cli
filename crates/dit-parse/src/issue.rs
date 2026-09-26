@@ -116,6 +116,9 @@ pub fn issue_from_document(doc: &Document) -> Result<Issue, IssueParseError> {
         .collect::<Result<_, _>>()?;
     let lane = scalar(doc, "lane")?.filter(|s| !s.is_empty());
     let flows = doc.get_list("flows").unwrap_or_default().to_vec();
+    let needs_scenarios = doc.get_list("needs_scenarios").unwrap_or_default().to_vec();
+    let proves = doc.get_list("proves").unwrap_or_default().to_vec();
+    let env = scalar(doc, "env")?.filter(|s| !s.is_empty());
     let claimed_by = scalar(doc, "claimed_by")?.filter(|s| !s.is_empty());
     let claimed_at = match scalar(doc, "claimed_at")?.filter(|s| !s.is_empty()) {
         Some(at) => {
@@ -147,6 +150,9 @@ pub fn issue_from_document(doc: &Document) -> Result<Issue, IssueParseError> {
         fed_by,
         lane,
         flows,
+        needs_scenarios,
+        proves,
+        env,
         claimed_by,
         claimed_at,
         body,
@@ -284,6 +290,7 @@ pub fn apply_patch(
             ClearableField::Due => patch.due.is_some(),
             ClearableField::Start => patch.start.is_some(),
             ClearableField::Lane => patch.lane.is_some(),
+            ClearableField::Env => patch.env.is_some(),
             ClearableField::ClaimedBy => patch.claimed_by.is_some(),
             ClearableField::ClaimedAt => patch.claimed_at.is_some(),
         };
@@ -378,6 +385,18 @@ pub fn apply_patch(
         doc.set_raw("flows", &serialize_seq(f));
         touched.push("flows");
     }
+    if let Some(n) = &patch.needs_scenarios {
+        doc.set_raw("needs_scenarios", &serialize_seq(n));
+        touched.push("needs_scenarios");
+    }
+    if let Some(p) = &patch.proves {
+        doc.set_raw("proves", &serialize_seq(p));
+        touched.push("proves");
+    }
+    if let Some(e) = &patch.env {
+        doc.set_raw("env", &serialize_scalar(e));
+        touched.push("env");
+    }
     if let Some(c) = &patch.claimed_by {
         doc.set_raw("claimed_by", &serialize_scalar(c));
         touched.push("claimed_by");
@@ -471,6 +490,56 @@ mod tests {
         assert_eq!(issue.lane.as_deref(), Some("frontend"));
         assert_eq!(issue.claimed_by.as_deref(), Some("fe-1"));
         assert_eq!(issue.claimed_at.as_deref(), Some("2026-08-16T11:38:00Z"));
+    }
+
+    // ADR 0024: an issue names the seams it needs proven, the seams it
+    // proves, and the environment its lane works against. Names only.
+    #[test]
+    fn parses_and_patches_the_seam_fields() {
+        let file = "---\
+\nid: 01K3M9ZXQ2R7VN8P4TDBCEFGHJ\
+\ntitle: Download the payslip\
+\ntype: task\
+\nstatus: todo\
+\ncreated: 2026-08-16T09:12:00Z\
+\nupdated: 2026-08-16T11:40:00Z\
+\nneeds_scenarios: [payslip-pdf]\
+\nenv: local-hrperf\
+\n---\
+\n\nBody.\
+\n";
+        let (issue, _) = parse_issue(file).unwrap();
+        assert_eq!(issue.needs_scenarios, vec!["payslip-pdf"]);
+        assert!(issue.proves.is_empty());
+        assert_eq!(issue.env.as_deref(), Some("local-hrperf"));
+
+        let mut doc = Document::parse(FILE).unwrap();
+        let patch = FieldPatch {
+            proves: Some(vec!["payslip-pdf".into(), "announcements-list".into()]),
+            env: Some("local".into()),
+            ..FieldPatch::default()
+        };
+        let touched = apply_patch(&mut doc, &patch, "2026-08-17T09:00:00Z").unwrap();
+        assert!(
+            touched.contains(&"proves") && touched.contains(&"env"),
+            "{touched:?}"
+        );
+        let text = doc.to_string();
+        assert!(
+            text.contains("proves: [payslip-pdf, announcements-list]\n"),
+            "{text}"
+        );
+        assert!(text.contains("env: local\n"), "{text}");
+
+        let clear = FieldPatch {
+            clear: vec![ClearableField::Env],
+            proves: Some(vec![]),
+            ..FieldPatch::default()
+        };
+        apply_patch(&mut doc, &clear, "2026-08-17T09:30:00Z").unwrap();
+        let text = doc.to_string();
+        assert!(!text.contains("env:"), "{text}");
+        assert!(text.contains("proves: []\n"), "{text}");
     }
 
     #[test]

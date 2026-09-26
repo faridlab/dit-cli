@@ -13,7 +13,7 @@
 
 use std::path::Path;
 
-use dit_index::{StoredMorseScenario, StoredMorseSpec};
+use dit_index::{StoredMorseProof, StoredMorseScenario, StoredMorseSpec};
 use dit_model::{
     Capture, Expect, MorseScenario, MorseStep, MorseValue, OperationRef, SpecEntry, StepTarget,
 };
@@ -87,6 +87,56 @@ pub struct MorseScenarioView {
     /// reindex. Derived and disposable (§20.7) — it says what one machine
     /// saw at one moment, which is why it never reaches a file.
     pub last_run: Option<LastRun>,
+    /// Where it was proven green, one per environment, each judged against
+    /// the spec as it stands (ADR 0024).
+    pub proofs: Vec<ProofView>,
+}
+
+/// One environment's proof, as `check`, the screen and readiness read it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProofView {
+    pub env: String,
+    pub commit: String,
+    pub on: String,
+    pub health: ProofHealth,
+}
+
+/// Whether a proof still speaks for the spec as it stands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProofHealth {
+    /// Proven against the spec at its current state.
+    Fresh,
+    /// The spec has moved `commits` times since it was proven.
+    Stale { commits: usize },
+    /// The proof cannot be judged: its commit is not in the spec's history,
+    /// or the spec could not be read.
+    Broken { reason: String },
+}
+
+impl ProofView {
+    /// Proven for the spec as it stands — what readiness asks (ADR 0024).
+    pub fn holds(&self) -> bool {
+        self.health == ProofHealth::Fresh
+    }
+}
+
+fn proof_view(p: StoredMorseProof) -> ProofView {
+    let health = match (&p.broken, p.stale_by) {
+        (Some(reason), _) => ProofHealth::Broken {
+            reason: reason.clone(),
+        },
+        (None, Some(0)) => ProofHealth::Fresh,
+        (None, Some(commits)) => ProofHealth::Stale { commits },
+        (None, None) => ProofHealth::Broken {
+            reason: "the spec's repository could not be read to judge it".to_owned(),
+        },
+    };
+    ProofView {
+        env: p.env,
+        commit: p.commit,
+        on: p.on,
+        health,
+    }
 }
 
 /// A run, reduced to what a screen shows.
@@ -165,8 +215,17 @@ impl Dit {
             });
         }
 
+        let mut proofs_by: std::collections::HashMap<String, Vec<ProofView>> =
+            std::collections::HashMap::new();
+        for p in self.index.morse_proofs()? {
+            proofs_by
+                .entry(p.scenario.clone())
+                .or_default()
+                .push(proof_view(p));
+        }
         let mut scenarios = Vec::new();
         for stored in self.index.morse_scenarios()? {
+            let proofs = proofs_by.remove(&stored.scenario).unwrap_or_default();
             let last_run = self.index.morse_run(&stored.scenario)?;
             let parsed = dit_parse::parse_morse_scenario(&stored.body).ok();
             let health = if let Some(detail) = &stored.problem {
@@ -202,6 +261,7 @@ impl Dit {
                     refused: row.refused,
                     steps: row.steps.lines().filter_map(parse_run_line).collect(),
                 }),
+                proofs,
             });
         }
         Ok(MorseReport { specs, scenarios })
@@ -359,6 +419,20 @@ impl Dit {
             reasons.extend(unbound_reasons(&scenario));
 
             let mut stale_by = None;
+            // Each proof is judged like the pin: how far the spec has moved
+            // since the commit it was proven against (ADR 0024).
+            let mut proofs: Vec<StoredMorseProof> = scenario
+                .proven
+                .iter()
+                .map(|p| StoredMorseProof {
+                    scenario: row.scenario.clone(),
+                    env: p.env.clone(),
+                    commit: p.commit.clone(),
+                    on: p.on.clone(),
+                    stale_by: None,
+                    broken: None,
+                })
+                .collect();
             match entry {
                 None => reasons.push(format!(
                     "`spec: {}` is not registered — add it under `specs:` in .dit/config.yaml",
@@ -379,11 +453,23 @@ impl Dit {
                                 .commits_touching_since(&scenario.spec.commit, &entry.path)
                                 .ok();
                         }
+                        for proof in &mut proofs {
+                            if repo.has_commit(&proof.commit) {
+                                proof.stale_by =
+                                    repo.commits_touching_since(&proof.commit, &entry.path).ok();
+                            } else {
+                                proof.broken = Some(format!(
+                                    "proven against `{}`, which is not in the repo holding `{}`",
+                                    proof.commit, scenario.spec.id
+                                ));
+                            }
+                        }
                     }
                 },
             }
             self.index
                 .set_morse_health(&row.scenario, stale_by, &reasons)?;
+            self.index.replace_morse_proofs(&row.scenario, &proofs)?;
         }
         Ok(())
     }
@@ -475,6 +561,9 @@ pub struct SyncOutcome {
     pub moved_to: Option<String>,
     /// The document the pin lives in, so a caller can say what it changed.
     pub path: String,
+    /// The environment the run was proven in — `--env`, else the fence's
+    /// `env:`, else `default`. A green sync records a proof under it.
+    pub env: String,
 }
 
 impl Dit {
@@ -549,15 +638,20 @@ impl Dit {
     ) -> Result<SyncOutcome, DitError> {
         let run = self.morse_run(scenario, env)?;
         let stored = self.stored_scenario(scenario)?;
+        let parsed = dit_parse::parse_morse_scenario(&stored.body)
+            .map_err(|e| DitError::Refuse(format!("scenario `{scenario}`: {e}")))?;
+        let env_name = env
+            .or(parsed.env.as_deref())
+            .unwrap_or("default")
+            .to_owned();
         if !run.passed() {
             return Ok(SyncOutcome {
                 run,
                 moved_to: None,
                 path: stored.path,
+                env: env_name,
             });
         }
-        let parsed = dit_parse::parse_morse_scenario(&stored.body)
-            .map_err(|e| DitError::Refuse(format!("scenario `{scenario}`: {e}")))?;
         let entry = self.spec_entry(&parsed.spec.id)?;
         let repo = self.spec_repo(&entry).map_err(DitError::Refuse)?;
         let head = repo
@@ -566,22 +660,30 @@ impl Dit {
             .map_err(|e| DitError::Refuse(format!("the spec's repo has no HEAD: {e}")))?;
 
         let body = self.read_doc(&stored.path)?;
-        let updated = repin(&body, scenario, &head).ok_or_else(|| {
+        let repinned = repin(&body, scenario, &head).ok_or_else(|| {
             DitError::Refuse(format!(
                 "the `commit:` of scenario `{scenario}` could not be found in {}",
+                stored.path
+            ))
+        })?;
+        let today = time::OffsetDateTime::now_utc().date().to_string();
+        let updated = reprove(&repinned, scenario, &env_name, &head, &today).ok_or_else(|| {
+            DitError::Refuse(format!(
+                "the fence of scenario `{scenario}` could not be found in {}",
                 stored.path
             ))
         })?;
         let mut tx = self.transaction(author)?;
         tx.write_doc(&stored.path, &updated)?;
         tx.commit(&format!(
-            "dit morse sync {scenario}: verified green against {}",
+            "dit morse sync {scenario}: verified green on {env_name} against {}",
             &head[..7.min(head.len())]
         ))?;
         Ok(SyncOutcome {
             run,
             moved_to: Some(head),
             path: stored.path,
+            env: env_name,
         })
     }
 
@@ -925,6 +1027,7 @@ impl Dit {
             requires: Vec::new(),
             requests: Vec::new(),
             steps: vec![step],
+            proven: Vec::new(),
         };
         require_unbound(&mut scenario);
         refuse_secrets(&scenario)?;
@@ -1152,6 +1255,74 @@ fn repin(document: &str, scenario: &str, commit: &str) -> Option<String> {
     done.then_some(out)
 }
 
+/// Record that one scenario was proven green in `env` (ADR 0024): set that
+/// environment's line under the fence's `proven:` block, adding the block at
+/// the end of the fence when there is none. Every other line — other
+/// environments, comments, prose outside the fence — is left byte for byte,
+/// for the reason `repin` gives. `None` when no fence names `scenario`.
+fn reprove(document: &str, scenario: &str, env: &str, commit: &str, on: &str) -> Option<String> {
+    let lines: Vec<&str> = document.split_inclusive('\n').collect();
+    // Find the opening and closing lines of the fence that names `scenario`.
+    let mut ours: Option<(usize, usize)> = None;
+    let mut open: Option<usize> = None;
+    let mut named = false;
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            match open {
+                Some(start) => {
+                    if named {
+                        ours = Some((start, i));
+                        break;
+                    }
+                    open = None;
+                }
+                None if trimmed.trim_start_matches('`').trim() == dit_parse::MORSE_FENCE => {
+                    open = Some(i);
+                    named = false;
+                }
+                None => {}
+            }
+            continue;
+        }
+        if open.is_some() && trimmed.starts_with("scenario:") {
+            let name = trimmed["scenario:".len()..]
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'');
+            named = name == scenario;
+        }
+    }
+    let (start, close) = ours?;
+    let entry = format!("  {env}: {{ commit: {commit}, on: {on} }}\n");
+
+    let mut out: Vec<String> = lines.iter().map(|l| (*l).to_owned()).collect();
+    let block = (start + 1..close).find(|&i| lines[i].trim_end() == "proven:");
+    match block {
+        Some(at) => {
+            let mut end = at + 1;
+            while end < close && lines[end].starts_with([' ', '\t']) {
+                end += 1;
+            }
+            let prefix = format!("{env}:");
+            match (at + 1..end).find(|&i| lines[i].trim_start().starts_with(&prefix)) {
+                Some(i) => out[i] = entry,
+                None => out.insert(end, entry),
+            }
+        }
+        None => {
+            if let Some(last) = out.get_mut(close - 1) {
+                if !last.ends_with('\n') {
+                    last.push('\n');
+                }
+            }
+            out.insert(close, entry);
+            out.insert(close, "proven:\n".to_owned());
+        }
+    }
+    Some(out.concat())
+}
+
 /// Swap the value of `commit:` inside a `spec: { id: .., commit: .. }` line.
 fn replace_commit(line: &str, commit: &str) -> Option<String> {
     let at = line.find("commit:")?;
@@ -1201,5 +1372,52 @@ mod body_json_tests {
         let value = morse_value_from_json(text).unwrap();
         assert_eq!(morse_value_to_json(&value), text);
         assert!(morse_value_from_json("{ nope").is_err());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod reprove_tests {
+    use super::*;
+
+    const DOC: &str = "# Pay\n\n```dit-morse\nscenario: slip-pdf\nspec: { id: payroll, commit: a3f9c2d }\nsteps:\n  - id: pdf\n    operation: payroll/getSalarySlip\n```\n\nProse after.\n";
+
+    #[test]
+    fn a_first_proof_adds_the_block_inside_the_fence() {
+        let out = reprove(DOC, "slip-pdf", "local-hrperf", "b7e0d11", "2026-09-27").unwrap();
+        assert!(
+            out.contains("    operation: payroll/getSalarySlip\nproven:\n  local-hrperf: { commit: b7e0d11, on: 2026-09-27 }\n```\n"),
+            "{out}"
+        );
+        assert!(out.ends_with("Prose after.\n"));
+    }
+
+    #[test]
+    fn proving_the_same_environment_again_replaces_its_line() {
+        let once = reprove(DOC, "slip-pdf", "local", "a3f9c2d", "2026-09-26").unwrap();
+        let twice = reprove(&once, "slip-pdf", "local", "c1c1c1c", "2026-09-28").unwrap();
+        assert!(
+            twice.contains("  local: { commit: c1c1c1c, on: 2026-09-28 }\n"),
+            "{twice}"
+        );
+        assert_eq!(twice.matches("  local:").count(), 1, "{twice}");
+    }
+
+    #[test]
+    fn another_environment_joins_the_block_and_leaves_the_first() {
+        let once = reprove(DOC, "slip-pdf", "local", "a3f9c2d", "2026-09-26").unwrap();
+        let both = reprove(&once, "slip-pdf", "local-hrperf", "b7e0d11", "2026-09-27").unwrap();
+        assert!(
+            both.contains("proven:\n  local: { commit: a3f9c2d, on: 2026-09-26 }\n  local-hrperf: { commit: b7e0d11, on: 2026-09-27 }\n```"),
+            "{both}"
+        );
+        let fence = dit_parse::morse_fences(&both).remove(0);
+        let parsed = dit_parse::parse_morse_scenario(&fence.body).unwrap();
+        assert_eq!(parsed.proven.len(), 2);
+    }
+
+    #[test]
+    fn another_scenario_s_fence_is_left_alone() {
+        assert!(reprove(DOC, "someone-else", "local", "a3f9c2d", "2026-09-26").is_none());
     }
 }

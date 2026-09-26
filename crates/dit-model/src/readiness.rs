@@ -8,7 +8,7 @@ use time::OffsetDateTime;
 
 use crate::ids::IssueId;
 use crate::time::parse_rfc3339;
-use crate::workflow::{Gate, Workflow};
+use crate::workflow::{Gate, ProofMode, Workflow};
 
 /// Is this issue pickable right now? Computed from the issue's own status and
 /// its blockers' statuses — one engine, read by `dit ready` and the workflow
@@ -28,6 +28,37 @@ pub enum Readiness {
         unsatisfied: Vec<IssueId>,
         broken: Vec<IssueId>,
     },
+    /// Every blocker is through the gate, but the workflow asks for proof
+    /// (ADR 0024) and these scenarios do not hold for the issue's `env`:
+    /// done upstream is not yet usable here.
+    Unproven { scenarios: Vec<String> },
+}
+
+/// Hold a ready issue back until what it needs is proven (ADR 0024). Only a
+/// `Ready` issue can be held — a blocked one stays blocked, a picked one is
+/// not pickable either way. `holds(scenario, env)` answers from derived
+/// proof; an issue with no `env` has nowhere for anything to be proven, so
+/// every scenario it needs is unmet. Pure: the caller supplies the answers.
+pub fn apply_proof(
+    readiness: Readiness,
+    needs: &[String],
+    env: Option<&str>,
+    mode: ProofMode,
+    holds: impl Fn(&str, &str) -> bool,
+) -> Readiness {
+    if readiness != Readiness::Ready || mode == ProofMode::Off || needs.is_empty() {
+        return readiness;
+    }
+    let unmet: Vec<String> = needs
+        .iter()
+        .filter(|s| !env.is_some_and(|e| holds(s, e)))
+        .cloned()
+        .collect();
+    if unmet.is_empty() {
+        Readiness::Ready
+    } else {
+        Readiness::Unproven { scenarios: unmet }
+    }
 }
 
 /// Derive readiness. `blockers` pairs each `blocked_by` entry with that
@@ -109,6 +140,79 @@ pub fn claim_liveness(
 mod tests {
     use super::*;
     use time::OffsetDateTime;
+
+    // ADR 0024: with `proof: required`, blockers through the gate are not
+    // enough — every scenario the issue needs must hold for its environment.
+    #[test]
+    fn a_ready_issue_is_held_back_until_its_scenarios_hold_in_its_env() {
+        let needs = vec!["payslip-pdf".to_owned(), "auth-refresh".to_owned()];
+        let holds = |scenario: &str, env: &str| scenario == "auth-refresh" && env == "local-hrperf";
+        let held = apply_proof(
+            Readiness::Ready,
+            &needs,
+            Some("local-hrperf"),
+            ProofMode::Required,
+            holds,
+        );
+        assert_eq!(
+            held,
+            Readiness::Unproven {
+                scenarios: vec!["payslip-pdf".to_owned()]
+            }
+        );
+        // Proven on another environment is not proven here.
+        let elsewhere = apply_proof(
+            Readiness::Ready,
+            &needs,
+            Some("local"),
+            ProofMode::Required,
+            holds,
+        );
+        assert!(matches!(elsewhere, Readiness::Unproven { scenarios } if scenarios.len() == 2));
+    }
+
+    #[test]
+    fn proof_changes_nothing_when_off_or_when_nothing_is_needed() {
+        let never = |_: &str, _: &str| false;
+        let needs = vec!["payslip-pdf".to_owned()];
+        assert_eq!(
+            apply_proof(
+                Readiness::Ready,
+                &needs,
+                Some("local"),
+                ProofMode::Off,
+                never
+            ),
+            Readiness::Ready
+        );
+        assert_eq!(
+            apply_proof(Readiness::Ready, &[], None, ProofMode::Required, never),
+            Readiness::Ready
+        );
+        // Only a ready issue is held for proof; a blocked one stays blocked.
+        assert_eq!(
+            apply_proof(
+                Readiness::NotPickable,
+                &needs,
+                Some("local"),
+                ProofMode::Required,
+                never
+            ),
+            Readiness::NotPickable
+        );
+    }
+
+    #[test]
+    fn with_no_env_nothing_can_be_proven_for_it() {
+        let always = |_: &str, _: &str| true;
+        let needs = vec!["payslip-pdf".to_owned()];
+        assert_eq!(
+            apply_proof(Readiness::Ready, &needs, None, ProofMode::Required, always),
+            Readiness::Unproven {
+                scenarios: vec!["payslip-pdf".to_owned()]
+            }
+        );
+    }
 
     fn blocker(suffix: char, status: &str) -> (IssueId, String) {
         // Same valid 26-char ULID shape, varied in the random tail so ids differ.

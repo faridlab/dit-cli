@@ -232,6 +232,20 @@ pub struct MorseScenario {
     /// Endpoints this scenario declares because no spec describes them.
     pub requests: Vec<InlineRequest>,
     pub steps: Vec<MorseStep>,
+    /// Where the chain was run green, one entry per environment (ADR 0024).
+    /// Written only by `dit morse sync`; never by reindex, the watcher or CI.
+    pub proven: Vec<Proof>,
+}
+
+/// "This scenario was run green in `env`, against the spec at `commit`, on
+/// `on`." A claim a person made by running it — the environment is part of
+/// the claim, because a chain green on one tenant says nothing of another.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Proof {
+    pub env: String,
+    pub commit: String,
+    /// The day it was proven, `YYYY-MM-DD`.
+    pub on: String,
 }
 
 /// A reference a scenario makes that nothing satisfies.
@@ -517,6 +531,7 @@ mod tests {
                 expect: Expect::default(),
                 capture: vec![],
             }],
+            proven: Vec::new(),
         }
     }
 
@@ -650,6 +665,7 @@ mod tests {
                 ),
                 step("me", Some(MorseValue::Str("{{token}}".into())), &[]),
             ],
+            proven: Vec::new(),
         };
         assert!(
             scenario.unbound_variables().is_empty(),
@@ -672,6 +688,7 @@ mod tests {
                 step("me", Some(MorseValue::Str("{{token}}".into())), &[]),
                 step("login", None, &[("token", "$.token")]),
             ],
+            proven: Vec::new(),
         };
         let unbound = scenario.unbound_variables();
         assert_eq!(unbound.len(), 1);
@@ -697,6 +714,7 @@ mod tests {
             requires: vec![],
             requests: vec![],
             steps: vec![fetch, step("create", None, &[("party_id", "$.data.id")])],
+            proven: Vec::new(),
         };
         let unbound = scenario.unbound_variables();
         assert_eq!(unbound.len(), 1, "{unbound:?}");
@@ -723,6 +741,7 @@ mod tests {
                 Some(MorseValue::Str("{{nowhere}}".into())),
                 &[],
             )],
+            proven: Vec::new(),
         };
         let unbound = scenario.unbound_variables();
         assert_eq!(unbound.len(), 1);

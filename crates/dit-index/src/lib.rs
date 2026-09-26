@@ -137,6 +137,21 @@ pub struct StoredMorseRun {
     pub steps: String,
 }
 
+/// A scenario's proof in one environment, as judged at reindex (ADR 0024).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredMorseProof {
+    pub scenario: String,
+    pub env: String,
+    /// The spec commit the run was green against.
+    pub commit: String,
+    /// The day it was proven, as written in the fence.
+    pub on: String,
+    /// Commits touching the spec since `commit`; `None` when that could not
+    /// be judged (the spec's repo unreadable, or `commit` not in it).
+    pub stale_by: Option<usize>,
+    pub broken: Option<String>,
+}
+
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS issues (
   id          TEXT PRIMARY KEY,
@@ -159,7 +174,8 @@ CREATE TABLE IF NOT EXISTS issues (
   claimed_at  TEXT,
   created     TEXT NOT NULL,
   updated     TEXT NOT NULL,
-  body        TEXT NOT NULL
+  body        TEXT NOT NULL,
+  env         TEXT
 );
 
 CREATE TABLE IF NOT EXISTS issue_assignees (
@@ -191,6 +207,19 @@ CREATE TABLE IF NOT EXISTS issue_flows (
   pos      INTEGER NOT NULL,
   flow     TEXT NOT NULL,
   PRIMARY KEY (issue_id, flow)
+);
+-- ADR 0024: the scenarios an issue needs proven, and the ones it proves.
+CREATE TABLE IF NOT EXISTS issue_needs_scenarios (
+  issue_id TEXT NOT NULL,
+  pos      INTEGER NOT NULL,
+  scenario TEXT NOT NULL,
+  PRIMARY KEY (issue_id, scenario)
+);
+CREATE TABLE IF NOT EXISTS issue_proves (
+  issue_id TEXT NOT NULL,
+  pos      INTEGER NOT NULL,
+  scenario TEXT NOT NULL,
+  PRIMARY KEY (issue_id, scenario)
 );
 
 CREATE TABLE IF NOT EXISTS releases (
@@ -293,6 +322,19 @@ CREATE TABLE IF NOT EXISTS morse_scenarios (
   broken   TEXT
 );
 
+-- Where each scenario was proven green, one row per environment (ADR 0024).
+-- The claim is authored in the fence by `dit morse sync`; how far the spec has
+-- moved since (`stale_by`) is judged at reindex, like the scenario's own pin.
+CREATE TABLE IF NOT EXISTS morse_proofs (
+  scenario  TEXT NOT NULL,
+  env       TEXT NOT NULL,
+  pin       TEXT NOT NULL,
+  proven_on TEXT NOT NULL,
+  stale_by  INTEGER,
+  broken    TEXT,
+  PRIMARY KEY (scenario, env)
+);
+
 -- One row per scenario: its most recent run. Cleared at reindex like the
 -- rest of the derived tier, and never written back to a file.
 CREATE TABLE IF NOT EXISTS morse_runs (
@@ -356,13 +398,13 @@ fn flag(on: bool) -> String {
 /// Bumped whenever the schema below changes shape. The index is disposable —
 /// an on-disk file stamped with an older version is dropped and rebuilt from
 /// git rather than migrated in place (§6: SQLite is only an index).
-const INDEX_VERSION: i64 = 7;
+const INDEX_VERSION: i64 = 8;
 
 /// The column list every issue SELECT shares, in a fixed order. Hand-written
 /// SELECTs drifting out of step with the schema is the known failure mode of
 /// this file, so there is exactly one list — pinned against `SCHEMA` by test.
 const ISSUE_SELECT: &str = "path, blob_sha, title, type, status, priority, reporter, epic, \
-     estimate, sprint, due, start, lane, claimed_by, claimed_at, created, updated, body, number";
+     estimate, sprint, due, start, lane, claimed_by, claimed_at, created, updated, body, number, env";
 
 /// The default row cap when a query names no limit. A cap exists because the
 /// API serves people, not exports; a workspace that genuinely holds more
@@ -437,6 +479,10 @@ impl Index {
                  DROP TABLE IF EXISTS morse_operations;
                  DROP TABLE IF EXISTS morse_scenarios;
                  DROP TABLE IF EXISTS morse_runs;
+                 DROP TABLE IF EXISTS morse_proofs;
+                 DROP TABLE IF EXISTS issue_flows;
+                 DROP TABLE IF EXISTS issue_needs_scenarios;
+                 DROP TABLE IF EXISTS issue_proves;
                  DROP TABLE IF EXISTS issues;",
             )?;
         }
@@ -468,8 +514,8 @@ impl Index {
         tx.execute(
             "INSERT INTO issues (id, number, path, blob_sha, short_ref, title, type, status, \
              priority, reporter, epic, estimate, sprint, due, start, lane, claimed_by, claimed_at, \
-             created, updated, body) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
+             created, updated, body, env) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
             params![
                 issue.id.as_str(),
                 issue.number,
@@ -492,6 +538,7 @@ impl Index {
                 issue.created,
                 issue.updated,
                 issue.body,
+                issue.env,
             ],
         )?;
         replace_set(
@@ -529,6 +576,20 @@ impl Index {
             &feeders,
         )?;
         replace_set(&tx, "issue_flows", "flow", issue.id.as_str(), &issue.flows)?;
+        replace_set(
+            &tx,
+            "issue_needs_scenarios",
+            "scenario",
+            issue.id.as_str(),
+            &issue.needs_scenarios,
+        )?;
+        replace_set(
+            &tx,
+            "issue_proves",
+            "scenario",
+            issue.id.as_str(),
+            &issue.proves,
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -555,6 +616,14 @@ impl Index {
         )?;
         tx.execute(
             "DELETE FROM issue_flows WHERE issue_id = ?1",
+            params![id.as_str()],
+        )?;
+        tx.execute(
+            "DELETE FROM issue_needs_scenarios WHERE issue_id = ?1",
+            params![id.as_str()],
+        )?;
+        tx.execute(
+            "DELETE FROM issue_proves WHERE issue_id = ?1",
             params![id.as_str()],
         )?;
         tx.execute(
@@ -905,13 +974,67 @@ impl Index {
     }
 
     pub fn clear_morse_scenarios(&mut self) -> Result<(), IndexError> {
+        self.conn.execute("DELETE FROM morse_proofs", [])?;
         self.conn.execute("DELETE FROM morse_scenarios", [])?;
         Ok(())
+    }
+
+    /// Set one scenario's proofs, replacing whatever was judged before.
+    pub fn replace_morse_proofs(
+        &mut self,
+        scenario: &str,
+        proofs: &[StoredMorseProof],
+    ) -> Result<(), IndexError> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "DELETE FROM morse_proofs WHERE scenario = ?1",
+            params![scenario],
+        )?;
+        for p in proofs {
+            tx.execute(
+                "INSERT OR REPLACE INTO morse_proofs \
+                 (scenario, env, pin, proven_on, stale_by, broken) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    scenario,
+                    p.env,
+                    p.commit,
+                    p.on,
+                    p.stale_by.map(|n| n as i64),
+                    p.broken
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every proof, by scenario then environment.
+    pub fn morse_proofs(&self) -> Result<Vec<StoredMorseProof>, IndexError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT scenario, env, pin, proven_on, stale_by, broken \
+             FROM morse_proofs ORDER BY scenario, env",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(StoredMorseProof {
+                scenario: r.get(0)?,
+                env: r.get(1)?,
+                commit: r.get(2)?,
+                on: r.get(3)?,
+                stale_by: r.get::<_, Option<i64>>(4)?.map(|n| n as usize),
+                broken: r.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// Forget the scenarios one document declared — what editing or deleting
     /// it means, before its current fences are re-read.
     pub fn clear_morse_scenarios_at(&mut self, path: &str) -> Result<(), IndexError> {
+        self.conn.execute(
+            "DELETE FROM morse_proofs WHERE scenario IN \
+             (SELECT scenario FROM morse_scenarios WHERE path = ?1)",
+            params![path],
+        )?;
         self.conn
             .execute("DELETE FROM morse_scenarios WHERE path = ?1", params![path])?;
         Ok(())
@@ -1136,9 +1259,13 @@ impl Index {
         let labels = self.set_for("issue_labels", "label", id)?;
         let blocked_by = self.set_for("issue_blocked_by", "blocked_by_id", id)?;
         let fed_by = self.set_for("issue_fed_by", "fed_by_id", id)?;
-        let flows = self.set_for("issue_flows", "flow", id)?;
+        let member = Memberships {
+            flows: self.set_for("issue_flows", "flow", id)?,
+            needs: self.set_for("issue_needs_scenarios", "scenario", id)?,
+            proves: self.set_for("issue_proves", "scenario", id)?,
+        };
         Ok(Some(hydrate(
-            id, cols, assignees, labels, blocked_by, fed_by, flows,
+            id, cols, assignees, labels, blocked_by, fed_by, member,
         )?))
     }
 
@@ -1177,9 +1304,13 @@ impl Index {
             let labels = self.set_for("issue_labels", "label", &id)?;
             let blocked_by = self.set_for("issue_blocked_by", "blocked_by_id", &id)?;
             let fed_by = self.set_for("issue_fed_by", "fed_by_id", &id)?;
-            let flows = self.set_for("issue_flows", "flow", &id)?;
+            let member = Memberships {
+                flows: self.set_for("issue_flows", "flow", &id)?,
+                needs: self.set_for("issue_needs_scenarios", "scenario", &id)?,
+                proves: self.set_for("issue_proves", "scenario", &id)?,
+            };
             found.push(hydrate(
-                &id, cols, assignees, labels, blocked_by, fed_by, flows,
+                &id, cols, assignees, labels, blocked_by, fed_by, member,
             )?);
         }
         Ok(found)
@@ -1764,6 +1895,16 @@ struct IssueCols {
     body: String,
     /// Selected last in every read shape. `None` = unassigned (ADR 0007).
     number: Option<u32>,
+    /// After `number`, so no earlier column moves (ADR 0024).
+    env: Option<String>,
+}
+
+/// The name lists an issue belongs to, read from their side tables: its
+/// flows (ADR 0019) and the scenarios it needs and proves (ADR 0024).
+struct Memberships {
+    flows: Vec<String>,
+    needs: Vec<String>,
+    proves: Vec<String>,
 }
 
 /// Row mapper when `path` is the first selected column.
@@ -1788,6 +1929,7 @@ fn issue_columns(r: &rusqlite::Row<'_>) -> rusqlite::Result<IssueCols> {
         updated: r.get(16)?,
         body: r.get(17)?,
         number: r.get::<_, Option<i64>>(18)?.map(|n| n as u32),
+        env: r.get(19)?,
     })
 }
 
@@ -1822,6 +1964,7 @@ fn issue_columns_with_skip(r: &rusqlite::Row<'_>, n: usize) -> IssueCols {
             .get::<_, Option<i64>>(n + 18)
             .unwrap_or(None)
             .map(|n| n as u32),
+        env: get_opt(19).unwrap_or(None),
     }
 }
 
@@ -1835,7 +1978,7 @@ fn hydrate(
     labels: Vec<String>,
     blocked_by: Vec<String>,
     fed_by: Vec<String>,
-    flows: Vec<String>,
+    member: Memberships,
 ) -> Result<IndexedIssue, IndexError> {
     let corrupt =
         |field: &str, raw: &str| IndexError::Corrupt(format!("field `{field}` holds `{raw}`"));
@@ -1882,10 +2025,13 @@ fn hydrate(
             blocked_by,
             fed_by,
             lane: cols.lane,
-            flows,
+            flows: member.flows,
             claimed_by: cols.claimed_by,
             claimed_at: cols.claimed_at,
             body: cols.body,
+            needs_scenarios: member.needs,
+            proves: member.proves,
+            env: cols.env,
         },
         path: cols.path,
         blob_sha: cols.blob_sha,
@@ -1923,6 +2069,9 @@ mod tests {
             claimed_by: None,
             claimed_at: None,
             body: "Users on 3G get logged out.".into(),
+            needs_scenarios: Vec::new(),
+            proves: Vec::new(),
+            env: None,
         }
     }
 
@@ -1946,6 +2095,32 @@ mod tests {
                 "ISSUE_SELECT names `{col}` but the issues table does not define it"
             );
         }
+    }
+
+    // ADR 0024: readiness reads these from the index, never from the file,
+    // so they must survive the round trip — a field read from the file and
+    // dropped by the index would make `proof: required` see nothing needed.
+    #[test]
+    fn seam_fields_round_trip_through_the_index() {
+        let mut idx = Index::in_memory().unwrap();
+        let mut issue = sample_issue(ID, "todo");
+        issue.needs_scenarios = vec!["payslip-pdf".into()];
+        issue.proves = vec!["announcements-list".into(), "auth-refresh".into()];
+        issue.env = Some("local-hrperf".into());
+        idx.upsert_issue(&issue, "p", "s").unwrap();
+
+        let got = idx.get_issue(&issue.id).unwrap().unwrap();
+        assert_eq!(got.issue.needs_scenarios, vec!["payslip-pdf"]);
+        assert_eq!(got.issue.proves, vec!["announcements-list", "auth-refresh"]);
+        assert_eq!(got.issue.env.as_deref(), Some("local-hrperf"));
+        let listed = idx
+            .search(&dql("status = todo"), None, OffsetDateTime::UNIX_EPOCH)
+            .unwrap();
+        assert_eq!(listed[0].issue.env.as_deref(), Some("local-hrperf"));
+        assert_eq!(listed[0].issue.needs_scenarios, vec!["payslip-pdf"]);
+
+        idx.remove_issue(&issue.id).unwrap();
+        assert!(idx.get_issue(&issue.id).unwrap().is_none());
     }
 
     #[test]
@@ -2173,6 +2348,60 @@ mod tests {
 
         index.clear_morse_scenarios_at("docs/a.md").unwrap();
         assert!(index.morse_scenarios().unwrap().is_empty());
+    }
+
+    // ADR 0024: proofs are judged per environment at reindex and read by
+    // readiness, so they live beside their scenario and go when it goes.
+    #[test]
+    fn proofs_are_kept_per_environment_and_go_with_their_scenario() {
+        let mut index = Index::in_memory().unwrap();
+        let scenario = StoredMorseScenario {
+            scenario: "slip-pdf".into(),
+            path: "docs/pay.md".into(),
+            line: 3,
+            spec_id: "payroll".into(),
+            pin: "a3f9c2d".into(),
+            env: None,
+            body: "scenario: slip-pdf".into(),
+            problem: None,
+            stale_by: Some(0),
+            broken: None,
+        };
+        index.upsert_morse_scenario(&scenario).unwrap();
+        let proof = |env: &str, stale: Option<usize>| StoredMorseProof {
+            scenario: "slip-pdf".into(),
+            env: env.into(),
+            commit: "a3f9c2d".into(),
+            on: "2026-09-27".into(),
+            stale_by: stale,
+            broken: None,
+        };
+        index
+            .replace_morse_proofs(
+                "slip-pdf",
+                &[proof("local", Some(0)), proof("local-hrperf", Some(2))],
+            )
+            .unwrap();
+        let stored = index.morse_proofs().unwrap();
+        assert_eq!(stored.len(), 2);
+        assert_eq!(stored[1].env, "local-hrperf");
+        assert_eq!(stored[1].stale_by, Some(2));
+
+        // Replacing is a replace, not an append.
+        index
+            .replace_morse_proofs("slip-pdf", &[proof("local", Some(0))])
+            .unwrap();
+        assert_eq!(index.morse_proofs().unwrap().len(), 1);
+
+        index.clear_morse_scenarios_at("docs/pay.md").unwrap();
+        assert!(index.morse_proofs().unwrap().is_empty());
+
+        index.upsert_morse_scenario(&scenario).unwrap();
+        index
+            .replace_morse_proofs("slip-pdf", &[proof("local", None)])
+            .unwrap();
+        index.clear_morse_scenarios().unwrap();
+        assert!(index.morse_proofs().unwrap().is_empty());
     }
 
     #[test]

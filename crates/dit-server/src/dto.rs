@@ -140,6 +140,12 @@ pub struct IssueDto {
     pub lane: Option<String>,
     /// The orchestrations this issue belongs to (ADR 0019), by name.
     pub flows: Vec<String>,
+    /// Scenarios that must be proven for `env` before this is ready (ADR 0024).
+    pub needs_scenarios: Vec<String>,
+    /// Scenarios this issue delivers (ADR 0024).
+    pub proves: Vec<String>,
+    /// The environment this issue works against, by name (ADR 0024).
+    pub env: Option<String>,
     /// Who claims exclusive intent (ADR 0015); absent = unclaimed. Liveness
     /// is derived client-side from `claimed_at` + the TTL in the schema.
     pub claimed_by: Option<String>,
@@ -420,6 +426,18 @@ pub struct FieldPatchDto {
     #[serde(default)]
     #[ts(optional)]
     pub flows: Option<Vec<String>>,
+    /// Replaces the set of scenarios this issue needs proven (ADR 0024).
+    #[serde(default)]
+    #[ts(optional)]
+    pub needs_scenarios: Option<Vec<String>>,
+    /// Replaces the set of scenarios this issue proves (ADR 0024).
+    #[serde(default)]
+    #[ts(optional)]
+    pub proves: Option<Vec<String>>,
+    /// The environment name; `null` or `""` clears it.
+    #[serde(default, deserialize_with = "double_option")]
+    #[ts(optional)]
+    pub env: Option<Option<String>>,
 }
 
 /// The claim request (ADR 0015): `{"action":"claim"}` plus the escape
@@ -1228,6 +1246,7 @@ pub fn flow_board_dto(board: &dit_core::FlowBoard) -> FlowBoardDto {
                     dit_core::Readiness::Ready => "ready".into(),
                     dit_core::Readiness::NotPickable => "not_pickable".into(),
                     dit_core::Readiness::Blocked { .. } => "blocked".into(),
+                    dit_core::Readiness::Unproven { .. } => "unproven".into(),
                 },
                 outside_blockers: n
                     .outside_blockers
@@ -1472,6 +1491,9 @@ pub fn issue_dto(issue: &Issue) -> IssueDto {
         fed_by: issue.fed_by.iter().map(|b| b.as_str().to_owned()).collect(),
         lane: issue.lane.clone(),
         flows: issue.flows.clone(),
+        needs_scenarios: issue.needs_scenarios.clone(),
+        proves: issue.proves.clone(),
+        env: issue.env.clone(),
         claimed_by: issue.claimed_by.clone(),
         claimed_at: issue.claimed_at.clone(),
         created: issue.created.clone(),
@@ -1717,6 +1739,7 @@ pub fn to_field_patch(dto: FieldPatchDto) -> Result<FieldPatch, String> {
     let start = tri_state(ClearableField::Start, &dto.start, blank, &mut clear).cloned();
     let lane = tri_state(ClearableField::Lane, &dto.lane, blank, &mut clear).cloned();
     let flows = dto.flows.clone();
+    let env = tri_state(ClearableField::Env, &dto.env, blank, &mut clear).cloned();
     let ids = |field: &Option<Vec<String>>| -> Result<Option<Vec<dit_core::IssueId>>, String> {
         match field {
             Some(ids) => Ok(Some(
@@ -1752,6 +1775,9 @@ pub fn to_field_patch(dto: FieldPatchDto) -> Result<FieldPatch, String> {
         fed_by,
         lane,
         flows,
+        needs_scenarios: dto.needs_scenarios,
+        proves: dto.proves,
+        env,
         // Claims are `POST /api/issues/{id}/claim`'s to write (ADR 0015) —
         // never a generic field edit.
         claimed_by: None,

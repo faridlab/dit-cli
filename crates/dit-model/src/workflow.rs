@@ -95,11 +95,13 @@ impl<'de> Deserialize<'de> for Gate {
 }
 
 /// Tuning for the readiness derivation. Defaults mirror the seed workflow:
-/// pick from `todo`, gate at `terminal`.
+/// pick from `todo`, gate at `terminal`, no proof asked.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadinessConfig {
     pub pick_from: StatusCategory,
     pub gate: Gate,
+    #[serde(default)]
+    pub proof: ProofMode,
 }
 
 impl Default for ReadinessConfig {
@@ -107,6 +109,28 @@ impl Default for ReadinessConfig {
         ReadinessConfig {
             pick_from: StatusCategory::Todo,
             gate: Gate::Terminal,
+            proof: ProofMode::Off,
+        }
+    }
+}
+
+/// Whether readiness asks for proof (ADR 0024). `Required`: an issue whose
+/// blockers are through the gate is still held back until every scenario in
+/// its `needs_scenarios` holds for its `env`. Off by default — today's
+/// behaviour, unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProofMode {
+    #[default]
+    Off,
+    Required,
+}
+
+impl ProofMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProofMode::Off => "off",
+            ProofMode::Required => "required",
         }
     }
 }
@@ -390,6 +414,7 @@ mod tests {
                 readiness: ReadinessConfig {
                     pick_from: crate::status::StatusCategory::Todo,
                     gate: Gate::Until("review".into()),
+                    proof: ProofMode::Off,
                 },
             },
             ..Workflow::default_workflow()

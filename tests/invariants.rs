@@ -256,6 +256,12 @@ const KNOWN_ISSUE_KEYS: &[&str] = &[
     // ADR 0019: authored orchestration membership, the same class as
     // `labels` — a set of names the issue belongs to.
     "flows",
+    // ADR 0024: authored seam intent — the scenarios an issue needs proven,
+    // the ones it delivers, and the environment its lane works against.
+    // Names, never addresses; whether a proof holds is derived at read time.
+    "needs_scenarios",
+    "proves",
+    "env",
     "created",
     "updated",
 ];

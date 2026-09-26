@@ -45,11 +45,11 @@ pub use layout::{
 };
 pub use morse::{
     path_params, variables_in, Capture, Expect, ExpectRule, InlineRequest, JsonCheck,
-    MorseScenario, MorseStep, MorseValue, OperationRef, Selector, SpecPin, StepTarget,
+    MorseScenario, MorseStep, MorseValue, OperationRef, Proof, Selector, SpecPin, StepTarget,
     SuspectedSecret, UnboundVariable, VAR_CLOSE, VAR_OPEN,
 };
 pub use openapi::{OpenApiSpec, SpecField, SpecOperation, SpecParam, SpecServer};
-pub use readiness::{claim_liveness, readiness, ClaimLiveness, Readiness};
+pub use readiness::{apply_proof, claim_liveness, readiness, ClaimLiveness, Readiness};
 pub use release::{
     validate_release_version, Release, ReleasePatch, ReleaseStatus, ReleaseVersionError,
 };
@@ -57,5 +57,5 @@ pub use status::{Status, StatusCategory};
 pub use time::{format_rfc3339, parse_rfc3339, validate_date, TimeError};
 pub use workflow::{
     resolve_status, Coordination, DerivedRule, DerivedSignal, DerivedStatusSignal, Gate, Lane,
-    ReadinessConfig, Transition, Workflow, WorkflowError, WorkflowStatus,
+    ProofMode, ReadinessConfig, Transition, Workflow, WorkflowError, WorkflowStatus,
 };

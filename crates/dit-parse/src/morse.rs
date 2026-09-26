@@ -11,7 +11,7 @@
 
 use dit_model::{
     Capture, Expect, ExpectRule, InlineRequest, JsonCheck, MorseScenario, MorseStep, MorseValue,
-    OperationRef, Selector, SpecPin, StepTarget,
+    OperationRef, Proof, Selector, SpecPin, StepTarget,
 };
 
 use crate::flowshape::{fences, Fence};
@@ -52,6 +52,8 @@ pub enum MorseError {
     NoScenario,
     #[error("`spec:` must name a registered spec and the commit it was checked against, as `{{ id, commit }}`")]
     BadSpec,
+    #[error("`proven.{env}` must say which commit it was proven against and when, as `{{ commit, on }}`")]
+    BadProof { env: String },
     #[error("`{0}` is not a key a DIT file may carry: a field naming something to run or fetch is remote code execution by pull request")]
     Forbidden(String),
     #[error("`steps:` must be a list of steps")]
@@ -195,6 +197,18 @@ pub fn parse_morse_scenario(text: &str) -> Result<MorseScenario, MorseError> {
         }
     }
 
+    let mut proven = Vec::new();
+    if let Some(Yaml::Map(entries)) = root.get("proven") {
+        for (env, node) in entries {
+            let bad = || MorseError::BadProof { env: env.clone() };
+            proven.push(Proof {
+                env: env.clone(),
+                commit: entry_str(node, "commit").ok_or_else(bad)?,
+                on: entry_str(node, "on").ok_or_else(bad)?,
+            });
+        }
+    }
+
     Ok(MorseScenario {
         scenario,
         spec,
@@ -202,6 +216,7 @@ pub fn parse_morse_scenario(text: &str) -> Result<MorseScenario, MorseError> {
         requires,
         requests,
         steps,
+        proven,
     })
 }
 
@@ -410,6 +425,43 @@ steps:
       jsonpath:
         $.id: "{{user_id}}"
 "#;
+
+    // ADR 0024: a proof names the environment it was run green in. One chain,
+    // several proofs — "proven on local" and "proven on local-hrperf" are
+    // different claims, and the second is the one a lane on hrperf needs.
+    #[test]
+    fn proofs_are_read_per_environment() {
+        let text = format!(
+            "{SCENARIO}proven:\n  local: {{ commit: a3f9c2d, on: 2026-09-26 }}\n  local-hrperf: {{ commit: b7e0d11, on: 2026-09-27 }}\n"
+        );
+        let s = parse_morse_scenario(&text).unwrap();
+        assert_eq!(
+            s.proven,
+            vec![
+                Proof {
+                    env: "local".into(),
+                    commit: "a3f9c2d".into(),
+                    on: "2026-09-26".into()
+                },
+                Proof {
+                    env: "local-hrperf".into(),
+                    commit: "b7e0d11".into(),
+                    on: "2026-09-27".into()
+                },
+            ]
+        );
+        assert!(parse_morse_scenario(SCENARIO).unwrap().proven.is_empty());
+    }
+
+    #[test]
+    fn a_proof_without_a_commit_is_refused_by_environment() {
+        let text = format!("{SCENARIO}proven:\n  local: {{ on: 2026-09-26 }}\n");
+        let err = parse_morse_scenario(&text).unwrap_err();
+        assert!(
+            matches!(&err, MorseError::BadProof { env } if env == "local"),
+            "{err:?}"
+        );
+    }
 
     #[test]
     fn a_scenario_carries_its_chain_in_order() {

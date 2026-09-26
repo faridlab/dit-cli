@@ -12,6 +12,8 @@
 //! something that would read back differently, the writer re-parses its own
 //! output and refuses when the two disagree, naming the field.
 
+use crate::quote::QuoteScan;
+
 use dit_model::{ExpectRule, MorseScenario, MorseStep, MorseValue, Selector, StepTarget};
 
 use crate::morse::{morse_fences, parse_morse_scenario, scenario_in_fence, MORSE_FENCE};
@@ -43,16 +45,12 @@ pub fn write_morse_scenario(scenario: &MorseScenario) -> Result<String, MorseWri
 /// document rather than from a form.
 pub fn has_comments(fence_body: &str) -> bool {
     fence_body.lines().any(|line| {
-        let mut single = false;
-        let mut double = false;
-        for (i, ch) in line.char_indices() {
-            match ch {
-                '\'' if !double => single = !single,
-                '"' if !single => double = !double,
-                '#' if !single && !double && (i == 0 || line[..i].ends_with([' ', '\t'])) => {
-                    return true;
-                }
-                _ => {}
+        let mut scan = QuoteScan::new();
+        let mut chars = line.char_indices().peekable();
+        while let Some((i, ch)) = chars.next() {
+            let next = chars.peek().map(|&(_, c)| c);
+            if scan.step(ch, next) && ch == '#' && (i == 0 || line[..i].ends_with([' ', '\t'])) {
+                return true;
             }
         }
         false
@@ -146,6 +144,17 @@ fn emit(s: &MorseScenario) -> Result<String, MorseWriteError> {
         out.push_str("steps:\n");
         for step in &s.steps {
             emit_step(&mut out, step)?;
+        }
+    }
+    if !s.proven.is_empty() {
+        out.push_str("proven:\n");
+        for p in &s.proven {
+            out.push_str(&format!(
+                "  {}: {{ commit: {}, on: {} }}\n",
+                key(&p.env)?,
+                scalar(&p.commit)?,
+                scalar(&p.on)?
+            ));
         }
     }
     Ok(out)
@@ -274,6 +283,29 @@ fn scalar(s: &str) -> Result<String, MorseWriteError> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proofs_survive_a_write_from_the_form() {
+        let text = "scenario: ping\nspec: { id: auth, commit: a3f9c2d }\nsteps:\n  - id: one\n    operation: auth/ping\nproven:\n  local: { commit: a3f9c2d, on: 2026-09-26 }\n  local-hrperf: { commit: b7e0d11, on: 2026-09-27 }\n";
+        let parsed = crate::morse::parse_morse_scenario(text).unwrap();
+        let written = write_morse_scenario(&parsed).unwrap();
+        assert!(
+            written.contains("proven:\n  local: { commit: a3f9c2d, on: 2026-09-26 }\n"),
+            "{written}"
+        );
+        assert_eq!(
+            crate::morse::parse_morse_scenario(&written).unwrap(),
+            parsed
+        );
+    }
+
+    #[test]
+    fn an_apostrophe_in_a_value_does_not_hide_a_comment() {
+        assert!(has_comments(
+            "summary: it's the ping # nobody documented it\n"
+        ));
+        assert!(!has_comments("summary: it's the ping\n"));
+    }
 
     const HAND_WRITTEN: &str = r#"scenario: register
 spec: { id: auth, commit: a3f9c2d }

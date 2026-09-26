@@ -130,6 +130,15 @@ pub struct Issue {
     /// Many-to-many: one issue, any number of concurrent flows. A flow with
     /// no members is nothing — there is deliberately no file to keep alive.
     pub flows: Vec<String>,
+    /// Scenarios that must be proven for this issue's `env` before it is
+    /// ready, when the workflow asks for proof (ADR 0024). Names only.
+    pub needs_scenarios: Vec<String>,
+    /// Scenarios this issue delivers — the seam a downstream issue names in
+    /// `needs_scenarios`. Names only; a report, never a lock.
+    pub proves: Vec<String>,
+    /// The environment this issue's work runs against, by name (ADR 0024).
+    /// Its address and values live in the gitignored local file, never here.
+    pub env: Option<String>,
     /// The actor asserting exclusive intent (ADR 0015). Written by
     /// `dit claim` only, never at creation. An assertion like `assignees`,
     /// not a derived fact — its liveness is computed from `claimed_at` +
@@ -188,6 +197,7 @@ pub enum ClearableField {
     Due,
     Start,
     Lane,
+    Env,
     /// `claim --release` clears the pair together; they are separate variants
     /// so `touched_keys` reports each line the merge driver must reason about.
     ClaimedBy,
@@ -195,7 +205,7 @@ pub enum ClearableField {
 }
 
 impl ClearableField {
-    pub const ALL: [ClearableField; 9] = [
+    pub const ALL: [ClearableField; 10] = [
         ClearableField::Priority,
         ClearableField::Epic,
         ClearableField::Estimate,
@@ -203,6 +213,7 @@ impl ClearableField {
         ClearableField::Due,
         ClearableField::Start,
         ClearableField::Lane,
+        ClearableField::Env,
         ClearableField::ClaimedBy,
         ClearableField::ClaimedAt,
     ];
@@ -217,6 +228,7 @@ impl ClearableField {
             ClearableField::Due => "due",
             ClearableField::Start => "start",
             ClearableField::Lane => "lane",
+            ClearableField::Env => "env",
             ClearableField::ClaimedBy => "claimed_by",
             ClearableField::ClaimedAt => "claimed_at",
         }
@@ -255,6 +267,11 @@ pub struct FieldPatch {
     pub lane: Option<String>,
     /// Replaces the whole membership set, like `labels` (ADR 0019).
     pub flows: Option<Vec<String>>,
+    /// Replaces the set (ADR 0024).
+    pub needs_scenarios: Option<Vec<String>>,
+    /// Replaces the set (ADR 0024).
+    pub proves: Option<Vec<String>>,
+    pub env: Option<String>,
     pub claimed_by: Option<String>,
     pub claimed_at: Option<String>,
     /// Optional fields to remove from the file. A field both set and cleared
@@ -289,6 +306,9 @@ impl FieldPatch {
             (self.fed_by.is_some(), "fed_by"),
             (self.lane.is_some(), "lane"),
             (self.flows.is_some(), "flows"),
+            (self.needs_scenarios.is_some(), "needs_scenarios"),
+            (self.proves.is_some(), "proves"),
+            (self.env.is_some(), "env"),
             (self.claimed_by.is_some(), "claimed_by"),
             (self.claimed_at.is_some(), "claimed_at"),
         ] {
@@ -361,6 +381,15 @@ impl Issue {
         if let Some(f) = &patch.flows {
             self.flows = f.clone();
         }
+        if let Some(n) = &patch.needs_scenarios {
+            self.needs_scenarios = n.clone();
+        }
+        if let Some(p) = &patch.proves {
+            self.proves = p.clone();
+        }
+        if let Some(e) = &patch.env {
+            self.env = Some(e.clone());
+        }
         if let Some(c) = &patch.claimed_by {
             self.claimed_by = Some(c.clone());
         }
@@ -376,6 +405,7 @@ impl Issue {
                 ClearableField::Due => self.due = None,
                 ClearableField::Start => self.start = None,
                 ClearableField::Lane => self.lane = None,
+                ClearableField::Env => self.env = None,
                 ClearableField::ClaimedBy => self.claimed_by = None,
                 ClearableField::ClaimedAt => self.claimed_at = None,
             }
@@ -414,6 +444,9 @@ mod tests {
             claimed_by: None,
             claimed_at: None,
             body: "## Context\n\nUsers on 3G get logged out.".into(),
+            needs_scenarios: Vec::new(),
+            proves: Vec::new(),
+            env: None,
         }
     }
 

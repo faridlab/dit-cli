@@ -30,6 +30,18 @@ lane: string | null,
  */
 flows: Array<string>, 
 /**
+ * Scenarios that must be proven for `env` before this is ready (ADR 0024).
+ */
+needs_scenarios: Array<string>, 
+/**
+ * Scenarios this issue delivers (ADR 0024).
+ */
+proves: Array<string>, 
+/**
+ * The environment this issue works against, by name (ADR 0024).
+ */
+env: string | null, 
+/**
  * Who claims exclusive intent (ADR 0015); absent = unclaimed. Liveness
  * is derived client-side from `claimed_at` + the TTL in the schema.
  */

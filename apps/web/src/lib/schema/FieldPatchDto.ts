@@ -47,4 +47,16 @@ lane?: string | null,
 /**
  * Replaces the whole membership set, like `labels` (ADR 0019).
  */
-flows?: Array<string>, };
+flows?: Array<string>, 
+/**
+ * Replaces the set of scenarios this issue needs proven (ADR 0024).
+ */
+needs_scenarios?: Array<string>, 
+/**
+ * Replaces the set of scenarios this issue proves (ADR 0024).
+ */
+proves?: Array<string>, 
+/**
+ * The environment name; `null` or `""` clears it.
+ */
+env?: string | null, };

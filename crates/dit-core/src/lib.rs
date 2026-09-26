@@ -45,7 +45,7 @@ pub use error::DitError;
 // Types from below the facade that appear in its signatures. Callers
 // construct arguments out of these, so they must be reachable without a
 // second dependency — the facade is the only crate delivery names.
-pub use agent::{AgentDocOptions, AgentDocReport, AGENT_DOC_PATH};
+pub use agent::{AgentDocOptions, AgentDocReport, AGENT_DOC_PATH, AGENT_TOPICS};
 pub use dit_index::{IndexedIssue, IndexedRelease, WorkspaceComment};
 pub use dit_model::{
     claim_liveness, validate_date, validate_release_version, ChangeSummary, ClaimLiveness,
@@ -67,8 +67,8 @@ pub use flow::{
 pub use morse::{morse_selector, morse_value_from_json, morse_value_to_json};
 pub use morse::{
     LastRun, MorseEnvView, MorseEnvsView, MorseReport, MorseRunRecord, MorseScenarioDetail,
-    MorseScenarioView, MorseSpecView, RunStepLine, ScenarioHealth, SendDraft, SyncOutcome,
-    SEND_KEY_PREFIX,
+    MorseScenarioView, MorseSpecView, ProofHealth, ProofView, RunStepLine, ScenarioHealth,
+    SendDraft, SyncOutcome, SEND_KEY_PREFIX,
 };
 // Delivery reports what a run did, so the shapes it reports come through
 // the facade rather than making every caller depend on the adapter.
@@ -98,7 +98,28 @@ pub struct IndexReport {
     /// Files that exist at HEAD but would not parse. They are skipped rather
     /// than fatal — one hand-broken file must not hide every other issue.
     pub skipped: usize,
+    /// The issue, comment and release files behind `skipped`, each with the
+    /// parser's reason. A count alone left a committed issue that no command
+    /// could find and nothing named.
+    pub skipped_files: Vec<SkippedFile>,
     pub head: String,
+}
+
+impl IndexReport {
+    fn skip(&mut self, path: &str, reason: String) {
+        self.skipped += 1;
+        self.skipped_files.push(SkippedFile {
+            path: path.to_owned(),
+            reason,
+        });
+    }
+}
+
+/// One file the indexer could not read, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedFile {
+    pub path: String,
+    pub reason: String,
 }
 
 /// Head/branch/dirty facts for a status line.
@@ -241,6 +262,24 @@ impl Dit {
             tracing::warn!("startup index refresh failed: {e} — run `dit reindex`");
         }
         Ok(dit)
+    }
+
+    /// Whether the repository holding `path` is a DIT workspace: it carries
+    /// `.dit/config.yaml`, the marker `dit init` writes. `open` is lenient on
+    /// purpose (a fresh clone must open), so commands that only make sense in
+    /// a workspace ask this first — before opening creates a cache.
+    pub fn is_workspace(path: &Path) -> Result<bool, DitError> {
+        let repo = Repo::open(path)?;
+        Ok(repo.root().join(".dit").join("config.yaml").exists())
+    }
+
+    /// The refusal a workspace-only command gives outside one.
+    pub fn not_a_workspace() -> DitError {
+        DitError::Refuse(
+            "this repository is not a DIT workspace yet — run `dit init` first, or \
+             `dit init --ai` to create it and install the agent guide in one step"
+                .into(),
+        )
     }
 
     /// Turn an empty directory into a workspace with the visible layout
@@ -680,6 +719,33 @@ impl Dit {
         lane: Option<&str>,
         until: Option<&str>,
     ) -> Result<Vec<ReadyIssue>, DitError> {
+        Ok(self
+            .judge_readiness(lane, until)?
+            .into_iter()
+            .filter(|r| matches!(r.readiness, Readiness::Ready))
+            .collect())
+    }
+
+    /// Issues whose blockers are through the gate but which the workflow
+    /// holds back until what they need is proven (ADR 0024) — each with the
+    /// scenarios that do not yet hold for its `env`. Empty when the workflow
+    /// does not ask for proof.
+    pub fn unproven(&self, lane: Option<&str>) -> Result<Vec<ReadyIssue>, DitError> {
+        Ok(self
+            .judge_readiness(lane, None)?
+            .into_iter()
+            .filter(|r| matches!(r.readiness, Readiness::Unproven { .. }))
+            .collect())
+    }
+
+    /// Readiness for every issue in the lane, with proof applied when the
+    /// workflow asks for it. Reads the index only (I2): proofs were judged
+    /// at reindex, so nothing here reaches the network or the spec's repo.
+    fn judge_readiness(
+        &self,
+        lane: Option<&str>,
+        until: Option<&str>,
+    ) -> Result<Vec<ReadyIssue>, DitError> {
         let gate = match until {
             Some(s) => {
                 if !self.workflow.contains_status(s) {
@@ -691,6 +757,18 @@ impl Dit {
             }
             None => None,
         };
+        let proof = self.workflow.coordination.readiness.proof;
+        let holding: std::collections::HashSet<(String, String)> =
+            if proof == dit_model::ProofMode::Off {
+                std::collections::HashSet::new()
+            } else {
+                self.index
+                    .morse_proofs()?
+                    .into_iter()
+                    .filter(|p| p.broken.is_none() && p.stale_by == Some(0))
+                    .map(|p| (p.scenario, p.env))
+                    .collect()
+            };
         let all = self.query("", None)?;
         let by_id: std::collections::HashMap<IssueId, &str> = all
             .iter()
@@ -720,12 +798,17 @@ impl Dit {
                 .collect();
             let r =
                 dit_model::readiness(&hit.issue.status, &blockers, &self.workflow, gate.as_ref());
-            if matches!(r, Readiness::Ready) {
-                out.push(ReadyIssue {
-                    issue: hit.clone(),
-                    readiness: r,
-                });
-            }
+            let r = dit_model::apply_proof(
+                r,
+                &hit.issue.needs_scenarios,
+                hit.issue.env.as_deref(),
+                proof,
+                |scenario, env| holding.contains(&(scenario.to_owned(), env.to_owned())),
+            );
+            out.push(ReadyIssue {
+                issue: hit.clone(),
+                readiness: r,
+            });
         }
         Ok(out)
     }
@@ -1028,6 +1111,21 @@ impl Dit {
     /// 0021): generated from this binary, so it can never disagree with the
     /// binary, and filled in with this workspace's own statuses and lanes.
     pub fn agent_spec(&self) -> String {
+        self.agent_spec_with(&[])
+    }
+
+    /// One topic of the agent guide (`dit ai spec <topic>`), or `None` for a
+    /// name that is not one.
+    pub fn agent_topic(&self, topic: &str) -> Option<String> {
+        agent::agent_topic(topic, &self.agent_context(&[]))
+    }
+
+    /// The spec, counting `pending` rules files too: the pointer files an
+    /// install is about to commit alongside the document. Without them the
+    /// first run would list only what HEAD already holds, and the second run
+    /// — after the commit — would list more, so `dit ai init` would never
+    /// settle.
+    fn agent_spec_with(&self, pending: &[String]) -> String {
         let statuses: Vec<String> = self
             .workflow
             .statuses
@@ -1035,7 +1133,72 @@ impl Dit {
             .map(|s| s.id.clone())
             .collect();
         let lanes: Vec<String> = self.workflow.lanes.iter().map(|l| l.id.clone()).collect();
-        agent::agent_spec(env!("CARGO_PKG_VERSION"), &statuses, &lanes)
+        let context = self.agent_context(pending);
+        agent::agent_spec(env!("CARGO_PKG_VERSION"), &statuses, &lanes, &context)
+    }
+
+    /// What the guide says about this workspace in particular: its rules
+    /// files (plus `pending` ones an install is committing), its registered
+    /// specs, and whether readiness asks for proof.
+    fn agent_context(&self, pending: &[String]) -> agent::AgentContext {
+        let mut rule_files = self.rule_files();
+        for path in pending {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            let known = rule_files
+                .iter()
+                .any(|f| f.repo.is_none() && &f.path == path);
+            if agent::RULE_FILE_NAMES.contains(&name) && !known {
+                rule_files.push(agent::RuleFile {
+                    repo: None,
+                    path: path.clone(),
+                });
+            }
+        }
+        agent::AgentContext {
+            rule_files,
+            specs: self.config.specs.iter().map(|s| s.id.clone()).collect(),
+            proof_required: self.workflow.coordination.readiness.proof
+                == dit_model::ProofMode::Required,
+        }
+    }
+
+    /// Every committed rules file an agent should read: this workspace's own
+    /// and each linked code repository's, read at HEAD through git and never
+    /// checked out. A linked repo that is not a local checkout is skipped —
+    /// its rules cannot be read from here, and guessing would be worse.
+    fn rule_files(&self) -> Vec<agent::RuleFile> {
+        let is_rules = |path: &str| {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            agent::RULE_FILE_NAMES.contains(&name)
+        };
+        let mut out = Vec::new();
+        if let Ok(files) = self.repo.ls_tree(".") {
+            for (path, _) in files {
+                if is_rules(&path) {
+                    out.push(agent::RuleFile { repo: None, path });
+                }
+            }
+        }
+        for link in &self.config.repos {
+            let dir = std::path::Path::new(&link.remote);
+            if !dir.is_dir() {
+                continue;
+            }
+            let Ok(linked) = dit_vcs::Repo::open(dir) else {
+                continue;
+            };
+            if let Ok(files) = linked.ls_tree(".") {
+                for (path, _) in files {
+                    if is_rules(&path) {
+                        out.push(agent::RuleFile {
+                            repo: Some(link.name.clone()),
+                            path,
+                        });
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Install the agent document and point every agent file at it (ADR
@@ -1051,13 +1214,22 @@ impl Dit {
                 agent::tool_keys().join(", ")
             )));
         }
-        let mut report = AgentDocReport::default();
         let root = self.repo.root().to_owned();
+        // A guide to a workspace that does not exist sends agents after
+        // issues no command can create.
+        if !root.join(".dit").join("config.yaml").exists() {
+            return Err(Self::not_a_workspace());
+        }
+        let mut report = AgentDocReport::default();
+
+        // The agent files this install points — decided first, because the
+        // document lists the rules files and these are committed with it.
+        let targets = agent::targets(&root, opts);
 
         // 1. The canonical document.
         let doc_path = root.join(AGENT_DOC_PATH);
         let existing = std::fs::read_to_string(&doc_path).unwrap_or_default();
-        let updated = agent::render_document(&existing, &self.agent_spec());
+        let updated = agent::render_document(&existing, &self.agent_spec_with(&targets));
         if updated != existing {
             let parent = doc_path.parent().ok_or_else(|| {
                 DitError::Refuse("the agent document must live inside a directory".into())
@@ -1070,7 +1242,7 @@ impl Dit {
         }
 
         // 2. A pointer in each agent file this repo actually uses.
-        for rel in agent::targets(&root, opts) {
+        for rel in targets {
             let path = root.join(&rel);
             let existing = std::fs::read_to_string(&path).unwrap_or_default();
             let (updated, had_legacy) = agent::render_pointer(&existing);
@@ -1618,6 +1790,7 @@ impl Dit {
                 comments: 0,
                 events: 0,
                 skipped: 0,
+                skipped_files: Vec::new(),
                 head: String::new(),
             });
         };
@@ -1630,6 +1803,7 @@ impl Dit {
             comments: 0,
             events: 0,
             skipped: 0,
+            skipped_files: Vec::new(),
             head: head.clone(),
         };
         if matches!(mode, ReindexMode::State | ReindexMode::All) {
@@ -1652,7 +1826,7 @@ impl Dit {
                             self.index.upsert_issue(&issue, &path, &blob)?;
                             report.issues += 1;
                         }
-                        Err(_) => report.skipped += 1,
+                        Err(err) => report.skip(&path, err.to_string()),
                     }
                 } else if path.contains("/comments/") && path.ends_with(".md") {
                     match dit_parse::parse_comment(&text) {
@@ -1661,10 +1835,10 @@ impl Dit {
                                 self.index.upsert_comment(&parent, &comment)?;
                                 report.comments += 1;
                             } else {
-                                report.skipped += 1;
+                                report.skip(&path, "no issue owns this comment".to_owned());
                             }
                         }
-                        Err(_) => report.skipped += 1,
+                        Err(err) => report.skip(&path, err.to_string()),
                     }
                 }
             }
@@ -1707,7 +1881,7 @@ impl Dit {
                 };
                 match dit_parse::parse_release(&text) {
                     Ok((release, _)) => self.index.upsert_release(&release, &path)?,
-                    Err(_) => report.skipped += 1,
+                    Err(err) => report.skip(&path, err.to_string()),
                 }
             }
             // Where the state tier currently stands — the watcher's dedupe

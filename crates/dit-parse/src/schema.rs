@@ -211,9 +211,23 @@ pub fn parse_workflow(text: &str) -> Result<Workflow, SchemaError> {
                     if !matches!(rn, Yaml::Map(_)) {
                         return Err(SchemaError::NotAMap("coordination.readiness".into()));
                     }
+                    let proof = match rn.get("proof").and_then(Yaml::as_str).map(str::trim) {
+                        None | Some("") | Some("off") => dit_model::ProofMode::Off,
+                        Some("required") => dit_model::ProofMode::Required,
+                        Some(other) => {
+                            return Err(SchemaError::BadValue {
+                                key: "coordination.readiness.proof".into(),
+                                value: other.to_owned(),
+                                hint: "use `required` to hold issues until their scenarios are \
+                                       proven, or `off`"
+                                    .into(),
+                            })
+                        }
+                    };
                     ReadinessConfig {
                         pick_from: category_of(&str_of(rn, "pick_from")?)?,
                         gate: gate_of(&str_of(rn, "gate")?),
+                        proof,
                     }
                 }
             };
@@ -564,6 +578,12 @@ pub fn write_workflow(wf: &Workflow) -> String {
             "    gate: {}\n",
             wf.coordination.readiness.gate.as_str()
         ));
+        if wf.coordination.readiness.proof != dit_model::ProofMode::Off {
+            out.push_str(&format!(
+                "    proof: {}\n",
+                wf.coordination.readiness.proof.as_str()
+            ));
+        }
     }
     out
 }
@@ -639,6 +659,7 @@ mod tests {
                 readiness: ReadinessConfig {
                     pick_from: StatusCategory::Todo,
                     gate: Gate::Until("review".into()),
+                    proof: dit_model::ProofMode::Off,
                 },
             },
             ..Workflow::default_workflow()
@@ -649,6 +670,24 @@ mod tests {
         assert!(text.contains("label: \"Front End\""));
         assert!(text.contains("gate: review"));
         assert_eq!(parse_workflow(&text).unwrap(), wf);
+    }
+
+    // ADR 0024: proof is opt-in per workflow, round-trips, and a value the
+    // schema does not know is refused rather than read as "off".
+    #[test]
+    fn readiness_proof_is_read_written_and_refused_when_unknown() {
+        let mut wf = Workflow::default_workflow();
+        wf.coordination.readiness.proof = dit_model::ProofMode::Required;
+        let text = write_workflow(&wf);
+        assert!(text.contains("    proof: required\n"), "{text}");
+        assert_eq!(parse_workflow(&text).unwrap(), wf);
+
+        let bad = text.replace("proof: required", "proof: maybe");
+        let err = parse_workflow(&bad).unwrap_err();
+        assert!(
+            matches!(&err, SchemaError::BadValue { key, .. } if key.contains("proof")),
+            "{err:?}"
+        );
     }
 
     #[test]
