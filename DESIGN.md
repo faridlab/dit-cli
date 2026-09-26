@@ -490,9 +490,10 @@ coordination:
   readiness:
     pick_from: todo               # status category an issue must sit in to be pickable
     gate: terminal                # what a blocker must have reached (terminal, or a status id = "or later")
+    proof: off                    # `required`: also hold an issue until its needed scenarios are proven (ADR 0024)
 ```
 
-**Readiness is derived, never stored** (ADR 0015): an issue is *ready* when its status is in `pick_from` and every `blocked_by` entry has reached the `gate`. `terminal` means the terminal completion status; a status id means "that status or later" in declaration order — `dit ready --until review` overrides the gate per call and is never written back. **A cancelled blocker never satisfies any gate**: it is reported as a *broken* dependency and the dependent stays blocked until someone removes or re-points the `blocked_by` entry — an edit recorded in git, not a silent auto-unblock onto an abandoned dependency. Status writes validate membership in `statuses` (with `--force` as the escape), closing the charset-only gap admitted below.
+**Readiness is derived, never stored** (ADR 0015): an issue is *ready* when its status is in `pick_from` and every `blocked_by` entry has reached the `gate`. `terminal` means the terminal completion status; a status id means "that status or later" in declaration order — `dit ready --until review` overrides the gate per call and is never written back. **A cancelled blocker never satisfies any gate**: it is reported as a *broken* dependency and the dependent stays blocked until someone removes or re-points the `blocked_by` entry — an edit recorded in git, not a silent auto-unblock onto an abandoned dependency. Status writes validate membership in `statuses` (with `--force` as the escape), closing the charset-only gap admitted below. **With `proof: required`** (ADR 0024), an issue whose blockers are through the gate is still held back — `Unproven` — until every scenario in its `needs_scenarios` has a fresh proof for its `env` (§20.10); `dit ready` names what is held and the command that would prove it.
 
 **Why derived and not write-back.** The first version of this design wrote the status back into the frontmatter whenever a commit trailer appeared. That violates Principle 3 and cancels the entire §5.2 argument: if automation writes to the issue file every time there's a code commit, we're back to the "every code commit touches the issue file" pattern — exactly what §4.3 was designed to avoid, and a source of cross-branch conflicts.
 
@@ -2318,7 +2319,13 @@ impl Dit {
     pub fn flow_shape(&self, name: &str) -> Result<Option<FlowShape>>;
 
     // Agent onboarding (ADR 0021) — generated from the binary, never parsed back:
-    pub fn agent_spec(&self) -> String;                       // what `dit ai spec` prints
+    pub fn agent_spec(&self) -> String;                       // what `dit ai spec` prints — incl. every committed CLAUDE.md/AGENTS.md here and in linked repos
+    pub fn agent_topic(&self, topic: &str) -> Option<String>; // `dit ai spec <issues|flow|morse>` — one subject in depth
+    // `dit ai init` / `dit ai add` refuse outside a workspace (no `.dit/config.yaml`) and name
+    // `dit init`; `dit init --ai` creates the workspace, then installs the guide. The pointer a
+    // tool file gets carries the four rules whose breach costs someone else their work.
+    // Readiness with proof applied (ADR 0024): held back until the seam is proven.
+    pub fn unproven(&self, lane: Option<&str>) -> Result<Vec<ReadyIssue>>;
     pub fn write_agent_docs(&self, opts: &AgentDocOptions) -> Result<AgentDocReport>;
 }
 
@@ -3018,6 +3025,22 @@ re-serialised fence would drop the comment; the tab points at the document
 instead.
 
 ---
+
+### 20.10 Proven seams (ADR 0024)
+
+A pin says a scenario was proven *at a commit*. Parallel lanes need one more fact: proven
+*where*. The same chain can be green on one tenant and answer 404 on another, and "the
+upstream issue is done" is not the same claim as "the seam answers for me".
+
+- **Proof is per environment.** The fence carries `proven: {env: {commit, on}}`, written only
+  by `dit morse sync <scenario> --env <name>` after a green run. Reindex judges each proof like
+  the pin — fresh, stale by N commits, or broken — into the index; it is never written back.
+- **Issues name seams.** `needs_scenarios`, `proves` and `env` are authored lists and a name;
+  whether a needed scenario holds is derived at read time (Principle 3).
+- **Readiness can ask for proof.** `coordination.readiness.proof: required` holds a ready issue
+  as `Unproven` until each needed scenario has a fresh proof for its `env`. Off by default.
+- **Nothing new reaches the network.** `sync` already fired the run; recording the environment
+  it ran in is one more line in the same commit. `dit ready` and `check` read the index (I2, I11).
 
 ## Appendix A — The "Hello World" Flow
 
