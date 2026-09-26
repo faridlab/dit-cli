@@ -23,6 +23,7 @@ pub mod morse;
 pub mod morse_write;
 pub mod openapi;
 pub mod prosemirror;
+mod quote;
 pub mod release;
 pub mod schema;
 pub mod yaml;

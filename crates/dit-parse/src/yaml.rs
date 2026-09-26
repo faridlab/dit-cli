@@ -10,6 +10,8 @@
 //! purpose: anchors/aliases (exponential-expansion inputs), multi-document
 //! streams, block scalars (`|`, `>`).
 
+use crate::quote::QuoteScan;
+
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum YamlError {
     #[error("line {line}: expected `key: value`, a `- item`, or a comment — found `{text}`")]
@@ -202,16 +204,12 @@ fn gather_block(
 
 /// Strip a trailing `# comment` that is outside quotes.
 fn strip_comment(line: &str) -> &str {
-    let mut in_single = false;
-    let mut in_double = false;
-    for (i, ch) in line.char_indices() {
-        match ch {
-            '\'' if !in_double => in_single = !in_single,
-            '"' if !in_single => in_double = !in_double,
-            '#' if !in_single && !in_double && (i == 0 || line[..i].ends_with(' ')) => {
-                return &line[..i];
-            }
-            _ => {}
+    let mut scan = QuoteScan::new();
+    let mut chars = line.char_indices().peekable();
+    while let Some((i, ch)) = chars.next() {
+        let next = chars.peek().map(|&(_, c)| c);
+        if scan.step(ch, next) && ch == '#' && (i == 0 || line[..i].ends_with(' ')) {
+            return &line[..i];
         }
     }
     line
@@ -433,28 +431,22 @@ fn parse_scalar(s: &str, line_no: usize) -> Result<Yaml, YamlError> {
 fn split_flow(s: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut cur = String::new();
-    let mut in_single = false;
-    let mut in_double = false;
+    let mut scan = QuoteScan::new();
     let mut depth = 0i32;
-    for ch in s.chars() {
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        let next = chars.peek().copied();
+        let structural = scan.step(ch, next);
         match ch {
-            '\'' if !in_double => {
-                in_single = !in_single;
-                cur.push(ch);
-            }
-            '"' if !in_single => {
-                in_double = !in_double;
-                cur.push(ch);
-            }
-            '[' | '{' if !in_single && !in_double => {
+            '[' | '{' if structural => {
                 depth += 1;
                 cur.push(ch);
             }
-            ']' | '}' if !in_single && !in_double => {
+            ']' | '}' if structural => {
                 depth -= 1;
                 cur.push(ch);
             }
-            ',' if !in_single && !in_double && depth == 0 => {
+            ',' if structural && depth == 0 => {
                 parts.push(cur.clone());
                 cur.clear();
             }
@@ -614,6 +606,26 @@ derived:
     fn a_sequence_at_the_parent_indent_belongs_to_its_key() {
         let y = parse("key:\n- a\n- b\n").unwrap();
         assert_eq!(y.get("key").unwrap().as_seq().unwrap().len(), 2);
+    }
+
+    // A fence label or a config value with an apostrophe in it is a plain
+    // scalar. Every `'` used to toggle "inside a quote", so `text: result's`
+    // swallowed the rest of the line and the fence failed to parse.
+    #[test]
+    fn apostrophe_inside_a_plain_scalar_is_not_a_quote() {
+        let y = parse("text: record the result's owner # why\nb: x\n").unwrap();
+        assert_eq!(
+            y.get("text").unwrap().as_str().unwrap(),
+            "record the result's owner"
+        );
+        let y = parse("labels:\n  - { from: a, to: b, text: \"it's\" }\n  - { from: c, to: d, text: plan's arrow }\n").unwrap();
+        let seq = y.get("labels").unwrap().as_seq().unwrap();
+        assert_eq!(
+            seq[1].get("text").unwrap().as_str().unwrap(),
+            "plan's arrow"
+        );
+        let y = parse("- it's a list item\n").unwrap();
+        assert_eq!(y.as_seq().unwrap()[0].as_str().unwrap(), "it's a list item");
     }
 
     #[test]

@@ -13,6 +13,8 @@
 //! preservation of anything it does not understand. Anchors and aliases are
 //! not supported on purpose: they enable exponential-expansion inputs.
 
+use crate::quote::QuoteScan;
+
 /// A parse or validation failure. Every variant says what to do about it.
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum FrontmatterError {
@@ -245,20 +247,18 @@ fn keep_trailing_comment(old: &str, new_line: &str) -> String {
 
 /// Split a value from an unquoted trailing comment. Quoted `#` stays in value.
 fn split_trailing_comment(value: &str) -> Option<(&str, &str)> {
-    let bytes = value.as_bytes();
-    let mut in_single = false;
-    let mut in_double = false;
-    for (i, &b) in bytes.iter().enumerate() {
-        match b {
-            b'\'' if !in_double => in_single = !in_single,
-            b'"' if !in_single => in_double = !in_double,
-            b'#' if !in_single && !in_double && (i == 0 || bytes[i - 1] == b' ') => {
-                let comment = &value[i..];
-                let value_part = value[..i].trim_end();
-                return Some((value_part, comment));
-            }
-            _ => {}
+    let mut scan = QuoteScan::new();
+    let mut prev: Option<char> = None;
+    let mut chars = value.char_indices().peekable();
+    while let Some((i, ch)) = chars.next() {
+        let next = chars.peek().map(|&(_, c)| c);
+        let structural = scan.step(ch, next);
+        if structural && ch == '#' && (i == 0 || prev == Some(' ')) {
+            let comment = &value[i..];
+            let value_part = value[..i].trim_end();
+            return Some((value_part, comment));
         }
+        prev = Some(ch);
     }
     None
 }
@@ -312,19 +312,20 @@ fn validate_value(key: &str, value: &str) -> Result<(), FrontmatterError> {
     let v = split_trailing_comment(value)
         .map(|(v, _)| v)
         .unwrap_or(value);
-    let mut in_single = false;
-    let mut in_double = false;
+    let mut scan = QuoteScan::new();
     let mut depth = 0i32;
-    for ch in v.chars() {
-        match ch {
-            '\'' if !in_double => in_single = !in_single,
-            '"' if !in_single => in_double = !in_double,
-            '[' if !in_single && !in_double => depth += 1,
-            ']' if !in_single && !in_double => depth -= 1,
-            _ => {}
+    let mut chars = v.chars().peekable();
+    while let Some(ch) = chars.next() {
+        let next = chars.peek().copied();
+        if scan.step(ch, next) {
+            match ch {
+                '[' => depth += 1,
+                ']' => depth -= 1,
+                _ => {}
+            }
         }
     }
-    if in_single || in_double {
+    if scan.quoted() {
         return Err(FrontmatterError::UnterminatedQuote {
             key: key.to_owned(),
         });
@@ -374,23 +375,15 @@ fn parse_flow_seq(s: &str) -> Vec<String> {
         .unwrap_or(s);
     let mut items = Vec::new();
     let mut cur = String::new();
-    let mut in_single = false;
-    let mut in_double = false;
-    for ch in inner.chars() {
-        match ch {
-            '\'' if !in_double => {
-                in_single = !in_single;
-                cur.push(ch);
-            }
-            '"' if !in_single => {
-                in_double = !in_double;
-                cur.push(ch);
-            }
-            ',' if !in_single && !in_double => {
-                items.push(unquote(cur.trim()));
-                cur.clear();
-            }
-            _ => cur.push(ch),
+    let mut scan = QuoteScan::new();
+    let mut chars = inner.chars().peekable();
+    while let Some(ch) = chars.next() {
+        let next = chars.peek().copied();
+        if scan.step(ch, next) && ch == ',' {
+            items.push(unquote(cur.trim()));
+            cur.clear();
+        } else {
+            cur.push(ch);
         }
     }
     if !cur.trim().is_empty() {
@@ -547,6 +540,49 @@ mod tests {
         // ^ body-only (no delimiters) — quotes only matter inside frontmatter.
         let err = Document::parse("---\na: \"unterminated\n---\n").unwrap_err();
         assert!(matches!(err, FrontmatterError::UnterminatedQuote { .. }));
+    }
+
+    // An apostrophe inside a plain scalar is a character, not a quote: YAML
+    // opens a quoted scalar only where a scalar begins. Treating every `'` as
+    // a toggle rejected any title like "Work plan's lane" as unterminated, and
+    // the indexer then skipped the issue silently — it was committed and could
+    // be found by no command.
+    #[test]
+    fn apostrophe_inside_a_plain_scalar_is_not_a_quote() {
+        let input = "---\ntitle: Work plan's away lane showed no leave\nstatus: todo\n---\nx\n";
+        let doc = Document::parse(input).unwrap();
+        assert_eq!(
+            doc.get_str("title").unwrap().unwrap(),
+            "Work plan's away lane showed no leave"
+        );
+        assert_eq!(doc.to_string(), input);
+    }
+
+    #[test]
+    fn apostrophe_before_a_trailing_comment_keeps_the_comment() {
+        let input = "---\ntitle: It's done # budi\n---\nx\n";
+        let mut doc = Document::parse(input).unwrap();
+        assert_eq!(doc.get_str("title").unwrap().unwrap(), "It's done");
+        doc.set_raw("title", "It's shipped");
+        assert!(doc.to_string().contains("title: It's shipped # budi"));
+    }
+
+    #[test]
+    fn apostrophe_inside_a_flow_item_is_not_a_quote() {
+        let input = "---\nlabels: [plan's, \"b, c\", 'd']\n---\nx\n";
+        let doc = Document::parse(input).unwrap();
+        assert_eq!(doc.get_list("labels").unwrap(), vec!["plan's", "b, c", "d"]);
+    }
+
+    #[test]
+    fn a_quote_that_opens_a_scalar_must_still_close() {
+        for bad in ["---\na: 'open\n---\n", "---\na: [x, 'open]\n---\n"] {
+            let err = Document::parse(bad).unwrap_err();
+            assert!(
+                matches!(err, FrontmatterError::UnterminatedQuote { .. }),
+                "{bad:?} should be unterminated"
+            );
+        }
     }
 
     #[test]
