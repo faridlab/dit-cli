@@ -78,6 +78,8 @@ finish, never a corrupt file.
 |  | `dit issue comment <ref> <text>` | Add a comment. |
 |  | `dit list [DQL]` | List issues matching a query; no query = all. |
 |  | `dit board` | The board: one column per workflow status. |
+| **Code** | `dit code users <file\|symbol>` | Who imports it — in any git repository, no setup ([docs/code-map.md](docs/code-map.md)). |
+|  | `dit code uses \| path \| where \| hubs \| explain` | What it depends on, how two files connect, which files answer a question. |
 | **UI** | `dit ui` | Serve this workspace to the browser and open it. |
 
 `dit ui` serves on 127.0.0.1, authenticates with a per-session token it
@@ -106,6 +108,7 @@ Git already provides, for free, what Jira built from scratch and sells:
 | [`DESIGN.md`](DESIGN.md) | What is being built and why. 19 sections, with a table of contents and glossary. |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | How code is written and changed. Eleven invariants, dependency rules, TDD policy. |
 | [`CLAUDE.md`](CLAUDE.md) | Operating instructions for AI coding agents. |
+| [`docs/code-map.md`](docs/code-map.md) | The code map: how to use `dit code`, and what it costs against grep and graphify, measured. |
 
 **Read `ARCHITECTURE.md` §1 before your first PR.** Eleven invariants are
 non-negotiable, and each one is enforced by a test in `tests/invariants.rs`.
