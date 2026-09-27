@@ -15,6 +15,8 @@
 
 mod agent;
 pub mod board;
+pub mod code;
+pub use code::{MapEntryView, MapHealth};
 pub mod diagnostics;
 pub mod error;
 pub mod flow;
@@ -1159,6 +1161,28 @@ impl Dit {
             specs: self.config.specs.iter().map(|s| s.id.clone()).collect(),
             proof_required: self.workflow.coordination.readiness.proof
                 == dit_model::ProofMode::Required,
+            code_roots: self
+                .config
+                .code
+                .iter()
+                .map(|r| {
+                    let mut line = format!("`{}`", r.id);
+                    let mut parts = Vec::new();
+                    if let Some(repo) = &r.repo {
+                        parts.push(format!("in {repo}"));
+                    }
+                    if !r.include.is_empty() {
+                        parts.push(r.include.join(", "));
+                    }
+                    if !r.generated.is_empty() {
+                        parts.push(format!("generated {}", r.generated.join(", ")));
+                    }
+                    if !parts.is_empty() {
+                        line.push_str(&format!(" ({})", parts.join("; ")));
+                    }
+                    line
+                })
+                .collect(),
         }
     }
 
@@ -1854,6 +1878,7 @@ impl Dit {
             self.index.clear_flow_shapes()?;
             self.index.clear_morse_scenarios()?;
             self.index.clear_morse_runs()?;
+            self.index.clear_code_maps()?;
             self.refresh_morse_specs()?;
             for root in dit_model::DOC_ROOTS {
                 let rel = self.store.layout().content_root_rel(root);
@@ -1866,6 +1891,7 @@ impl Dit {
                     };
                     report.skipped += self.absorb_flow_fences(&path, &text)?;
                     report.skipped += self.absorb_morse_fences(&path, &text)?;
+                    report.skipped += self.absorb_map_fences(&path, &text)?;
                 }
             }
             self.judge_morse_scenarios()?;
@@ -2293,6 +2319,7 @@ impl Dit {
                     // A deleted document takes its flow shapes with it.
                     self.index.clear_flow_shapes_at(new_path)?;
                     self.index.clear_morse_scenarios_at(new_path)?;
+                    self.index.clear_code_maps_at(new_path)?;
                 } else if new_path.contains("/comments/") {
                     if let Ok(comment) = dit_parse::parse_comment(&old_text) {
                         self.index.remove_comment(&comment.id)?;
@@ -2330,6 +2357,8 @@ impl Dit {
                 self.index.clear_morse_scenarios_at(new_path)?;
                 self.absorb_morse_fences(new_path, &text)?;
                 self.judge_morse_scenarios()?;
+                self.index.clear_code_maps_at(new_path)?;
+                self.absorb_map_fences(new_path, &text)?;
             }
         }
         let events = dit_vcs::walk_field_events(&self.repo, prev_head, layout)?;

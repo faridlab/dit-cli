@@ -50,12 +50,20 @@ dit-store = { path = "crates/dit-store" }
 dit-index = { path = "crates/dit-index" }
 dit-vcs   = { path = "crates/dit-vcs" }
 dit-morse = { path = "crates/dit-morse" }
+dit-code  = { path = "crates/dit-code" }
 dit-ai    = { path = "crates/dit-ai" }
 dit-core  = { path = "crates/dit-core" }
 dit-server = { path = "crates/dit-server" }
 dit-wasm  = { path = "crates/dit-wasm" }
 
 serde     = { version = "1", features = ["derive"] }
+# The code map's parser and grammars (ADR 0025), pre-1.0 and pinned: 0.25.10 is
+# the newest tree-sitter honoring this workspace's rust-version (0.26+ needs
+# 1.90), and tree-sitter-language 0.1.5 the newest the grammars can take on it.
+tree-sitter            = "=0.25.10"
+tree-sitter-language   = "=0.1.5"
+tree-sitter-typescript = "=0.23.2"
+tree-sitter-rust       = "=0.24.2"
 serde_json = "1"
 thiserror = "2"
 

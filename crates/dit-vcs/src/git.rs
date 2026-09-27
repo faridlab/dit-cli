@@ -269,6 +269,68 @@ impl Repo {
         self.run(&["show", revspec]).ok()
     }
 
+    /// Read many blobs in one `git cat-file --batch` — the code map reads
+    /// thousands of files at reindex, and a process per file was minutes.
+    /// Results come back in the order asked; `None` for a sha the repository
+    /// does not hold, and for content that is not UTF-8.
+    pub fn read_blobs(&self, shas: &[String]) -> Result<Vec<Option<String>>, VcsError> {
+        use std::io::{Read, Write};
+        use std::process::Stdio;
+        if shas.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut child = Command::new("git")
+            .args(["cat-file", "--batch"])
+            .current_dir(&self.root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|_| VcsError::GitMissing)?;
+        let mut stdin = child.stdin.take().ok_or(VcsError::GitMissing)?;
+        let input: String = shas.iter().map(|s| format!("{s}\n")).collect();
+        // Written from its own thread: git answers while we are still asking,
+        // and a full stdout pipe with nobody reading would deadlock both.
+        let writer = std::thread::spawn(move || {
+            let _ = stdin.write_all(input.as_bytes());
+        });
+        let mut out = Vec::new();
+        child
+            .stdout
+            .take()
+            .ok_or(VcsError::GitMissing)?
+            .read_to_end(&mut out)
+            .map_err(|_| VcsError::GitMissing)?;
+        let _ = writer.join();
+        let _ = child.wait();
+
+        let mut results = Vec::with_capacity(shas.len());
+        let mut at = 0usize;
+        for _ in shas {
+            let Some(nl) = out[at..].iter().position(|&b| b == b'\n') else {
+                results.push(None);
+                continue;
+            };
+            let header = String::from_utf8_lossy(&out[at..at + nl]).into_owned();
+            at += nl + 1;
+            let mut parts = header.split(' ');
+            let _sha = parts.next();
+            match (
+                parts.next(),
+                parts.next().and_then(|n| n.parse::<usize>().ok()),
+            ) {
+                (Some(_kind), Some(size)) if at + size <= out.len() => {
+                    let body = &out[at..at + size];
+                    results.push(String::from_utf8(body.to_vec()).ok());
+                    // The content is followed by one newline.
+                    at += size + 1;
+                }
+                _ => results.push(None), // `<sha> missing`
+            }
+        }
+        Ok(results)
+    }
+
     /// Walk `git log` with a custom format — the commit-trailer indexing
     /// pipeline builds on this.
     pub fn log_lines(&self, range: &str, format: &str) -> Result<Vec<String>, VcsError> {

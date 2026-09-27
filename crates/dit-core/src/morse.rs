@@ -182,13 +182,13 @@ impl MorseReport {
 /// The repository a spec lives in. Mode C and a vendored document are here;
 /// Mode A points at a linked repo, read through a ref exactly as §5 reads
 /// code — never merged and never checked out.
-enum SpecRepo<'a> {
+pub(crate) enum SpecRepo<'a> {
     Here(&'a Repo),
     Linked(Repo),
 }
 
 impl SpecRepo<'_> {
-    fn get(&self) -> &Repo {
+    pub(crate) fn get(&self) -> &Repo {
         match self {
             SpecRepo::Here(repo) => repo,
             SpecRepo::Linked(repo) => repo,
@@ -330,10 +330,17 @@ impl Dit {
     /// local checkout: DIT will not fetch one to answer a read, and Morse 1
     /// sends nothing at all.
     fn spec_repo(&self, entry: &SpecEntry) -> Result<SpecRepo<'_>, String> {
-        let Some(name) = &entry.repo else {
+        self.repo_for(entry.repo.as_deref())
+    }
+
+    /// The repository a registry entry names: this workspace when `None`, a
+    /// `repos:` entry otherwise — opened only when it is a local checkout,
+    /// and read through git, never checked out.
+    pub(crate) fn repo_for(&self, name: Option<&str>) -> Result<SpecRepo<'_>, String> {
+        let Some(name) = name else {
             return Ok(SpecRepo::Here(&self.repo));
         };
-        let Some(link) = self.config.repos.iter().find(|r| &r.name == name) else {
+        let Some(link) = self.config.repos.iter().find(|r| r.name == name) else {
             return Err(format!(
                 "`repo: {name}` is not one of the linked repos — add it under `repos:` first"
             ));

@@ -137,6 +137,77 @@ pub struct StoredMorseRun {
     pub steps: String,
 }
 
+/// A `dit-map` fence as read at reindex.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredCodeMap {
+    pub map: String,
+    pub path: String,
+    pub line: usize,
+    pub body: String,
+    pub problem: Option<String>,
+}
+
+/// One map entry as judged against the code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredMapEntry {
+    pub map: String,
+    pub idx: usize,
+    pub task: String,
+    pub why: Option<String>,
+    pub change: Vec<String>,
+    pub example: Option<String>,
+    pub never: Vec<String>,
+    /// `holds`, `unconfirmed`, `stale:<commits>` or `broken`.
+    pub health: String,
+    /// Newline-separated reasons, for `broken`.
+    pub detail: String,
+}
+
+/// One stored import, as the resolution pass and the queries read it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredCodeImport {
+    pub id: i64,
+    pub root: String,
+    pub path: String,
+    pub lang: String,
+    pub specifier: String,
+    pub names: Vec<String>,
+    pub reexport: bool,
+    pub line: u32,
+    /// The file it resolved to; `None` when external or unresolved.
+    pub target: Option<String>,
+    pub external: bool,
+}
+
+/// A file that imports another, and what it takes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeImporter {
+    pub root: String,
+    pub path: String,
+    pub names: Vec<String>,
+    pub line: u32,
+    pub reexport: bool,
+}
+
+/// A defined symbol, with where it lives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredCodeSymbol {
+    pub root: String,
+    pub path: String,
+    pub name: String,
+    pub kind: String,
+    pub line: u32,
+    pub exported: bool,
+}
+
+/// A call made in a file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredCodeCall {
+    pub path: String,
+    pub callee: String,
+    pub line: u32,
+}
+
 /// A scenario's proof in one environment, as judged at reindex (ADR 0024).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredMorseProof {
@@ -150,6 +221,14 @@ pub struct StoredMorseProof {
     /// be judged (the spec's repo unreadable, or `commit` not in it).
     pub stale_by: Option<usize>,
     pub broken: Option<String>,
+}
+
+fn split_names(joined: &str) -> Vec<String> {
+    joined
+        .split(',')
+        .filter(|n| !n.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 const SCHEMA: &str = r#"
@@ -335,6 +414,76 @@ CREATE TABLE IF NOT EXISTS morse_proofs (
   PRIMARY KEY (scenario, env)
 );
 
+-- The code map (ADR 0025): per code root, the files read and what each one
+-- defines, imports, calls and extends. Derived from source at reindex, keyed
+-- by blob so an unchanged file is never re-parsed; never written to a file.
+CREATE TABLE IF NOT EXISTS code_files (
+  root      TEXT NOT NULL,
+  path      TEXT NOT NULL,
+  blob_sha  TEXT NOT NULL,
+  lang      TEXT NOT NULL,
+  generated INTEGER NOT NULL,
+  PRIMARY KEY (root, path)
+);
+CREATE TABLE IF NOT EXISTS code_symbols (
+  root     TEXT NOT NULL,
+  path     TEXT NOT NULL,
+  name     TEXT NOT NULL,
+  kind     TEXT NOT NULL,
+  line     INTEGER NOT NULL,
+  exported INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS code_symbols_name ON code_symbols (name);
+CREATE TABLE IF NOT EXISTS code_imports (
+  id        INTEGER PRIMARY KEY,
+  root      TEXT NOT NULL,
+  path      TEXT NOT NULL,
+  specifier TEXT NOT NULL,
+  names     TEXT NOT NULL,
+  reexport  INTEGER NOT NULL,
+  line      INTEGER NOT NULL,
+  target    TEXT,
+  external  INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS code_imports_target ON code_imports (root, target);
+CREATE INDEX IF NOT EXISTS code_imports_path ON code_imports (root, path);
+CREATE TABLE IF NOT EXISTS code_calls (
+  root   TEXT NOT NULL,
+  path   TEXT NOT NULL,
+  callee TEXT NOT NULL,
+  line   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS code_calls_path ON code_calls (root, path);
+CREATE TABLE IF NOT EXISTS code_relations (
+  root      TEXT NOT NULL,
+  path      TEXT NOT NULL,
+  from_name TEXT NOT NULL,
+  to_name   TEXT NOT NULL,
+  kind      TEXT NOT NULL
+);
+
+-- The authored half of the code map (ADR 0025): each `dit-map` fence as read
+-- at reindex, and each entry as judged against the code at refresh.
+CREATE TABLE IF NOT EXISTS code_maps (
+  map     TEXT PRIMARY KEY,
+  path    TEXT NOT NULL,
+  line    INTEGER NOT NULL,
+  body    TEXT NOT NULL,
+  problem TEXT
+);
+CREATE TABLE IF NOT EXISTS code_map_entries (
+  map     TEXT NOT NULL,
+  idx     INTEGER NOT NULL,
+  task    TEXT NOT NULL,
+  why     TEXT,
+  change  TEXT NOT NULL,
+  example TEXT,
+  never   TEXT NOT NULL,
+  health  TEXT NOT NULL,
+  detail  TEXT NOT NULL,
+  PRIMARY KEY (map, idx)
+);
+
 -- One row per scenario: its most recent run. Cleared at reindex like the
 -- rest of the derived tier, and never written back to a file.
 CREATE TABLE IF NOT EXISTS morse_runs (
@@ -398,7 +547,7 @@ fn flag(on: bool) -> String {
 /// Bumped whenever the schema below changes shape. The index is disposable —
 /// an on-disk file stamped with an older version is dropped and rebuilt from
 /// git rather than migrated in place (§6: SQLite is only an index).
-const INDEX_VERSION: i64 = 8;
+const INDEX_VERSION: i64 = 9;
 
 /// The column list every issue SELECT shares, in a fixed order. Hand-written
 /// SELECTs drifting out of step with the schema is the known failure mode of
@@ -483,6 +632,13 @@ impl Index {
                  DROP TABLE IF EXISTS issue_flows;
                  DROP TABLE IF EXISTS issue_needs_scenarios;
                  DROP TABLE IF EXISTS issue_proves;
+                 DROP TABLE IF EXISTS code_files;
+                 DROP TABLE IF EXISTS code_symbols;
+                 DROP TABLE IF EXISTS code_imports;
+                 DROP TABLE IF EXISTS code_calls;
+                 DROP TABLE IF EXISTS code_relations;
+                 DROP TABLE IF EXISTS code_maps;
+                 DROP TABLE IF EXISTS code_map_entries;
                  DROP TABLE IF EXISTS issues;",
             )?;
         }
@@ -977,6 +1133,469 @@ impl Index {
         self.conn.execute("DELETE FROM morse_proofs", [])?;
         self.conn.execute("DELETE FROM morse_scenarios", [])?;
         Ok(())
+    }
+
+    // -- the code map (ADR 0025) ----------------------------------------------
+
+    /// Forget every map fence and its judged entries.
+    pub fn clear_code_maps(&mut self) -> Result<(), IndexError> {
+        self.conn.execute("DELETE FROM code_map_entries", [])?;
+        self.conn.execute("DELETE FROM code_maps", [])?;
+        Ok(())
+    }
+
+    /// Forget the maps one document declared, before its fences are re-read.
+    pub fn clear_code_maps_at(&mut self, path: &str) -> Result<(), IndexError> {
+        self.conn.execute(
+            "DELETE FROM code_map_entries WHERE map IN (SELECT map FROM code_maps WHERE path = ?1)",
+            params![path],
+        )?;
+        self.conn
+            .execute("DELETE FROM code_maps WHERE path = ?1", params![path])?;
+        Ok(())
+    }
+
+    /// Record a map fence. The first document to name a map keeps it; a
+    /// second is refused (`false`), like a second fence for a flow.
+    pub fn upsert_code_map(&mut self, map: &StoredCodeMap) -> Result<bool, IndexError> {
+        use rusqlite::OptionalExtension;
+        let taken: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT path FROM code_maps WHERE map = ?1",
+                params![map.map],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if taken.is_some_and(|t| t != map.path) {
+            return Ok(false);
+        }
+        self.conn.execute(
+            "INSERT OR REPLACE INTO code_maps (map, path, line, body, problem) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![map.map, map.path, map.line as i64, map.body, map.problem],
+        )?;
+        Ok(true)
+    }
+
+    /// Every map fence, by name.
+    pub fn code_maps(&self) -> Result<Vec<StoredCodeMap>, IndexError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT map, path, line, body, problem FROM code_maps ORDER BY map")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(StoredCodeMap {
+                map: r.get(0)?,
+                path: r.get(1)?,
+                line: r.get::<_, i64>(2)? as usize,
+                body: r.get(3)?,
+                problem: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Replace one map's judged entries.
+    pub fn replace_code_map_entries(
+        &mut self,
+        map: &str,
+        entries: &[StoredMapEntry],
+    ) -> Result<(), IndexError> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM code_map_entries WHERE map = ?1", params![map])?;
+        for e in entries {
+            tx.execute(
+                "INSERT INTO code_map_entries \
+                 (map, idx, task, why, change, example, never, health, detail) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    map,
+                    e.idx as i64,
+                    e.task,
+                    e.why,
+                    e.change.join("\n"),
+                    e.example,
+                    e.never.join("\n"),
+                    e.health,
+                    e.detail
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every judged entry, by map then position.
+    pub fn code_map_entries(&self) -> Result<Vec<StoredMapEntry>, IndexError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT map, idx, task, why, change, example, never, health, detail \
+             FROM code_map_entries ORDER BY map, idx",
+        )?;
+        let lines = |t: String| -> Vec<String> {
+            t.lines()
+                .filter(|l| !l.is_empty())
+                .map(str::to_owned)
+                .collect()
+        };
+        let rows = stmt.query_map([], |r| {
+            Ok(StoredMapEntry {
+                map: r.get(0)?,
+                idx: r.get::<_, i64>(1)? as usize,
+                task: r.get(2)?,
+                why: r.get(3)?,
+                change: lines(r.get(4)?),
+                example: r.get(5)?,
+                never: lines(r.get(6)?),
+                health: r.get(7)?,
+                detail: r.get(8)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Each indexed file of a code root, with the blob it was read at.
+    pub fn code_blobs(
+        &self,
+        root: &str,
+    ) -> Result<std::collections::HashMap<String, String>, IndexError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path, blob_sha FROM code_files WHERE root = ?1")?;
+        let rows = stmt.query_map(params![root], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Replace one file's facts. Its imports are stored unresolved; the
+    /// resolution pass sets their targets.
+    pub fn replace_code_file(
+        &mut self,
+        root: &str,
+        path: &str,
+        blob: &str,
+        lang: &str,
+        generated: bool,
+        facts: &dit_model::FileFacts,
+    ) -> Result<(), IndexError> {
+        let tx = self.conn.transaction()?;
+        for table in [
+            "code_symbols",
+            "code_imports",
+            "code_calls",
+            "code_relations",
+        ] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE root = ?1 AND path = ?2"),
+                params![root, path],
+            )?;
+        }
+        tx.execute(
+            "INSERT OR REPLACE INTO code_files (root, path, blob_sha, lang, generated) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![root, path, blob, lang, generated],
+        )?;
+        for s in &facts.symbols {
+            tx.execute(
+                "INSERT INTO code_symbols (root, path, name, kind, line, exported) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![root, path, s.name, s.kind.as_str(), s.line, s.exported],
+            )?;
+        }
+        for i in &facts.imports {
+            tx.execute(
+                "INSERT INTO code_imports (root, path, specifier, names, reexport, line) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    root,
+                    path,
+                    i.specifier,
+                    i.names.join(","),
+                    i.reexport,
+                    i.line
+                ],
+            )?;
+        }
+        for c in &facts.calls {
+            tx.execute(
+                "INSERT INTO code_calls (root, path, callee, line) VALUES (?1, ?2, ?3, ?4)",
+                params![root, path, c.callee, c.line],
+            )?;
+        }
+        for r in &facts.relations {
+            let kind = match r.kind {
+                dit_model::RelationKind::Inherits => "inherits",
+                dit_model::RelationKind::Implements => "implements",
+            };
+            tx.execute(
+                "INSERT INTO code_relations (root, path, from_name, to_name, kind) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![root, path, r.from, r.to, kind],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Forget a file that is gone from HEAD or no longer covered.
+    pub fn remove_code_file(&mut self, root: &str, path: &str) -> Result<(), IndexError> {
+        let tx = self.conn.transaction()?;
+        for table in [
+            "code_files",
+            "code_symbols",
+            "code_imports",
+            "code_calls",
+            "code_relations",
+        ] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE root = ?1 AND path = ?2"),
+                params![root, path],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Forget a whole code root — one no longer registered.
+    pub fn remove_code_root(&mut self, root: &str) -> Result<(), IndexError> {
+        for table in [
+            "code_files",
+            "code_symbols",
+            "code_imports",
+            "code_calls",
+            "code_relations",
+        ] {
+            self.conn.execute(
+                &format!("DELETE FROM {table} WHERE root = ?1"),
+                params![root],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// The code roots the index holds files for.
+    pub fn code_roots(&self) -> Result<Vec<String>, IndexError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT root FROM code_files ORDER BY root")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Every import of a root, with the language of the file it is in.
+    pub fn code_imports_of_root(&self, root: &str) -> Result<Vec<StoredCodeImport>, IndexError> {
+        self.code_imports_where("i.root = ?1", &[&root])
+    }
+
+    /// One file's imports.
+    pub fn code_imports_of(
+        &self,
+        root: &str,
+        path: &str,
+    ) -> Result<Vec<StoredCodeImport>, IndexError> {
+        self.code_imports_where("i.root = ?1 AND i.path = ?2", &[&root, &path])
+    }
+
+    fn code_imports_where(
+        &self,
+        clause: &str,
+        binds: &[&dyn rusqlite::ToSql],
+    ) -> Result<Vec<StoredCodeImport>, IndexError> {
+        let sql = format!(
+            "SELECT i.id, i.root, i.path, f.lang, i.specifier, i.names, i.reexport, i.line, \
+             i.target, i.external FROM code_imports i JOIN code_files f \
+             ON f.root = i.root AND f.path = i.path WHERE {clause} ORDER BY i.path, i.line"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(binds, |r| {
+            let names: String = r.get(5)?;
+            Ok(StoredCodeImport {
+                id: r.get(0)?,
+                root: r.get(1)?,
+                path: r.get(2)?,
+                lang: r.get(3)?,
+                specifier: r.get(4)?,
+                names: split_names(&names),
+                reexport: r.get(6)?,
+                line: r.get::<_, i64>(7)? as u32,
+                target: r.get(8)?,
+                external: r.get(9)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Record where one import resolved.
+    pub fn set_code_import_target(
+        &mut self,
+        id: i64,
+        target: Option<&str>,
+        external: bool,
+    ) -> Result<(), IndexError> {
+        self.conn.execute(
+            "UPDATE code_imports SET target = ?2, external = ?3 WHERE id = ?1",
+            params![id, target, external],
+        )?;
+        Ok(())
+    }
+
+    /// Record many resolutions in one transaction.
+    pub fn set_code_import_targets(
+        &mut self,
+        targets: &[(i64, Option<String>, bool)],
+    ) -> Result<(), IndexError> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut stmt =
+                tx.prepare("UPDATE code_imports SET target = ?2, external = ?3 WHERE id = ?1")?;
+            for (id, target, external) in targets {
+                stmt.execute(params![id, target, external])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The files importing `target` in a root.
+    pub fn code_importers(
+        &self,
+        root: &str,
+        target: &str,
+    ) -> Result<Vec<CodeImporter>, IndexError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT root, path, names, line, reexport FROM code_imports \
+             WHERE root = ?1 AND target = ?2 ORDER BY path, line",
+        )?;
+        let rows = stmt.query_map(params![root, target], |r| {
+            let names: String = r.get(2)?;
+            Ok(CodeImporter {
+                root: r.get(0)?,
+                path: r.get(1)?,
+                names: split_names(&names),
+                line: r.get::<_, i64>(3)? as u32,
+                reexport: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Symbols with exactly this name, anywhere.
+    pub fn code_symbols_named(&self, name: &str) -> Result<Vec<StoredCodeSymbol>, IndexError> {
+        self.code_symbols_where("name = ?1", &[&name])
+    }
+
+    /// Symbols a file defines.
+    pub fn code_symbols_of(
+        &self,
+        root: &str,
+        path: &str,
+    ) -> Result<Vec<StoredCodeSymbol>, IndexError> {
+        self.code_symbols_where("root = ?1 AND path = ?2", &[&root, &path])
+    }
+
+    /// Symbols and files whose name contains `text`, bounded.
+    pub fn code_symbols_like(
+        &self,
+        text: &str,
+        limit: usize,
+    ) -> Result<Vec<StoredCodeSymbol>, IndexError> {
+        let pattern = format!("%{text}%");
+        let sql_limit = limit as i64;
+        self.code_symbols_where("name LIKE ?1 LIMIT ?2", &[&pattern, &sql_limit])
+    }
+
+    fn code_symbols_where(
+        &self,
+        clause: &str,
+        binds: &[&dyn rusqlite::ToSql],
+    ) -> Result<Vec<StoredCodeSymbol>, IndexError> {
+        let sql = format!(
+            "SELECT root, path, name, kind, line, exported FROM code_symbols WHERE {clause}"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(binds, |r| {
+            Ok(StoredCodeSymbol {
+                root: r.get(0)?,
+                path: r.get(1)?,
+                name: r.get(2)?,
+                kind: r.get(3)?,
+                line: r.get::<_, i64>(4)? as u32,
+                exported: r.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// The calls a file makes.
+    pub fn code_calls_of(&self, root: &str, path: &str) -> Result<Vec<StoredCodeCall>, IndexError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT path, callee, line FROM code_calls WHERE root = ?1 AND path = ?2 ORDER BY line",
+        )?;
+        let rows = stmt.query_map(params![root, path], |r| {
+            Ok(StoredCodeCall {
+                path: r.get(0)?,
+                callee: r.get(1)?,
+                line: r.get::<_, i64>(2)? as u32,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Files whose path contains `text`, bounded.
+    pub fn code_files_like(
+        &self,
+        text: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, String)>, IndexError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT root, path FROM code_files WHERE path LIKE ?1 ORDER BY length(path), path LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![format!("%{text}%"), limit as i64], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Whether a file is marked generated.
+    pub fn code_file_generated(&self, root: &str, path: &str) -> Result<Option<bool>, IndexError> {
+        use rusqlite::OptionalExtension;
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT generated FROM code_files WHERE root = ?1 AND path = ?2",
+                params![root, path],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// The most-imported files of a root (or every root): fan-in, descending.
+    /// Generated targets are left out unless `generated` asks for them: the
+    /// most-imported file of a schema-driven app is always its generated base
+    /// client, which says nothing about the code people write.
+    pub fn code_hubs(
+        &self,
+        root: Option<&str>,
+        limit: usize,
+        generated: bool,
+    ) -> Result<Vec<(String, String, usize)>, IndexError> {
+        let sql = "SELECT i.root, i.target, COUNT(DISTINCT i.path) AS n FROM code_imports i \
+                   LEFT JOIN code_files f ON f.root = i.root AND f.path = i.target \
+                   WHERE i.target IS NOT NULL AND (?1 IS NULL OR i.root = ?1) \
+                   AND (?3 OR COALESCE(f.generated, 0) = 0) \
+                   GROUP BY i.root, i.target ORDER BY n DESC, i.target LIMIT ?2";
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map(params![root, limit as i64, generated], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? as usize))
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Every resolved import edge of a root: `(from, to)`.
+    pub fn code_edges(&self, root: &str) -> Result<Vec<(String, String)>, IndexError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT path, target FROM code_imports WHERE root = ?1 AND target IS NOT NULL",
+        )?;
+        let rows = stmt.query_map(params![root], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// Set one scenario's proofs, replacing whatever was judged before.
@@ -2348,6 +2967,85 @@ mod tests {
 
         index.clear_morse_scenarios_at("docs/a.md").unwrap();
         assert!(index.morse_scenarios().unwrap().is_empty());
+    }
+
+    // ADR 0025: one file's facts replace its previous rows; resolution is a
+    // separate pass over every stored import, so an import written before its
+    // target existed resolves once the target lands, without a re-parse.
+    #[test]
+    fn code_facts_are_kept_per_file_and_imports_resolve_in_a_second_pass() {
+        use dit_model::{CodeCall, CodeImport, CodeSymbol, FileFacts, SymbolKind};
+        let mut index = Index::in_memory().unwrap();
+        let facts = FileFacts {
+            symbols: vec![CodeSymbol {
+                name: "Page".into(),
+                kind: SymbolKind::Function,
+                line: 3,
+                exported: true,
+            }],
+            imports: vec![CodeImport {
+                specifier: "./hooks".into(),
+                names: vec!["useThing".into(), "Other".into()],
+                reexport: false,
+                line: 1,
+            }],
+            calls: vec![CodeCall {
+                callee: "useThing".into(),
+                line: 4,
+            }],
+            relations: vec![],
+        };
+        index
+            .replace_code_file("web", "src/Page.tsx", "b1", "tsx", false, &facts)
+            .unwrap();
+        assert_eq!(
+            index
+                .code_blobs("web")
+                .unwrap()
+                .get("src/Page.tsx")
+                .map(String::as_str),
+            Some("b1")
+        );
+
+        let pending = index.code_imports_of_root("web").unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].specifier, "./hooks");
+        assert_eq!(pending[0].target, None);
+        index
+            .set_code_import_target(pending[0].id, Some("src/hooks.ts"), false)
+            .unwrap();
+
+        let users = index.code_importers("web", "src/hooks.ts").unwrap();
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].path, "src/Page.tsx");
+        assert_eq!(users[0].names, vec!["useThing", "Other"]);
+        assert_eq!(
+            index.code_symbols_named("Page").unwrap()[0].path,
+            "src/Page.tsx"
+        );
+        assert_eq!(
+            index.code_calls_of("web", "src/Page.tsx").unwrap()[0].callee,
+            "useThing"
+        );
+
+        // Re-extracting a file replaces its rows; forgetting it removes them.
+        index
+            .replace_code_file(
+                "web",
+                "src/Page.tsx",
+                "b2",
+                "tsx",
+                false,
+                &FileFacts::default(),
+            )
+            .unwrap();
+        assert!(index
+            .code_importers("web", "src/hooks.ts")
+            .unwrap()
+            .is_empty());
+        assert!(index.code_hubs(None, 5, false).unwrap().is_empty());
+        index.remove_code_file("web", "src/Page.tsx").unwrap();
+        assert!(index.code_blobs("web").unwrap().is_empty());
     }
 
     // ADR 0024: proofs are judged per environment at reindex and read by

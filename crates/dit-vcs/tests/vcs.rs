@@ -468,3 +468,35 @@ fn the_dit_alias_lives_in_repo_local_config() {
     repo.set_alias("budi").unwrap();
     assert_eq!(repo.alias().as_deref(), Some("budi"));
 }
+
+/// The code map reads thousands of files at reindex. One `git show` per file
+/// was a process each — minutes on a large root — so blobs are read in one
+/// `git cat-file --batch`, returned in the order asked, `None` for a sha the
+/// repository does not hold.
+#[test]
+fn blobs_are_read_in_one_batch_in_the_order_asked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = Repo::init(tmp.path()).unwrap();
+    repo.set_identity("DIT Test", "dit@test.local").unwrap();
+    std::fs::write(tmp.path().join("a.ts"), "export const a = 1;\n").unwrap();
+    std::fs::write(tmp.path().join("b.rs"), "fn b() {}\n").unwrap();
+    repo.add(".").unwrap();
+    repo.commit("two files").unwrap();
+    let listed = repo.ls_tree(".").unwrap();
+    let sha_of = |name: &str| listed.iter().find(|(p, _)| p == name).unwrap().1.clone();
+    let asked = vec![
+        sha_of("b.rs"),
+        "0000000000000000000000000000000000000000".to_owned(),
+        sha_of("a.ts"),
+    ];
+    let got = repo.read_blobs(&asked).unwrap();
+    assert_eq!(
+        got,
+        vec![
+            Some("fn b() {}\n".to_owned()),
+            None,
+            Some("export const a = 1;\n".to_owned())
+        ]
+    );
+    assert!(repo.read_blobs(&[]).unwrap().is_empty());
+}

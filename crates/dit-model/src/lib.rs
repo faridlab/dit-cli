@@ -13,6 +13,7 @@
 //! generation lives in `dit-store`. The same reasoning keeps `now()` out of
 //! this crate: adapters inject the clock.
 
+mod code;
 mod comment;
 mod config;
 mod doc;
@@ -29,8 +30,12 @@ mod status;
 mod time;
 mod workflow;
 
+pub use code::{
+    glob_match, CodeCall, CodeImport, CodeLang, CodeMap, CodeRelation, CodeSymbol, FileFacts,
+    MapEntry, MapPath, RelationKind, SymbolKind,
+};
 pub use comment::{Author, Comment};
-pub use config::{Config, Numbering, RepoLink, SpecEntry, SCHEMA_MAX};
+pub use config::{CodeRoot, Config, Numbering, RepoLink, SpecEntry, SCHEMA_MAX};
 pub use doc::{DocEntry, DocPath, DocPathError, DOC_ROOTS};
 pub use events::{ChangeSummary, DayCount, EventSource, FieldEvent, StoredFieldEvent};
 pub use flowshape::{

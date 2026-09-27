@@ -29,7 +29,7 @@ const METHODS: &[&str] = &[
 
 /// Key names a DIT file may never carry, at any depth — the same list the
 /// flow fence refuses, for the same reason.
-const FORBIDDEN_KEYS: &[&str] = &[
+pub(crate) const FORBIDDEN_KEYS: &[&str] = &[
     "run",
     "cmd",
     "command",

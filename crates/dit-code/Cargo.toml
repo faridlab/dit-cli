@@ -1,0 +1,19 @@
+[package]
+name    = "dit-code"
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dit-model = { workspace = true }
+# The code map's extractor (ADR 0025): tree-sitter parses each source file into
+# the facts the index stores. C-backed and not wasm-clean, which is why it lives
+# in this adapter and never in the pure core (I4). Pinned, pre-1.0 (DESIGN §9).
+tree-sitter            = { workspace = true }
+tree-sitter-language   = { workspace = true }
+tree-sitter-typescript = { workspace = true }
+tree-sitter-rust       = { workspace = true }

@@ -380,15 +380,70 @@ pub fn parse_config(text: &str) -> Result<Config, SchemaError> {
             });
         }
     }
+    let list = |node: &Yaml, key: &str| -> Vec<String> {
+        match node.get(key) {
+            Some(Yaml::Seq(items)) => items
+                .iter()
+                .filter_map(Yaml::as_str)
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect(),
+            Some(Yaml::Str(one)) if !one.trim().is_empty() => vec![one.trim().to_owned()],
+            _ => Vec::new(),
+        }
+    };
+    let mut code = Vec::new();
+    if let Some(cn) = root.get("code") {
+        for node in cn.as_seq().ok_or(SchemaError::NotAList("code".into()))? {
+            code.push(dit_model::CodeRoot {
+                id: str_of(node, "id")?,
+                repo: node
+                    .get("repo")
+                    .and_then(Yaml::as_str)
+                    .map(str::to_owned)
+                    .filter(|r| !r.is_empty()),
+                include: list(node, "include"),
+                exclude: list(node, "exclude"),
+                generated: list(node, "generated"),
+            });
+        }
+    }
     let config = Config {
         schema_version,
         layout,
         numbering,
         repos,
         specs,
+        code,
     };
     validate_specs(&config)?;
+    validate_code(&config)?;
     Ok(config)
+}
+
+/// The cross-field checks on `code:` (ADR 0025): ids are unique, and a root
+/// in a linked repository names one registered under `repos:`.
+fn validate_code(cfg: &Config) -> Result<(), SchemaError> {
+    let mut seen = std::collections::HashSet::new();
+    for root in &cfg.code {
+        if !seen.insert(&root.id) {
+            return Err(SchemaError::BadValue {
+                key: "code".into(),
+                value: root.id.clone(),
+                hint: "the same code root id appears twice".into(),
+            });
+        }
+        if let Some(repo) = &root.repo {
+            if !cfg.repos.iter().any(|r| &r.name == repo) {
+                return Err(SchemaError::BadValue {
+                    key: "code".into(),
+                    value: repo.clone(),
+                    hint: "a code root's `repo:` must name an entry under `repos:`".into(),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The cross-field checks on `specs:` (§20.2). Two of them are ordinary
@@ -594,7 +649,7 @@ pub fn write_config(cfg: &Config) -> String {
     let mut out = format!("schema_version: {}\n", cfg.schema_version);
     out.push_str(&format!("layout: {}\n", cfg.layout.as_str()));
     out.push_str(&format!("numbering: {}\n", cfg.numbering.as_str()));
-    if cfg.repos.is_empty() && cfg.specs.is_empty() {
+    if cfg.repos.is_empty() && cfg.specs.is_empty() && cfg.code.is_empty() {
         return out;
     }
     if !cfg.repos.is_empty() {
@@ -619,6 +674,27 @@ pub fn write_config(cfg: &Config) -> String {
                 fields.push_str(&format!(", repo: {}", quote_if_needed(repo)));
             }
             fields.push_str(&format!(", path: {}", quote_if_needed(&spec.path)));
+            out.push_str(&format!("  - {{ {fields} }}\n"));
+        }
+    }
+    if !cfg.code.is_empty() {
+        out.push_str("code:\n");
+        let globs = |key: &str, items: &[String]| -> String {
+            if items.is_empty() {
+                String::new()
+            } else {
+                let quoted: Vec<String> = items.iter().map(|g| format!("{g:?}")).collect();
+                format!(", {key}: [{}]", quoted.join(", "))
+            }
+        };
+        for root in &cfg.code {
+            let mut fields = format!("id: {}", quote_if_needed(&root.id));
+            if let Some(repo) = &root.repo {
+                fields.push_str(&format!(", repo: {}", quote_if_needed(repo)));
+            }
+            fields.push_str(&globs("include", &root.include));
+            fields.push_str(&globs("exclude", &root.exclude));
+            fields.push_str(&globs("generated", &root.generated));
             out.push_str(&format!("  - {{ {fields} }}\n"));
         }
     }
@@ -674,6 +750,30 @@ mod tests {
 
     // ADR 0024: proof is opt-in per workflow, round-trips, and a value the
     // schema does not know is refused rather than read as "off".
+    // ADR 0025: the code roots the map is derived from. A root in a linked
+    // repository must name one under `repos:`; a missing `include` means the
+    // whole repository.
+    #[test]
+    fn code_roots_are_read_written_and_checked_against_repos() {
+        let text = "schema_version: 1\nlayout: root\nnumbering: local\nrepos:\n  - { name: webapp, remote: ../webapp }\ncode:\n  - { id: webapp, repo: webapp, include: [\"src/**\"], exclude: [\"src/generated/**\"], generated: [\"src/generated/**\"] }\n  - { id: here }\n";
+        let cfg = parse_config(text).unwrap();
+        assert_eq!(cfg.code.len(), 2);
+        let web = &cfg.code[0];
+        assert_eq!(web.repo.as_deref(), Some("webapp"));
+        assert!(web.covers("src/crud/hooks.ts"));
+        assert!(!web.covers("src/generated/x.ts"));
+        assert!(!web.covers("README.md"));
+        assert!(cfg.code[1].covers("anything/at/all.rs"));
+        assert_eq!(parse_config(&write_config(&cfg)).unwrap(), cfg);
+
+        let bad = text.replace("repo: webapp", "repo: nowhere");
+        let err = parse_config(&bad).unwrap_err();
+        assert!(
+            matches!(&err, SchemaError::BadValue { key, .. } if key == "code"),
+            "{err:?}"
+        );
+    }
+
     #[test]
     fn readiness_proof_is_read_written_and_refused_when_unknown() {
         let mut wf = Workflow::default_workflow();
@@ -773,6 +873,7 @@ coordination:
                 branches: vec!["main".into(), "develop".into()],
             }],
             specs: vec![],
+            code: Vec::new(),
         };
         let text = write_config(&cfg);
         assert_eq!(parse_config(&text).unwrap(), cfg);

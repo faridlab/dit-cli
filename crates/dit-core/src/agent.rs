@@ -151,6 +151,8 @@ pub struct AgentContext {
     pub rule_files: Vec<RuleFile>,
     pub specs: Vec<String>,
     pub proof_required: bool,
+    /// Registered code roots, one line each: id, repo, what it covers.
+    pub code_roots: Vec<String>,
 }
 
 /// The file names an agent reads as a repository's rules.
@@ -214,6 +216,13 @@ pub fn agent_spec(
         "**This workspace does not require proof** yet: readiness follows `blocked_by` alone. \
          Naming seams still pays — `dit morse check` reports them — and a workflow turns the gate \
          on with `proof: required` under `coordination.readiness`."
+    };
+    let code_line = if context.code_roots.is_empty() {
+        "none registered yet — add one under `code:` in `.dit/config.yaml`, e.g. \
+         `- { id: web, include: [\"src/**\"], generated: [\"src/generated/**\"] }`"
+            .to_owned()
+    } else {
+        context.code_roots.join(" · ")
     };
     let status_line = if statuses.is_empty() {
         "(none configured)".to_owned()
@@ -334,10 +343,31 @@ declarative chain of requests against a registered API spec, with no scripts.
   failing step's status and error code in a comment on the issue that owns the seam. The
   scenario then proves the fix when it lands.
 
+## Reading the code
+
+DIT keeps a map of the code derived from git: which file imports which, what each file
+defines and calls, followed through path aliases and barrel re-exports. It is rebuilt from
+HEAD on every `dit code` command, so it is never older than the last commit. Ask it before
+grepping — one answer instead of a page of matches.
+
+- **Code roots** here: {code_line}.
+- `dit code users <file|symbol>` — who imports it; the blast radius of changing it.
+- `dit code uses <file|symbol>` — what it imports and calls.
+- `dit code explain <name>`, `dit code where <text>`, `dit code path <a> <b>`,
+  `dit code hubs` — a node in full, a name search, the import chain between two, and the
+  most depended-on files (generated ones left out).
+- **The map of intent** — `dit-map` fences — says what the code cannot: where a task is
+  done, the file to copy, the paths never to touch. `dit code check` prints every entry with
+  its verdict. Trust an entry that **holds**; re-read one that is **stale** against its
+  example before copying it; never follow one that is **broken**.
+
+The map covers committed files only: a file you just wrote appears after it is committed.
+`dit ai spec code` has the fence format and the confirm step.
+
 ## Recipes
 
 The common tasks as the commands that do them, in order. `dit ai spec <topic>` goes deeper
-on `issues`, `flow` and `morse`.
+on `issues`, `flow`, `morse` and `code`.
 
 - **Report something:** `dit issue new "<title>"` prints `#<n>`; check it landed with
   `dit issue show '#<n>'`. Then shape it: `dit issue set '#<n>' labels=<a>,<b> lane=<lane>`.
@@ -347,6 +377,8 @@ on `issues`, `flow` and `morse`.
 - **Depend on someone:** `dit issue set <yours> blocked_by=<theirs>` when yours cannot start
   until theirs is through the gate; `fed_by=` when theirs only feeds yours.
 - **Join an orchestration:** `dit issue set <issue> flows=<flow>`, then `dit flow show <flow>`.
+- **Change a file safely:** `dit code users <file>` lists everything that breaks with it;
+  `dit code check` says where the task is done and which file to copy.
 - **Rely on an endpoint:** `dit morse check`; if it is not proven for your environment,
   `dit morse sync <scenario> --env <name>`, and name the seam on both issues.
 
@@ -386,11 +418,12 @@ flow falls back to computed stages and the screen says which document and line t
   names any file it could not read, with the reason — a skipped file is a committed issue no
   command can find, so fix it rather than create a second one.
 - `dit morse check` before building on an endpoint; `dit morse sync` to prove one.
+- `dit code users <file>` before changing a file; `dit code check` for where a task is done.
 
 ## Finding your way
 
 `dit --help` lists every command, and each subcommand explains its own flags.
-`dit ai spec <topic>` goes deeper on one subject: `issues`, `flow`, `morse`. `dit doctor`
+`dit ai spec <topic>` goes deeper on one subject: `issues`, `flow`, `morse`, `code`. `dit doctor`
 checks what silently breaks a workspace when wrong, including whether this document was
 written by an older DIT than the one you are using.
 "##
@@ -398,7 +431,7 @@ written by an older DIT than the one you are using.
 }
 
 /// The subjects `dit ai spec <topic>` goes deeper on.
-pub const AGENT_TOPICS: [&str; 3] = ["issues", "flow", "morse"];
+pub const AGENT_TOPICS: [&str; 4] = ["issues", "flow", "morse", "code"];
 
 /// One topic, or `None` for a name that is not one — the caller lists
 /// [`AGENT_TOPICS`]. Longer than the main spec on purpose: an agent opens a
@@ -414,6 +447,14 @@ pub fn agent_topic(topic: &str, context: &AgentContext) -> Option<String> {
                 context.specs.join(" · ")
             };
             Some(TOPIC_MORSE.replace("{specs}", &specs))
+        }
+        "code" => {
+            let roots = if context.code_roots.is_empty() {
+                "none registered yet".to_owned()
+            } else {
+                context.code_roots.join(" · ")
+            };
+            Some(TOPIC_CODE.replace("{roots}", &roots))
         }
         _ => None,
     }
@@ -494,6 +535,69 @@ labels:
 An issue joins a phase by label: `dit issue set '#497' labels=phase/build`. The fence may
 not list members or restate status or dependencies; a fence that fails to parse falls back
 to computed stages and the board names the document and line to fix.
+"##;
+
+const TOPIC_CODE: &str = r##"# The code map in depth
+
+Two layers, kept apart on purpose.
+
+**The derived graph** is computed from the code at HEAD and never written into a file:
+imports, re-exports, definitions, calls and trait/class relations, for TypeScript and Rust.
+Registered code roots: {roots}.
+
+A root is registered in `.dit/config.yaml`:
+
+```yaml
+code:
+  - id: web
+    repo: frontend            # a `repos:` entry; omit for this repository
+    include: ["src/**"]
+    exclude: ["src/**/*.test.ts"]
+    generated: ["src/generated/**"]
+```
+
+Files under `generated:` are mapped but left out of `dit code hubs`, and `dit code explain`
+says when a file is generated — edit its source, not it. Every `dit code` command first
+brings the map up to HEAD, reading only the files whose content changed; `dit code refresh
+--full` reads every file again, and `dit reindex` refreshes it too.
+
+| Command | Answers |
+|---|---|
+| `dit code users <file\|symbol>` | who imports it, through barrels — what breaks if it changes |
+| `dit code uses <file\|symbol>` | what it imports (resolved, external or unresolved) and calls |
+| `dit code explain <name>` | what it defines, whether it is generated, who uses it |
+| `dit code path <a> <b>` | the shortest import chain from one to the other |
+| `dit code where <text>` | files and symbols whose name contains the text |
+| `dit code hubs [--root r]` | the most depended-on files |
+
+Name a file by its path (`src/crud/hooks.ts`, or `web:src/crud/hooks.ts` when two roots
+share it) or a symbol by name (`useList`, `Repo::head`).
+
+**The map of intent** is authored, in a `dit-map` fence in any document, and says what no
+parser can infer:
+
+```dit-map
+map: web
+confirmed: {{ web: 3f2a9c1e }}
+entries:
+  - task: add a list screen for an entity
+    change: [web:src/resources/**]
+    example: web:src/resources/product/index.ts
+    never: [web:src/generated/**]
+    why: the engine renders every entity; a screen is configuration, not code
+```
+
+Every path is `<root>:<glob>`. An entry needs a `task` and at least one of `change`,
+`example` or `never`. `dit code check` judges each entry against the code:
+
+- **broken** — a path matches no file at HEAD, or names an unregistered root. Fix the entry.
+- **unconfirmed** — nobody has confirmed the map against the code yet.
+- **stale** — the example changed since the map was confirmed. Read it before copying it.
+- **holds** — confirmed, and the example is unchanged since.
+
+After reading the map against the code, `dit code map confirm <map>` pins each root it names
+to HEAD, in one commit. Nothing else moves the pin: a map is a person's claim, and a claim
+nobody re-read must not look fresh. The fence may not name anything to run or fetch.
 "##;
 
 const TOPIC_MORSE: &str = r##"# Morse in depth: seams you can prove
@@ -648,6 +752,7 @@ mod tests {
             ],
             specs: vec!["auth".into(), "payroll".into()],
             proof_required: true,
+            code_roots: vec!["web (src/**; generated src/generated/**)".into()],
         }
     }
 
@@ -775,8 +880,36 @@ mod tests {
         ] {
             assert!(morse.contains(needle), "missing `{needle}`:\n{morse}");
         }
+        let code = agent_topic("code", &ctx).unwrap();
+        for needle in [
+            "dit-map",
+            "confirmed:",
+            "dit code map confirm",
+            "dit code users",
+            "generated:",
+            "web (src/**; generated src/generated/**)",
+        ] {
+            assert!(code.contains(needle), "missing `{needle}`:\n{code}");
+        }
         assert!(agent_topic("nonsense", &ctx).is_none());
-        assert_eq!(AGENT_TOPICS, ["issues", "flow", "morse"]);
+        assert_eq!(AGENT_TOPICS, ["issues", "flow", "morse", "code"]);
+    }
+
+    // An agent that does not know the map exists greps instead; one that
+    // does not know a map entry can be broken copies a file that is gone.
+    #[test]
+    fn the_spec_points_at_the_code_map_and_its_verdicts() {
+        let spec = agent_spec("9.9.9", &[], &[], &context());
+        for needle in [
+            "dit code users",
+            "dit code check",
+            "web (src/**; generated src/generated/**)",
+            "**broken**",
+        ] {
+            assert!(spec.contains(needle), "missing `{needle}`");
+        }
+        let bare = agent_spec("9.9.9", &[], &[], &AgentContext::default());
+        assert!(bare.contains("add one under `code:`"), "{bare}");
     }
 
     #[test]

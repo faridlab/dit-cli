@@ -28,6 +28,10 @@ const ALLOWED: &[(&str, &[&str])] = &[
     // knows nothing of the index, of git, or of the workspace — so no read
     // path can reach the network through it.
     ("dit-morse", &["dit-model", "dit-parse"]),
+    // The code map's extractor (ADR 0025): source text in, facts out. It
+    // reads no file itself — `dit-core` hands it what `dit-vcs` read (I3) —
+    // and it carries the one C-backed parser, kept out of the pure core (I4).
+    ("dit-code", &["dit-model"]),
     (
         "dit-core",
         &[
@@ -39,6 +43,7 @@ const ALLOWED: &[(&str, &[&str])] = &[
             "dit-vcs",
             "dit-ai",
             "dit-morse",
+            "dit-code",
         ],
     ),
     // `dit ui` runs the server's own router in-process — delivery calling

@@ -374,6 +374,12 @@ const KNOWN_SCHEMA_KEYS: &[&str] = &[
     "specs",
     "path",
     "repo",
+    // Code roots (ADR 0025): globs over paths inside a repository, read
+    // through git. None of them names anything to run or fetch.
+    "code",
+    "include",
+    "exclude",
+    "generated",
 ];
 
 /// Pull the key tokens out of the YAML the schema writers emit — keys sit at
@@ -414,6 +420,13 @@ fn i7_no_executable_fields_in_schema() {
             id: "auth".into(),
             repo: Some("backend".into()),
             path: "services/auth/openapi.yaml".into(),
+        }],
+        code: vec![dit_model::CodeRoot {
+            id: "web".into(),
+            repo: Some("backend".into()),
+            include: vec!["src/**".into()],
+            exclude: vec!["src/**/*.test.ts".into()],
+            generated: vec!["src/generated/**".into()],
         }],
         ..Default::default()
     });
@@ -465,6 +478,21 @@ fn i7_no_executable_fields_in_schema() {
             matches!(err, dit_parse::MorseError::Forbidden(_)),
             "`{bad}` must be refused as a forbidden key, got: {err}"
         );
+    }
+
+    // A `dit-map` fence (ADR 0025) names paths and nothing else; the same
+    // refusal holds there, at any depth.
+    for bad in ["script: doThing()", "url: \"http://evil.example\""] {
+        let top = format!("map: web\n{bad}\n");
+        let nested = format!("map: web\nentries:\n  - task: t\n    example: web:a.ts\n    {bad}\n");
+        for fence in [top, nested] {
+            let err = dit_parse::codemap::parse_code_map(&fence)
+                .expect_err("a map naming something to run must be refused");
+            assert!(
+                matches!(err, dit_parse::codemap::MapError::Forbidden(_)),
+                "`{bad}` must be refused as a forbidden key, got: {err}"
+            );
+        }
     }
 
     // The third writer (ADR 0023): the fence the Morse screen saves. Every

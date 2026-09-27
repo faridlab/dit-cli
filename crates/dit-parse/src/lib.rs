@@ -12,6 +12,7 @@
 //!
 //! [`fmt`] is `dit fmt`: canonical markdown formatting over the body only.
 
+pub mod codemap;
 pub mod comment;
 pub mod flowshape;
 pub mod fmt;

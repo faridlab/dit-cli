@@ -4303,3 +4303,197 @@ fn agent_docs_refuse_a_repository_that_is_not_a_workspace() {
     let claude = std::fs::read_to_string(tmp.path().join("CLAUDE.md")).unwrap();
     assert_eq!(claude, "# rules\n", "nothing written before the refusal");
 }
+
+// ---- The code map (ADR 0025) -----------------------------------------------
+
+/// A small TypeScript root in the workspace itself: a page importing a hook
+/// through a path alias and a view through a relative path, and a barrel.
+fn code_workspace(path: &Path) -> Dit {
+    let _ = workspace(path);
+    let files: &[(&str, &str)] = &[
+        (
+            "tsconfig.json",
+            "{\n  // comments are allowed in tsconfig\n  \"compilerOptions\": { \"paths\": { \"@/*\": [\"./src/*\"] } }\n}\n",
+        ),
+        (
+            "src/crud/hooks.ts",
+            "export function useThing() { return 1; }\nexport const LIMIT = 3;\n",
+        ),
+        (
+            "src/crud/index.ts",
+            "export { useThing } from \"./hooks\";\n",
+        ),
+        (
+            "src/pages/Page.tsx",
+            "import { useThing } from \"@/crud/hooks\";\nimport { View } from \"./View\";\nexport function Page() { useThing(); return <View />; }\n",
+        ),
+        (
+            "src/pages/View.tsx",
+            "export function View() { return null; }\n",
+        ),
+        (
+            "src/pages/Other.tsx",
+            "import { useThing } from \"@/crud\";\nexport function Other() { return useThing(); }\n",
+        ),
+        ("src/generated/Model.ts", "export type Model = { id: string };\n"),
+    ];
+    for (rel, text) in files {
+        let p = path.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+    std::fs::create_dir_all(path.join(".dit")).unwrap();
+    std::fs::write(
+        path.join(".dit/config.yaml"),
+        "schema_version: 1\nlayout: root\nnumbering: local\ncode:\n  - { id: web, include: [\"src/**\"], generated: [\"src/generated/**\"] }\n",
+    )
+    .unwrap();
+    let repo = Repo::open(path).unwrap();
+    repo.add(".").unwrap();
+    repo.commit("a small web app").unwrap();
+    Dit::open(path).unwrap()
+}
+
+#[test]
+fn the_code_map_answers_who_uses_what_through_aliases_and_barrels() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = code_workspace(tmp.path());
+    let report = dit.refresh_code().unwrap();
+    assert_eq!(report.parsed, 6, "{report:?}");
+
+    // Who uses the hook: Page imports it by alias, Other through the barrel.
+    let users = dit.code_users("useThing").unwrap();
+    let paths: Vec<&str> = users.iter().map(|u| u.path.as_str()).collect();
+    assert!(paths.contains(&"src/pages/Page.tsx"), "{users:?}");
+    assert!(
+        paths.contains(&"src/pages/Other.tsx"),
+        "through the barrel: {users:?}"
+    );
+
+    // Who uses the hook's file: the same two, the barrel one named with it.
+    let file_users = dit.code_users("src/crud/hooks.ts").unwrap();
+    let other = file_users
+        .iter()
+        .find(|u| u.path == "src/pages/Other.tsx")
+        .expect("through the barrel");
+    assert_eq!(
+        other.via.as_deref(),
+        Some("src/crud/index.ts"),
+        "{file_users:?}"
+    );
+    assert!(
+        file_users.iter().all(|u| u.path != "src/crud/index.ts"),
+        "the barrel is a hop, not a user"
+    );
+
+    // What the page depends on, resolved to files.
+    let uses = dit.code_uses("src/pages/Page.tsx").unwrap();
+    let targets: Vec<Option<&str>> = uses.imports.iter().map(|i| i.target.as_deref()).collect();
+    assert!(targets.contains(&Some("src/crud/hooks.ts")), "{uses:?}");
+    assert!(targets.contains(&Some("src/pages/View.tsx")), "{uses:?}");
+    assert!(uses.calls.iter().any(|c| c == "useThing"), "{uses:?}");
+
+    // The chain from the page to the hook.
+    let path = dit
+        .code_path("src/pages/Other.tsx", "src/crud/hooks.ts")
+        .unwrap();
+    assert_eq!(
+        path,
+        vec![
+            "src/pages/Other.tsx",
+            "src/crud/index.ts",
+            "src/crud/hooks.ts"
+        ]
+    );
+
+    // Hubs: the hook file is the most depended-on.
+    let hubs = dit.code_hubs(None, 3, false).unwrap();
+    assert_eq!(hubs[0].path, "src/crud/hooks.ts", "{hubs:?}");
+
+    // Generated code is marked as such.
+    let model = dit.code_explain("src/generated/Model.ts").unwrap();
+    assert!(model.generated, "{model:?}");
+
+    // Unchanged files are not parsed again.
+    assert_eq!(dit.refresh_code().unwrap().parsed, 0);
+}
+
+/// The cache is keyed by blob, so a fixed extractor would never reach files
+/// that did not change. A different extractor version re-reads everything.
+#[test]
+fn a_new_extractor_version_re_reads_every_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = code_workspace(tmp.path());
+    assert_eq!(dit.refresh_code().unwrap().parsed, 6);
+    dit.invalidate_code_map().unwrap();
+    assert_eq!(
+        dit.refresh_code().unwrap().parsed,
+        6,
+        "an index written by another extractor is read again"
+    );
+    assert_eq!(dit.refresh_code().unwrap().parsed, 0);
+}
+
+/// ADR 0025 milestone 2: a map entry is judged against the code on every
+/// refresh. Unconfirmed until someone confirms it; broken the moment a path
+/// it names matches nothing; stale once a file it points at changes after
+/// the pin — and only a person moves the pin.
+#[test]
+fn map_entries_are_judged_against_the_code_and_confirmed_by_a_person() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = code_workspace(tmp.path());
+    write_doc(
+        &mut dit,
+        "docs/code/map.md",
+        "# Where things live\n\n```dit-map\nmap: web\nentries:\n  - task: Use the shared hook\n    example: \"web:src/crud/hooks.ts\"\n    change: [ \"web:src/pages/\" ]\n    never: [ \"web:src/generated/**\" ]\n  - task: A retired pattern\n    example: \"web:src/legacy/Old.tsx\"\n```\n",
+    );
+    dit.reindex(ReindexMode::State).unwrap();
+    dit.refresh_code().unwrap();
+
+    let entries = dit.code_map_report().unwrap();
+    assert_eq!(entries.len(), 2, "{entries:?}");
+    assert_eq!(entries[0].health, dit_core::MapHealth::Unconfirmed);
+    assert!(
+        matches!(&entries[1].health, dit_core::MapHealth::Broken { reasons } if reasons[0].contains("src/legacy/Old.tsx")),
+        "{entries:?}"
+    );
+
+    // A map with a broken entry cannot be confirmed: the pin would claim it holds.
+    let refused = dit.code_map_confirm("web", "farid").unwrap_err();
+    assert!(
+        refused.to_string().contains("A retired pattern"),
+        "{refused}"
+    );
+    write_doc(
+        &mut dit,
+        "docs/code/map.md",
+        "# Where things live\n\n```dit-map\nmap: web\nentries:\n  - task: Use the shared hook\n    example: \"web:src/crud/hooks.ts\"\n    change: [ \"web:src/pages/\" ]\n    never: [ \"web:src/generated/**\" ]\n```\n",
+    );
+    dit.reindex(ReindexMode::State).unwrap();
+    dit.refresh_code().unwrap();
+
+    let pinned = dit.code_map_confirm("web", "farid").unwrap();
+    assert_eq!(pinned.len(), 1, "one root pinned: {pinned:?}");
+    dit.reindex(ReindexMode::State).unwrap();
+    dit.refresh_code().unwrap();
+    assert_eq!(
+        dit.code_map_report().unwrap()[0].health,
+        dit_core::MapHealth::Holds
+    );
+
+    // The example is rewritten after the pin: the entry is stale.
+    std::fs::write(
+        tmp.path().join("src/crud/hooks.ts"),
+        "export function useThing() { return 2; }\n",
+    )
+    .unwrap();
+    let repo = Repo::open(tmp.path()).unwrap();
+    repo.add(".").unwrap();
+    repo.commit("rework the hook").unwrap();
+    dit.reindex(ReindexMode::State).unwrap();
+    dit.refresh_code().unwrap();
+    assert_eq!(
+        dit.code_map_report().unwrap()[0].health,
+        dit_core::MapHealth::Stale { commits: 1 }
+    );
+}

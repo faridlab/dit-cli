@@ -10,6 +10,8 @@ workspace = true
 
 [dependencies]
 dit-model = { workspace = true }
+dit-code  = { workspace = true }
+serde_json = { workspace = true }
 dit-parse = { workspace = true }
 dit-query = { workspace = true }
 dit-store = { workspace = true }

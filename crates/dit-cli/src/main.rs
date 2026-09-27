@@ -165,6 +165,14 @@ enum Command {
         #[command(subcommand)]
         cmd: MorseCmd,
     },
+    /// The code map (ADR 0025): how the registered code roots connect — what
+    /// a file imports and calls, who uses a file or symbol, the chain between
+    /// two, the most depended-on files. Derived from source at HEAD into the
+    /// index; each command brings it up to date first.
+    Code {
+        #[command(subcommand)]
+        cmd: CodeCmd,
+    },
     /// Called by git during merges; humans never type this.
     #[command(hide = true)]
     MergeDriver {
@@ -224,6 +232,57 @@ enum AiCmd {
         /// A topic: issues, flow, morse.
         topic: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum CodeCmd {
+    /// What a file — or the file defining a symbol — imports and calls.
+    Uses { name: String },
+    /// Who imports a file, or uses a symbol (followed through barrels).
+    Users { name: String },
+    /// The shortest import chain from one node to another.
+    Path { from: String, to: String },
+    /// A node, what it defines, whether it is generated, and who uses it.
+    Explain { name: String },
+    /// The most depended-on files.
+    Hubs {
+        /// Only this code root.
+        #[arg(long)]
+        root: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Include generated files (left out by default).
+        #[arg(long)]
+        generated: bool,
+    },
+    /// Files and symbols whose name contains the text.
+    Where {
+        text: String,
+        #[arg(long, default_value_t = 30)]
+        limit: usize,
+    },
+    /// Every `dit-map` entry with its verdict: holds, unconfirmed, stale,
+    /// broken. Exits non-zero when an entry is broken or a map cannot be
+    /// read — stale is a prompt to re-read, not a failure.
+    Check,
+    /// Maps of intent (`dit-map` fences).
+    Map {
+        #[command(subcommand)]
+        cmd: MapCmd,
+    },
+    /// Bring the map up to HEAD and say what changed.
+    Refresh {
+        /// Read every file again, not only those that changed.
+        #[arg(long)]
+        full: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum MapCmd {
+    /// You read the map against the code and it still holds: pin every root
+    /// it names to HEAD, in one commit.
+    Confirm { map: String },
 }
 
 #[derive(Subcommand)]
@@ -573,6 +632,18 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
             // can find is worse than an error, because nothing says it exists.
             for f in &r.skipped_files {
                 println!("  skipped {}: {}", f.path, f.reason);
+            }
+            // The code map (ADR 0025) rides an explicit reindex — never the
+            // one every command runs on open, which a first parse would stall.
+            if !dit.config().code.is_empty() {
+                let code = dit.refresh_code()?;
+                println!(
+                    "code map: {} file(s) in {} root(s), {} parsed",
+                    code.files, code.roots, code.parsed
+                );
+                for problem in &code.problems {
+                    println!("  {problem}");
+                }
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -967,6 +1038,7 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
             }
             Ok(ExitCode::SUCCESS)
         }
+        Command::Code { cmd } => code(cmd, explicit.as_deref()),
         Command::Morse { cmd } => match cmd {
             MorseCmd::Specs => {
                 let dit = open()?;
@@ -1781,6 +1853,172 @@ fn open_browser(url: &str) {
 fn open() -> Result<Dit, DitError> {
     let cwd = std::env::current_dir()?;
     Dit::open(&cwd)
+}
+
+/// `dit code …`: refresh the map to HEAD, then answer from the index.
+fn code(cmd: CodeCmd, explicit: Option<&str>) -> Result<ExitCode, DitError> {
+    let mut dit = open()?;
+    if matches!(cmd, CodeCmd::Refresh { full: true }) {
+        dit.invalidate_code_map()?;
+    }
+    let report = dit.refresh_code()?;
+    for problem in &report.problems {
+        eprintln!("{problem}");
+    }
+    if report.roots == 0 {
+        println!(
+            "no code roots registered — add one under `code:` in .dit/config.yaml, e.g.\n  code:\n    - {{ id: web, include: [\"src/**\"] }}"
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+    let at = |root: &str, path: &str| format!("{root}:{path}");
+    match cmd {
+        CodeCmd::Check => return code_check(&dit),
+        CodeCmd::Map {
+            cmd: MapCmd::Confirm { map },
+        } => {
+            let me = me_for(&dit, explicit);
+            let pins = dit.code_map_confirm(&map, &me)?;
+            let said: Vec<String> = pins
+                .iter()
+                .map(|(root, c)| format!("{root} at {}", &c[..7.min(c.len())]))
+                .collect();
+            println!("confirmed map {map}: {}", said.join(", "));
+        }
+        CodeCmd::Refresh { .. } => {
+            println!(
+                "{} root(s), {} file(s): {} parsed, {} removed, {} unresolved import(s)",
+                report.roots, report.files, report.parsed, report.removed, report.unresolved
+            );
+        }
+        CodeCmd::Uses { name } => {
+            let uses = dit.code_uses(&name)?;
+            println!("{}", at(&uses.root, &uses.path));
+            for i in &uses.imports {
+                let target = match (&i.target, i.external) {
+                    (Some(t), _) => t.clone(),
+                    (None, true) => "(external)".to_owned(),
+                    (None, false) => "(unresolved)".to_owned(),
+                };
+                let names = if i.names.is_empty() {
+                    String::new()
+                } else {
+                    format!("  {{{}}}", i.names.join(", "))
+                };
+                let verb = if i.reexport { "re-exports" } else { "imports" };
+                println!("  {verb} {:<40} {target}{names}", i.specifier);
+            }
+            if !uses.calls.is_empty() {
+                println!("  calls {}", uses.calls.join(", "));
+            }
+        }
+        CodeCmd::Users { name } => {
+            let users = dit.code_users(&name)?;
+            if users.is_empty() {
+                println!("nothing indexed uses `{name}`");
+            }
+            for u in &users {
+                let via = u
+                    .via
+                    .as_deref()
+                    .map(|v| format!("  via {v}"))
+                    .unwrap_or_default();
+                println!("{}:{}{via}", at(&u.root, &u.path), u.line);
+            }
+            println!("{} user(s)", users.len());
+        }
+        CodeCmd::Path { from, to } => {
+            let chain = dit.code_path(&from, &to)?;
+            if chain.is_empty() {
+                println!("no import chain from `{from}` to `{to}`");
+            } else {
+                println!("{}", chain.join("\n  → "));
+            }
+        }
+        CodeCmd::Explain { name } => {
+            let e = dit.code_explain(&name)?;
+            let what = e
+                .symbol
+                .as_deref()
+                .map(|s| format!("{s} in "))
+                .unwrap_or_default();
+            println!("{what}{}", at(&e.root, &e.path));
+            if e.generated {
+                println!("  GENERATED — never the place to edit; change its source and regenerate");
+            }
+            if !e.defines.is_empty() {
+                println!("  exports {}", e.defines.join(", "));
+            }
+            println!(
+                "  imports {} module(s); used by {} file(s)",
+                e.imports,
+                e.users.len()
+            );
+            for u in e.users.iter().take(10) {
+                println!("    {}", at(&u.root, &u.path));
+            }
+        }
+        CodeCmd::Hubs {
+            root,
+            limit,
+            generated,
+        } => {
+            for h in dit.code_hubs(root.as_deref(), limit, generated)? {
+                println!("{:>5}  {}", h.users, at(&h.root, &h.path));
+            }
+        }
+        CodeCmd::Where { text, limit } => {
+            for m in dit.code_where(&text, limit)? {
+                match (&m.symbol, &m.kind) {
+                    (Some(sym), Some(kind)) => {
+                        println!("{kind:<9} {sym:<32} {}:{}", at(&m.root, &m.path), m.line)
+                    }
+                    _ => println!("file      {}", at(&m.root, &m.path)),
+                }
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn code_check(dit: &dit_core::Dit) -> Result<ExitCode, DitError> {
+    use dit_core::MapHealth;
+    let problems = dit.code_map_problems()?;
+    let entries = dit.code_map_report()?;
+    if problems.is_empty() && entries.is_empty() {
+        println!("no `dit-map` fences yet — see `dit ai spec code`");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let mut failed = false;
+    for (map, path, line, problem) in &problems {
+        failed = true;
+        println!("unreadable  {map}  {path}:{line}\n    {problem}");
+    }
+    for e in &entries {
+        let verdict = match &e.health {
+            MapHealth::Holds => "holds".to_owned(),
+            MapHealth::Unconfirmed => "unconfirmed".to_owned(),
+            MapHealth::Stale { commits } => format!("stale ({commits} commit(s) to the example)"),
+            MapHealth::Broken { .. } => {
+                failed = true;
+                "broken".to_owned()
+            }
+        };
+        println!(
+            "{verdict:<11} {}  {}  ({}:{})",
+            e.map, e.task, e.path, e.line
+        );
+        if let MapHealth::Broken { reasons } = &e.health {
+            for r in reasons {
+                println!("    {r}");
+            }
+        }
+    }
+    Ok(if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
 }
 
 /// Refuse a workspace-only command outside a workspace — before `open`,

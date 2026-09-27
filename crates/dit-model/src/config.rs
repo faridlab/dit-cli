@@ -62,6 +62,42 @@ pub struct Config {
     /// a workspace that does not use Morse.
     #[serde(default)]
     pub specs: Vec<SpecEntry>,
+    /// Source roots the code map is derived from (ADR 0025). Empty in a
+    /// workspace that does not map its code.
+    #[serde(default)]
+    pub code: Vec<CodeRoot>,
+}
+
+/// One source root the code map reads (ADR 0025): a repository — this one
+/// when `repo` is `None`, a `repos:` entry otherwise — narrowed by globs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodeRoot {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    /// Paths to index; empty means the whole repository.
+    #[serde(default)]
+    pub include: Vec<String>,
+    /// Paths never indexed, even when an `include` covers them.
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    /// Paths indexed but reported as generated — never the place to edit.
+    #[serde(default)]
+    pub generated: Vec<String>,
+}
+
+impl CodeRoot {
+    /// Whether the root indexes `path`.
+    pub fn covers(&self, path: &str) -> bool {
+        let included =
+            self.include.is_empty() || self.include.iter().any(|g| crate::glob_match(g, path));
+        included && !self.exclude.iter().any(|g| crate::glob_match(g, path))
+    }
+
+    /// Whether `path` is generated code.
+    pub fn is_generated(&self, path: &str) -> bool {
+        self.generated.iter().any(|g| crate::glob_match(g, path))
+    }
 }
 
 /// Number-assignment policy (ADR 0007). Closed set of two.
@@ -105,6 +141,7 @@ impl Default for Config {
             numbering: Numbering::Local,
             repos: vec![],
             specs: vec![],
+            code: Vec::new(),
         }
     }
 }
