@@ -340,6 +340,58 @@ friction graphify never had. So `dit code` works in any git repository:
   and callers together, and a `dit-map` is a committed, pinned claim. A repository
   mapped on its own answers `uses`, `users`, `path`, `explain`, `hubs` and `where`.
 
+## Answers sized for an agent, and branches
+
+A benchmark against grep and graphify on serpa-webapp-admin (`bench/code-map/`) found
+three places where the map cost more than it had to, and they are closed:
+
+- **Output.** A single root drops its `root:` prefix from every line; `dit code uses`
+  lists each import once, by the file it reaches, libraries on one line, and leaves the
+  calls to `--calls` (`uses` of a 293-line page: 525 tokens before, 201 after — against
+  200 for grepping its import lines, whose specifiers are left unresolved).
+- **Questions in words.** `dit code where` takes several words, drops the ones that name
+  nothing in code, and ranks files by how many words they answer in their path or the
+  names they define, then by fan-in, with generated files and tests sinking. The answer
+  is a short reading list, not a name match.
+- **Branches.** Extractor output is cached by blob, not by path: a file seen once — on
+  another branch, at another path — is never parsed again, so switching branches back and
+  forth costs cache reads. A root may pin `ref:` (a branch or tag, validated at parse so
+  git can never read it as an option); the map and the seam link then read that ref
+  through git whatever the checkout has on HEAD — the case of a linked repository someone
+  left on a feature branch.
+- **Background refresh, opt in.** `dit code hook install` adds one marked block, after
+  the shebang, to post-commit, post-merge, post-checkout and post-rewrite, running
+  `dit code refresh` in the background; an existing hook keeps everything it had, and
+  `uninstall` takes the block back out. It refuses when `core.hooksPath` points at
+  committed files, since that would change what the team commits. It is not needed for
+  correctness — every `dit code` command refreshes first — only to move a large first
+  parse after a pull off the agent's path. DIT installs no hook into the agent.
+- **Indexes the benchmark found missing.** Four per-file tables (`code_symbols`,
+  `code_relations`, `code_strings`, `code_type_refs`) had no `(root, path)` index, so
+  replacing one file's rows scanned each whole table: a build grew with the square of
+  the file count. Indexing them took a cold build of the same 6,299 files from 11.0 s
+  to 2.5 s, run back to back on a fresh clone; the blob cache's pruning is also skipped
+  until the cache outgrows its budget, which had cost warm refreshes 1.5 s.
+
+Measured with `bench/code-map/bench.py` against serpa-webapp-admin, keys computed by
+the script from the source (`bench/code-map/RESULTS.md` holds the run):
+
+| Question | grep | graphify | dit code |
+|---|---|---|---|
+| Who imports `useResourceList` | 1,889 tok, 2 calls, all 30 (+4 mentions) | query 1,598 tok, 28/30; explain 462 tok, 17/30 | **286 tok, 30/30** |
+| What `PayrollRunsPage.tsx` imports | 358 tok, specifiers unresolved | 481 tok, 13/16 (no packages) | **201 tok, 16/16 resolved** |
+| `SerpaShell` → `tokenStore` | — | 37 tok | **21 tok** |
+| Where token refresh is handled | 5,283 tok | 1,609 tok | **154 tok**, both files in the top 5 |
+
+| Keeping it current (s) | Cold | Warm | Branch away | Back |
+|---|---:|---:|---:|---:|
+| dit, this build | 3.2 | 0.15 | 0.32 | 0.27 |
+| dit 0.8.0 | 13.2 | 0.23 | 1.01 | 1.09 |
+| `graphify update` | 73.3 | 84.4 | 78.2 | 80.8 |
+
+graphify's search hook adds 67 tokens to every `Bash` and `Grep` call it guards; dit
+adds none.
+
 ## Consequences
 
 **Easier.** The graph an agent reads is the code at HEAD, every time, with no

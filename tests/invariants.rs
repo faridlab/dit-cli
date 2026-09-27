@@ -380,6 +380,9 @@ const KNOWN_SCHEMA_KEYS: &[&str] = &[
     "include",
     "exclude",
     "generated",
+    // A branch or tag name, validated at parse so it can never be read by git
+    // as an option.
+    "ref",
 ];
 
 /// Pull the key tokens out of the YAML the schema writers emit — keys sit at
@@ -427,6 +430,7 @@ fn i7_no_executable_fields_in_schema() {
             include: vec!["src/**".into()],
             exclude: vec!["src/**/*.test.ts".into()],
             generated: vec!["src/generated/**".into()],
+            git_ref: Some("main".into()),
         }],
         ..Default::default()
     });

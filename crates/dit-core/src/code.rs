@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use dit_index::{KotlinReferences, StoredCodeMap, StoredMapEntry};
-use dit_model::{glob_match, CodeLang, CodeMap, CodeRoot, MapPath};
+use dit_model::{glob_match, CodeLang, CodeMap, CodeRoot, FileFacts, MapPath};
 
 use crate::{Dit, DitError};
 
@@ -111,8 +111,12 @@ pub struct CodeReport {
     pub roots: usize,
     /// Files indexed across every root after the refresh.
     pub files: usize,
-    /// Files parsed this time — only those whose blob changed.
+    /// Files parsed this time — only those whose blob changed and was never
+    /// read before.
     pub parsed: usize,
+    /// Files whose blob changed but was read before — on another branch, at
+    /// another path — and came from the cache instead of the parser.
+    pub reused: usize,
     /// Files dropped: gone from HEAD, or no longer covered.
     pub removed: usize,
     /// Imports that look local but name no file.
@@ -179,13 +183,48 @@ pub struct CodeExplain {
 pub struct CodeMatch {
     pub root: String,
     pub path: String,
-    /// `None` for a file match.
-    pub symbol: Option<String>,
-    pub kind: Option<String>,
-    pub line: u32,
+    /// How many of the search words the file answers, by its path or the
+    /// names it defines.
+    pub terms: usize,
+    pub generated: bool,
+    /// The matching symbols it defines, with their lines, best first.
+    pub symbols: Vec<(String, u32)>,
+    /// Files importing it — the tiebreak: of two equal matches, the one the
+    /// code leans on is the one to read.
+    pub users: usize,
 }
 
 const MAX_REEXPORT_DEPTH: usize = 5;
+
+/// Cached extractions kept beyond the files mapped now — enough for a few
+/// branches' worth of differing files.
+const BLOB_CACHE_SPARE: usize = 20_000;
+
+/// One file a search reached: the words it answers (by index into the
+/// search's terms) and the matching names it defines.
+type WhereHit = (HashSet<usize>, Vec<(String, u32)>);
+
+/// How many symbols and files each search word may bring in before ranking.
+const CANDIDATES_PER_TERM: usize = 400;
+
+/// Words a question carries that name nothing in code.
+const STOP_WORDS: [&str; 24] = [
+    "how", "does", "do", "the", "a", "an", "is", "are", "what", "where", "who", "which", "and",
+    "or", "of", "to", "in", "for", "with", "when", "why", "work", "works", "it",
+];
+
+/// The words of a search, lower-cased, without common words or ones too
+/// short to mean anything.
+fn search_terms(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for word in text.split(|c: char| !c.is_alphanumeric() && c != '_') {
+        let w = word.to_lowercase();
+        if w.len() >= 3 && !STOP_WORDS.contains(&w.as_str()) && !out.contains(&w) {
+            out.push(w);
+        }
+    }
+    out
+}
 const EXTRACTOR_KEY: &str = "code-extractor";
 
 impl Dit {
@@ -304,7 +343,7 @@ impl Dit {
         Ok(())
     }
 
-    /// Every file path in a registered root's repository at HEAD.
+    /// Every file path in a registered root's repository at its revision.
     fn root_tree(&self, root_id: &str) -> Result<HashSet<String>, String> {
         let Some(root) = self.config.code.iter().find(|r| r.id == root_id) else {
             return Err(format!(
@@ -312,7 +351,10 @@ impl Dit {
             ));
         };
         let repo = self.repo_for(root.repo.as_deref())?;
-        let files = repo.get().ls_tree(".").map_err(|e| e.to_string())?;
+        let files = repo
+            .get()
+            .ls_tree_at(root.rev(), ".")
+            .map_err(|e| e.to_string())?;
         Ok(files.into_iter().map(|(p, _)| p).collect())
     }
 
@@ -336,7 +378,10 @@ impl Dit {
         let Ok(repo) = self.repo_for(root.repo.as_deref()) else {
             return "unconfirmed".to_owned();
         };
-        match repo.get().commits_touching_since(pin, &example.glob) {
+        match repo
+            .get()
+            .commits_touching_between(pin, root.rev(), &example.glob)
+        {
             Ok(0) => "holds".to_owned(),
             Ok(n) => format!("stale:{n}"),
             Err(_) => "unconfirmed".to_owned(),
@@ -611,10 +656,12 @@ impl Dit {
             let repo = self
                 .repo_for(root.repo.as_deref())
                 .map_err(DitError::Refuse)?;
-            let head = repo
-                .get()
-                .head()
-                .map_err(|e| DitError::Refuse(format!("`{root_id}` has no HEAD: {e}")))?;
+            let head = repo.get().resolve(root.rev()).map_err(|e| {
+                DitError::Refuse(format!(
+                    "`{root_id}` has no commit at `{}`: {e}",
+                    root.rev()
+                ))
+            })?;
             pins.push((root_id, head));
         }
         let body = self.read_doc(&stored.path)?;
@@ -638,6 +685,7 @@ impl Dit {
         for root in self.index.code_roots()? {
             self.index.remove_code_root(&root)?;
         }
+        self.index.clear_blob_cache()?;
         self.index.set_watermark(EXTRACTOR_KEY, "")?;
         Ok(())
     }
@@ -645,7 +693,9 @@ impl Dit {
     fn refresh_root(&mut self, root: &CodeRoot, report: &mut CodeReport) -> Result<(), String> {
         let repo_ref = self.repo_for(root.repo.as_deref())?;
         let repo = repo_ref.get();
-        let listed = repo.ls_tree(".").map_err(|e| e.to_string())?;
+        let listed = repo
+            .ls_tree_at(root.rev(), ".")
+            .map_err(|e| e.to_string())?;
         // Every code file in the repository is a possible import target —
         // including excluded ones — so an import into generated code resolves
         // to its path even though that file is not itself indexed.
@@ -658,7 +708,10 @@ impl Dit {
             .into_iter()
             .filter(|(p, _)| CodeLang::of(p).is_some() && root.covers(p))
             .collect();
-        let aliases = tsconfig_aliases(repo.show_text("HEAD:tsconfig.json").as_deref());
+        let aliases = tsconfig_aliases(
+            repo.show_text(&format!("{}:tsconfig.json", root.rev()))
+                .as_deref(),
+        );
 
         // Read what changed in one batch, then parse it across threads —
         // outside the index borrow.
@@ -668,15 +721,55 @@ impl Dit {
             .filter(|(path, blob)| known.get(path) != Some(blob))
             .filter_map(|(path, blob)| CodeLang::of(path).map(|l| (path.clone(), blob.clone(), l)))
             .collect();
-        let shas: Vec<String> = changed.iter().map(|(_, b, _)| b.clone()).collect();
+        // A blob read before — on another branch, at another path — comes
+        // from the cache; only blobs never seen are read and parsed.
+        let keys: Vec<(String, String)> = changed
+            .iter()
+            .map(|(_, b, l)| (b.clone(), l.as_str().to_owned()))
+            .collect();
+        let cached = self.index.cached_facts(&keys).map_err(|e| e.to_string())?;
+        let mut reused: Vec<(String, String, CodeLang, FileFacts)> = Vec::new();
+        let mut missing: Vec<(String, String, CodeLang)> = Vec::new();
+        for (path, blob, lang) in changed {
+            let hit = cached
+                .get(&(blob.clone(), lang.as_str().to_owned()))
+                .and_then(|json| serde_json::from_str::<FileFacts>(json).ok());
+            match hit {
+                Some(facts) => reused.push((path, blob, lang, facts)),
+                None => missing.push((path, blob, lang)),
+            }
+        }
+        let shas: Vec<String> = missing.iter().map(|(_, b, _)| b.clone()).collect();
         let texts = repo.read_blobs(&shas).map_err(|e| e.to_string())?;
         drop(repo_ref);
-        let work: Vec<(String, String, CodeLang, String)> = changed
+        let work: Vec<(String, String, CodeLang, String)> = missing
             .into_iter()
             .zip(texts)
             .filter_map(|((path, blob, lang), text)| text.map(|t| (path, blob, lang, t)))
             .collect();
-        let parsed = parse_all(work);
+        let fresh = parse_all(work);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        let stored: Vec<(String, String, String)> = fresh
+            .iter()
+            .filter_map(|(_, blob, lang, facts)| {
+                serde_json::to_string(facts)
+                    .ok()
+                    .map(|j| (blob.clone(), lang.as_str().to_owned(), j))
+            })
+            .collect();
+        let touched: Vec<(String, String)> = reused
+            .iter()
+            .map(|(_, b, l, _)| (b.clone(), l.as_str().to_owned()))
+            .collect();
+        self.index
+            .store_facts(&stored, &touched, now)
+            .map_err(|e| e.to_string())?;
+        report.parsed += fresh.len();
+        report.reused += reused.len();
+        let parsed: Vec<(String, String, CodeLang, FileFacts)> =
+            fresh.into_iter().chain(reused).collect();
 
         let keep: HashSet<&str> = covered.iter().map(|(p, _)| p.as_str()).collect();
         for path in known.keys() {
@@ -699,8 +792,10 @@ impl Dit {
                 )
                 .map_err(|e| e.to_string())?;
         }
-        report.parsed += parsed.len();
         report.files += covered.len();
+        self.index
+            .prune_blob_cache(BLOB_CACHE_SPARE.max(covered.len() * 2))
+            .map_err(|e| e.to_string())?;
 
         // Kotlin imports name declarations: index them by qualified name.
         let mut kotlin = dit_code::KotlinIndex::default();
@@ -1032,29 +1127,60 @@ impl Dit {
         })
     }
 
-    /// Symbols and files whose name contains `text`.
+    /// The files to read for a question: every word of `text` (common words
+    /// dropped) is looked up in file paths and defined names, and files are
+    /// ranked by how many words they answer, then by how much of the code
+    /// imports them. Generated files and tests sink, never vanish.
     pub fn code_where(&self, text: &str, limit: usize) -> Result<Vec<CodeMatch>, DitError> {
-        let mut out: Vec<CodeMatch> = self
-            .index
-            .code_symbols_like(text, limit)?
-            .into_iter()
-            .map(|s| CodeMatch {
-                root: s.root,
-                path: s.path,
-                symbol: Some(s.name),
-                kind: Some(s.kind),
-                line: s.line,
-            })
-            .collect();
-        for (root, path) in self.index.code_files_like(text, limit)? {
+        let terms = search_terms(text);
+        if terms.is_empty() {
+            return Ok(Vec::new());
+        }
+        // (root, path) → (terms matched, symbols)
+        let mut hits: HashMap<(String, String), WhereHit> = HashMap::new();
+        for (t, term) in terms.iter().enumerate() {
+            for s in self.index.code_symbols_like(term, CANDIDATES_PER_TERM)? {
+                let hit = hits.entry((s.root, s.path)).or_default();
+                hit.0.insert(t);
+                if !hit.1.iter().any(|(n, _)| n == &s.name) {
+                    hit.1.push((s.name, s.line));
+                }
+            }
+            for (root, path) in self.index.code_files_like(term, CANDIDATES_PER_TERM)? {
+                hits.entry((root, path)).or_default().0.insert(t);
+            }
+        }
+        let mut out: Vec<CodeMatch> = Vec::with_capacity(hits.len());
+        for ((root, path), (matched, mut symbols)) in hits {
+            // A symbol naming more of the words comes first.
+            symbols.sort_by_key(|(n, _)| {
+                let lower = n.to_lowercase();
+                std::cmp::Reverse(terms.iter().filter(|t| lower.contains(t.as_str())).count())
+            });
+            let generated = self
+                .index
+                .code_file_generated(&root, &path)?
+                .unwrap_or(false);
+            let users = self.index.code_importers(&root, &path)?.len();
             out.push(CodeMatch {
                 root,
                 path,
-                symbol: None,
-                kind: None,
-                line: 0,
+                terms: matched.len(),
+                generated,
+                symbols,
+                users,
             });
         }
+        out.sort_by(|a, b| {
+            let test =
+                |p: &str| p.contains(".test.") || p.contains("__tests__") || p.contains("/tests/");
+            b.terms
+                .cmp(&a.terms)
+                .then(a.generated.cmp(&b.generated))
+                .then(test(&a.path).cmp(&test(&b.path)))
+                .then(b.users.cmp(&a.users))
+                .then(a.path.cmp(&b.path))
+        });
         out.truncate(limit);
         Ok(out)
     }
@@ -1125,6 +1251,105 @@ impl Lookup<'_> {
                 .map(|v| (s.path.clone(), v.clone()))
         })
     }
+}
+
+/// The git hooks that move HEAD — after each, the map has files to read.
+const HOOKS: [&str; 4] = ["post-commit", "post-merge", "post-checkout", "post-rewrite"];
+const HOOK_BEGIN: &str = "# >>> dit code map";
+const HOOK_END: &str = "# <<< dit code map";
+
+fn hook_block() -> String {
+    format!(
+        "{HOOK_BEGIN}\n\
+         # Refresh DIT's code map in the background once git has moved HEAD, so the\n\
+         # next `dit code` question does not wait for it. Installed by\n\
+         # `dit code hook install`; `dit code hook uninstall` removes this block.\n\
+         if command -v dit >/dev/null 2>&1; then (dit code refresh >/dev/null 2>&1 &); fi\n\
+         {HOOK_END}\n"
+    )
+}
+
+/// Opt in to refreshing the code map in the background whenever git moves
+/// HEAD. Each hook gets one marked block right after its shebang — an
+/// existing hook keeps everything it had, and an `exit` further down cannot
+/// skip the block. Returns the hooks written; refuses when git's hooks live
+/// in tracked files (`core.hooksPath` pointing into the repository, as a hook
+/// manager sets it), because installing would change what the team commits.
+pub fn install_code_hooks(path: &std::path::Path) -> Result<Vec<String>, DitError> {
+    let repo = dit_vcs::Repo::open(path)?;
+    let dir = repo.hooks_dir()?;
+    refuse_tracked_hooks(&repo, &dir)?;
+    let mut written = Vec::new();
+    for hook in HOOKS {
+        let file = dir.join(hook);
+        let current = std::fs::read_to_string(&file).unwrap_or_default();
+        if current.contains(HOOK_BEGIN) {
+            continue;
+        }
+        let updated = match current.split_once('\n') {
+            Some((first, rest)) if first.starts_with("#!") => {
+                format!("{first}\n{}{rest}", hook_block())
+            }
+            _ if current.trim().is_empty() => format!("#!/bin/sh\n{}", hook_block()),
+            _ => format!("#!/bin/sh\n{}{current}", hook_block()),
+        };
+        dit_store::atomic::write_executable(&file, &updated)?;
+        written.push(hook.to_owned());
+    }
+    Ok(written)
+}
+
+/// Take the block back out; a hook left with nothing but its shebang goes.
+pub fn uninstall_code_hooks(path: &std::path::Path) -> Result<Vec<String>, DitError> {
+    let repo = dit_vcs::Repo::open(path)?;
+    let dir = repo.hooks_dir()?;
+    let mut removed = Vec::new();
+    for hook in HOOKS {
+        let file = dir.join(hook);
+        let Ok(current) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let (Some(start), Some(end)) = (current.find(HOOK_BEGIN), current.find(HOOK_END)) else {
+            continue;
+        };
+        let end = end + HOOK_END.len();
+        let end = if current[end..].starts_with('\n') {
+            end + 1
+        } else {
+            end
+        };
+        let rest = format!("{}{}", &current[..start], &current[end..]);
+        let empty = rest
+            .lines()
+            .all(|l| l.trim().is_empty() || l.starts_with("#!"));
+        if empty {
+            dit_store::atomic::remove_file(&file)?;
+        } else {
+            dit_store::atomic::write_executable(&file, &rest)?;
+        }
+        removed.push(hook.to_owned());
+    }
+    Ok(removed)
+}
+
+fn refuse_tracked_hooks(repo: &dit_vcs::Repo, dir: &std::path::Path) -> Result<(), DitError> {
+    let Ok(inside) = dir.strip_prefix(repo.root()) else {
+        return Ok(());
+    };
+    let rel = inside.to_string_lossy().replace('\\', "/");
+    if rel.starts_with(".git/") || rel == ".git" {
+        return Ok(());
+    }
+    let tracked =
+        HOOKS.iter().any(|h| repo.is_tracked(&format!("{rel}/{h}"))) || repo.is_tracked(&rel);
+    if tracked {
+        return Err(DitError::Refuse(format!(
+            "git runs hooks from `{rel}/`, which is committed (a hook manager set core.hooksPath) — \
+             add `dit code refresh` to that manager's post-merge/post-checkout hooks instead, so \
+             the change goes through review like any other"
+        )));
+    }
+    Ok(())
 }
 
 /// The edges Kotlin does not write down: a file using a declaration of its

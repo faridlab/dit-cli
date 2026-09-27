@@ -6,6 +6,7 @@
 // crate IS the printer, so the standard output macros are its job.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -236,8 +237,14 @@ enum AiCmd {
 
 #[derive(Subcommand)]
 enum CodeCmd {
-    /// What a file — or the file defining a symbol — imports and calls.
-    Uses { name: String },
+    /// What a file — or the file defining a symbol — imports, by the file
+    /// each import reaches.
+    Uses {
+        name: String,
+        /// Also list the calls it makes beyond what its imports name.
+        #[arg(long)]
+        calls: bool,
+    },
     /// Who imports a file, or uses a symbol (followed through barrels).
     Users { name: String },
     /// The shortest import chain from one node to another.
@@ -255,10 +262,13 @@ enum CodeCmd {
         #[arg(long)]
         generated: bool,
     },
-    /// Files and symbols whose name contains the text.
+    /// The files to read for a question: `dit code where token refresh`.
+    /// Ranked by how many words a file answers in its path or the names it
+    /// defines, then by how much of the code imports it.
     Where {
-        text: String,
-        #[arg(long, default_value_t = 30)]
+        #[arg(required = true, num_args = 1..)]
+        words: Vec<String>,
+        #[arg(long, default_value_t = 10)]
         limit: usize,
     },
     /// Every `dit-map` entry with its verdict: holds, unconfirmed, stale,
@@ -279,12 +289,27 @@ enum CodeCmd {
         #[command(subcommand)]
         cmd: MapCmd,
     },
+    /// Opt in to refreshing the map in the background after every commit,
+    /// merge, checkout and rebase — so the first question after a pull does
+    /// not wait for the parse.
+    Hook {
+        #[command(subcommand)]
+        cmd: HookCmd,
+    },
     /// Bring the map up to HEAD and say what changed.
     Refresh {
         /// Read every file again, not only those that changed.
         #[arg(long)]
         full: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum HookCmd {
+    /// Add the background refresh to this repository's git hooks.
+    Install,
+    /// Take it back out.
+    Uninstall,
 }
 
 #[derive(Subcommand)]
@@ -1880,7 +1905,20 @@ fn open() -> Result<Dit, DitError> {
 
 /// `dit code …`: refresh the map to HEAD, then answer from the index.
 fn code(cmd: CodeCmd, explicit: Option<&str>) -> Result<ExitCode, DitError> {
-    let mut dit = Dit::open_code(&std::env::current_dir()?)?;
+    let cwd = std::env::current_dir()?;
+    if let CodeCmd::Hook { cmd } = &cmd {
+        let (verb, hooks) = match cmd {
+            HookCmd::Install => ("installed in", dit_core::code::install_code_hooks(&cwd)?),
+            HookCmd::Uninstall => ("removed from", dit_core::code::uninstall_code_hooks(&cwd)?),
+        };
+        if hooks.is_empty() {
+            println!("nothing to change — the hooks are already as asked");
+        } else {
+            println!("background refresh {verb}: {}", hooks.join(", "));
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    let mut dit = Dit::open_code(&cwd)?;
     if matches!(cmd, CodeCmd::Refresh { full: true }) {
         dit.invalidate_code_map()?;
     }
@@ -1894,8 +1932,19 @@ fn code(cmd: CodeCmd, explicit: Option<&str>) -> Result<ExitCode, DitError> {
         );
         return Ok(ExitCode::SUCCESS);
     }
-    let at = |root: &str, path: &str| format!("{root}:{path}");
+    // One root: the prefix says nothing, and every line of every answer
+    // would pay for it.
+    let single = report.roots == 1;
+    let at = |root: &str, path: &str| {
+        if single {
+            path.to_owned()
+        } else {
+            format!("{root}:{path}")
+        }
+    };
     match cmd {
+        // Answered above, before the map is opened.
+        CodeCmd::Hook { .. } => {}
         CodeCmd::Check => return code_check(&dit),
         CodeCmd::Api { all } => print_code_api(&dit.code_api()?, all),
         CodeCmd::Map {
@@ -1911,29 +1960,67 @@ fn code(cmd: CodeCmd, explicit: Option<&str>) -> Result<ExitCode, DitError> {
         }
         CodeCmd::Refresh { .. } => {
             println!(
-                "{} root(s), {} file(s): {} parsed, {} removed, {} unresolved import(s)",
-                report.roots, report.files, report.parsed, report.removed, report.unresolved
+                "{} root(s), {} file(s): {} parsed, {} from cache, {} removed, {} unresolved import(s)",
+                report.roots,
+                report.files,
+                report.parsed,
+                report.reused,
+                report.removed,
+                report.unresolved
             );
         }
-        CodeCmd::Uses { name } => {
+        CodeCmd::Uses {
+            name,
+            calls: show_calls,
+        } => {
             let uses = dit.code_uses(&name)?;
             println!("{}", at(&uses.root, &uses.path));
-            for i in &uses.imports {
-                let target = match (&i.target, i.external) {
-                    (Some(t), _) => t.clone(),
-                    (None, true) => "(external)".to_owned(),
-                    (None, false) => "(unresolved)".to_owned(),
-                };
-                let names = if i.names.is_empty() {
+            let braces = |names: &[String]| {
+                if names.is_empty() {
                     String::new()
                 } else {
-                    format!("  {{{}}}", i.names.join(", "))
-                };
-                let verb = if i.reexport { "re-exports" } else { "imports" };
-                println!("  {verb} {:<40} {target}{names}", i.specifier);
+                    format!(" {{{}}}", names.join(", "))
+                }
+            };
+            // Resolved imports by the file they reach — the specifier is how
+            // it was spelled, the target is what an agent opens.
+            let mut external = Vec::new();
+            let mut unresolved = Vec::new();
+            for i in &uses.imports {
+                let mark = if i.reexport { "re-exports " } else { "" };
+                match (&i.target, i.external) {
+                    (Some(t), _) => println!("  {mark}{t}{}", braces(&i.names)),
+                    (None, true) => external.push(format!("{}{}", i.specifier, braces(&i.names))),
+                    (None, false) => unresolved.push(i.specifier.clone()),
+                }
             }
-            if !uses.calls.is_empty() {
-                println!("  calls {}", uses.calls.join(", "));
+            if !external.is_empty() {
+                println!("  external: {}", external.join(", "));
+            }
+            if !unresolved.is_empty() {
+                println!("  unresolved: {}", unresolved.join(", "));
+            }
+            // Calls beyond what the imports already name.
+            let imported: HashSet<&str> = uses
+                .imports
+                .iter()
+                .flat_map(|i| i.names.iter().map(String::as_str))
+                .collect();
+            let mut calls: Vec<&str> = Vec::new();
+            for c in &uses.calls {
+                if !imported.contains(c.as_str()) && !calls.contains(&c.as_str()) {
+                    calls.push(c);
+                }
+            }
+            if show_calls && !calls.is_empty() {
+                let shown: Vec<&str> = calls.iter().take(MAX_CALLS_SHOWN).copied().collect();
+                let more = calls.len().saturating_sub(MAX_CALLS_SHOWN);
+                let tail = if more > 0 {
+                    format!(" +{more} more")
+                } else {
+                    String::new()
+                };
+                println!("  also calls: {}{tail}", shown.join(", "));
             }
         }
         CodeCmd::Users { name } => {
@@ -1991,19 +2078,38 @@ fn code(cmd: CodeCmd, explicit: Option<&str>) -> Result<ExitCode, DitError> {
                 println!("{:>5}  {}", h.users, at(&h.root, &h.path));
             }
         }
-        CodeCmd::Where { text, limit } => {
-            for m in dit.code_where(&text, limit)? {
-                match (&m.symbol, &m.kind) {
-                    (Some(sym), Some(kind)) => {
-                        println!("{kind:<9} {sym:<32} {}:{}", at(&m.root, &m.path), m.line)
-                    }
-                    _ => println!("file      {}", at(&m.root, &m.path)),
-                }
+        CodeCmd::Where { words, limit } => {
+            let text = words.join(" ");
+            let hits = dit.code_where(&text, limit)?;
+            if hits.is_empty() {
+                println!("nothing indexed matches `{text}`");
+            }
+            for h in &hits {
+                let line = h
+                    .symbols
+                    .first()
+                    .map_or(String::new(), |(_, l)| format!(":{l}"));
+                let names: Vec<&str> = h.symbols.iter().take(4).map(|(n, _)| n.as_str()).collect();
+                let more = h.symbols.len().saturating_sub(4);
+                let tail = if more > 0 {
+                    format!(" +{more}")
+                } else {
+                    String::new()
+                };
+                let generated = if h.generated { " [generated]" } else { "" };
+                println!(
+                    "{}{line}  {}{tail}{generated}",
+                    at(&h.root, &h.path),
+                    names.join(", ")
+                );
             }
         }
     }
     Ok(ExitCode::SUCCESS)
 }
+
+/// How many further calls `dit code uses` names before it counts the rest.
+const MAX_CALLS_SHOWN: usize = 12;
 
 fn print_code_api(report: &dit_core::ApiReport, all: bool) {
     if report.operations == 0 {

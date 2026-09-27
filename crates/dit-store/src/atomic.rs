@@ -29,6 +29,19 @@ pub fn write(path: &Path, contents: &str) -> io::Result<()> {
     fs::rename(&tmp, path)
 }
 
+/// `write`, then make the file executable — a git hook git will run.
+pub fn write_executable(path: &Path, contents: &str) -> io::Result<()> {
+    write(path, contents)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(path)?.permissions();
+        perms.set_mode(perms.mode() | 0o755);
+        fs::set_permissions(path, perms)?;
+    }
+    Ok(())
+}
+
 /// Remove a file this workspace owns. Grouped here (rather than at call
 /// sites) so that every filesystem mutation in the codebase has one address.
 pub fn remove_file(path: &Path) -> io::Result<()> {

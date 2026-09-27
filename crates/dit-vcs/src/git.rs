@@ -218,6 +218,34 @@ impl Repo {
         self.run(&["rev-parse", "HEAD"])
     }
 
+    /// Where git runs hooks from: `.git/hooks`, a worktree's, or whatever
+    /// `core.hooksPath` points at. Absolute.
+    pub fn hooks_dir(&self) -> Result<PathBuf, VcsError> {
+        let out = self.run(&["rev-parse", "--git-path", "hooks"])?;
+        let p = PathBuf::from(out.trim());
+        Ok(if p.is_absolute() {
+            p
+        } else {
+            self.root().join(p)
+        })
+    }
+
+    /// Whether `path` is tracked in this repository.
+    pub fn is_tracked(&self, path: &str) -> bool {
+        self.run(&["ls-files", "--error-unmatch", "--", path])
+            .is_ok()
+    }
+
+    /// The commit a revision names.
+    pub fn resolve(&self, rev: &str) -> Result<String, VcsError> {
+        self.run(&[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{rev}^{{commit}}"),
+        ])
+    }
+
     /// True when no tracked file differs from HEAD and nothing is staged.
     pub fn is_clean(&self) -> Result<bool, VcsError> {
         let status = self.run(&["status", "--porcelain"])?;
@@ -245,7 +273,17 @@ impl Repo {
     /// one `dit docs check` asks of a source: has the thing I was written
     /// against moved, and by how much?
     pub fn commits_touching_since(&self, since: &str, path: &str) -> Result<usize, VcsError> {
-        let range = format!("{since}..HEAD");
+        self.commits_touching_between(since, "HEAD", path)
+    }
+
+    /// Commits touching `path` after `since`, up to `until`.
+    pub fn commits_touching_between(
+        &self,
+        since: &str,
+        until: &str,
+        path: &str,
+    ) -> Result<usize, VcsError> {
+        let range = format!("{since}..{until}");
         let out = self.run(&["rev-list", "--count", &range, "--", path])?;
         out.parse::<usize>().map_err(|_| VcsError::Git {
             args: format!("rev-list --count {range} -- {path}"),
@@ -341,7 +379,13 @@ impl Repo {
     /// One `(path, blob_sha)` per file under a prefix, at HEAD — the state
     /// side of the index walks this to know what changed.
     pub fn ls_tree(&self, prefix: &str) -> Result<Vec<(String, String)>, VcsError> {
-        let out = self.run(&["ls-tree", "-r", "HEAD", "--", prefix])?;
+        self.ls_tree_at("HEAD", prefix)
+    }
+
+    /// `ls_tree` at any revision — a pinned branch read without checking it
+    /// out.
+    pub fn ls_tree_at(&self, rev: &str, prefix: &str) -> Result<Vec<(String, String)>, VcsError> {
+        let out = self.run(&["ls-tree", "-r", rev, "--", prefix])?;
         let mut files = Vec::new();
         for line in out.lines() {
             // <mode> <type> <sha>\t<path>

@@ -4640,3 +4640,123 @@ fn any_repository_maps_itself_under_dit_code_without_committing_it() {
         "the map must never show as a change"
     );
 }
+
+/// A blob read once is never parsed again, whatever path or branch brings it
+/// back: switching away and back costs a cache read, not a parse.
+#[test]
+fn a_blob_seen_before_comes_from_the_cache_not_the_parser() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = code_workspace(tmp.path());
+    assert_eq!(dit.refresh_code().unwrap().parsed, 6);
+    let repo = Repo::open(tmp.path()).unwrap();
+    let hooks = tmp.path().join("src/crud/hooks.ts");
+    let before = std::fs::read_to_string(&hooks).unwrap();
+
+    // Away: a new blob is parsed.
+    std::fs::write(&hooks, "export function useThing() { return 2; }\n").unwrap();
+    repo.add(".").unwrap();
+    repo.commit("change the hook").unwrap();
+    let away = dit.refresh_code().unwrap();
+    assert_eq!((away.parsed, away.reused), (1, 0), "{away:?}");
+
+    // Back: the old blob returns, and nothing is parsed.
+    std::fs::write(&hooks, &before).unwrap();
+    repo.add(".").unwrap();
+    repo.commit("back to the first hook").unwrap();
+    let back = dit.refresh_code().unwrap();
+    assert_eq!((back.parsed, back.reused), (0, 1), "{back:?}");
+    let users = dit.code_users("useThing").unwrap();
+    assert!(
+        users.iter().any(|u| u.path == "src/pages/Page.tsx"),
+        "{users:?}"
+    );
+}
+
+/// A root pinned to a ref maps that ref, whatever the checkout has on HEAD —
+/// a linked repository someone switched to a feature branch does not move
+/// the map.
+#[test]
+fn a_root_pinned_to_a_ref_maps_that_ref_not_the_checkout() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dit = code_workspace(tmp.path());
+    let repo = Repo::open(tmp.path()).unwrap();
+    repo.git(&["branch", "stable"]).unwrap();
+    // HEAD moves on: a new page importing the hook.
+    std::fs::write(
+        tmp.path().join("src/pages/New.tsx"),
+        "import { useThing } from \"@/crud/hooks\";\nexport const New = () => useThing();\n",
+    )
+    .unwrap();
+    repo.add(".").unwrap();
+    repo.commit("a new page on HEAD").unwrap();
+    std::fs::write(
+        tmp.path().join(".dit/config.yaml"),
+        "schema_version: 1\nlayout: root\nnumbering: local\ncode:\n  - { id: web, include: [\"src/**\"], ref: stable }\n",
+    )
+    .unwrap();
+    repo.add(".").unwrap();
+    repo.commit("pin the map to stable").unwrap();
+    let mut dit = {
+        drop(dit);
+        Dit::open(tmp.path()).unwrap()
+    };
+    dit.refresh_code().unwrap();
+    let users: Vec<String> = dit
+        .code_users("useThing")
+        .unwrap()
+        .into_iter()
+        .map(|u| u.path)
+        .collect();
+    assert!(
+        users.contains(&"src/pages/Page.tsx".to_owned()),
+        "{users:?}"
+    );
+    assert!(
+        !users.contains(&"src/pages/New.tsx".to_owned()),
+        "HEAD's new page is not on stable: {users:?}"
+    );
+}
+
+/// The background refresh is opt-in and polite: it goes in as one marked
+/// block after an existing hook's shebang, comes back out leaving the hook as
+/// it was, and refuses when the hooks are committed files.
+#[test]
+fn code_hooks_install_beside_existing_ones_and_refuse_committed_hooks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path();
+    let repo = Repo::init(path).unwrap();
+    repo.set_identity("DIT Test", "dit@test.local").unwrap();
+    let mine = "#!/bin/sh\necho mine\nexit 0\n";
+    let hook = path.join(".git/hooks/post-merge");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, mine).unwrap();
+
+    let installed = dit_core::code::install_code_hooks(path).unwrap();
+    assert_eq!(installed.len(), 4, "{installed:?}");
+    let with = std::fs::read_to_string(&hook).unwrap();
+    assert!(with.starts_with("#!/bin/sh\n# >>> dit code map"), "{with}");
+    assert!(
+        with.ends_with("echo mine\nexit 0\n"),
+        "the hook keeps what it had"
+    );
+    assert!(
+        dit_core::code::install_code_hooks(path).unwrap().is_empty(),
+        "installing twice changes nothing"
+    );
+
+    dit_core::code::uninstall_code_hooks(path).unwrap();
+    assert_eq!(std::fs::read_to_string(&hook).unwrap(), mine);
+    assert!(
+        !path.join(".git/hooks/post-commit").exists(),
+        "a hook that held only the block is gone"
+    );
+
+    // A hook manager's committed hooks directory is the team's, not ours.
+    std::fs::create_dir_all(path.join(".husky")).unwrap();
+    std::fs::write(path.join(".husky/post-merge"), mine).unwrap();
+    repo.add(".").unwrap();
+    repo.commit("a hook manager").unwrap();
+    repo.git(&["config", "core.hooksPath", ".husky"]).unwrap();
+    let refused = dit_core::code::install_code_hooks(path).unwrap_err();
+    assert!(refused.to_string().contains("committed"), "{refused}");
+}

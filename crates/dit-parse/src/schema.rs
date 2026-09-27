@@ -405,6 +405,11 @@ pub fn parse_config(text: &str) -> Result<Config, SchemaError> {
                 include: list(node, "include"),
                 exclude: list(node, "exclude"),
                 generated: list(node, "generated"),
+                git_ref: node
+                    .get("ref")
+                    .and_then(Yaml::as_str)
+                    .map(str::to_owned)
+                    .filter(|r| !r.is_empty()),
             });
         }
     }
@@ -432,6 +437,21 @@ fn validate_code(cfg: &Config) -> Result<(), SchemaError> {
                 value: root.id.clone(),
                 hint: "the same code root id appears twice".into(),
             });
+        }
+        if let Some(r) = &root.git_ref {
+            // Handed to git as an argument: a value starting with `-` would be
+            // an option, which a pulled config must never be able to pass.
+            let plain = !r.starts_with('-')
+                && !r.contains("..")
+                && r.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'));
+            if !plain {
+                return Err(SchemaError::BadValue {
+                    key: "code".into(),
+                    value: r.clone(),
+                    hint: "`ref:` must be a branch or tag name".into(),
+                });
+            }
         }
         if let Some(repo) = &root.repo {
             if !cfg.repos.iter().any(|r| &r.name == repo) {
@@ -695,6 +715,9 @@ pub fn write_config(cfg: &Config) -> String {
             fields.push_str(&globs("include", &root.include));
             fields.push_str(&globs("exclude", &root.exclude));
             fields.push_str(&globs("generated", &root.generated));
+            if let Some(r) = &root.git_ref {
+                fields.push_str(&format!(", ref: {}", quote_if_needed(r)));
+            }
             out.push_str(&format!("  - {{ {fields} }}\n"));
         }
     }
@@ -755,7 +778,7 @@ mod tests {
     // whole repository.
     #[test]
     fn code_roots_are_read_written_and_checked_against_repos() {
-        let text = "schema_version: 1\nlayout: root\nnumbering: local\nrepos:\n  - { name: webapp, remote: ../webapp }\ncode:\n  - { id: webapp, repo: webapp, include: [\"src/**\"], exclude: [\"src/generated/**\"], generated: [\"src/generated/**\"] }\n  - { id: here }\n";
+        let text = "schema_version: 1\nlayout: root\nnumbering: local\nrepos:\n  - { name: webapp, remote: ../webapp }\ncode:\n  - { id: webapp, repo: webapp, include: [\"src/**\"], exclude: [\"src/generated/**\"], generated: [\"src/generated/**\"], ref: main }\n  - { id: here }\n";
         let cfg = parse_config(text).unwrap();
         assert_eq!(cfg.code.len(), 2);
         let web = &cfg.code[0];
@@ -772,6 +795,24 @@ mod tests {
             matches!(&err, SchemaError::BadValue { key, .. } if key == "code"),
             "{err:?}"
         );
+    }
+
+    // `ref:` reaches git as an argument; a pulled config must never be able
+    // to hand it an option.
+    #[test]
+    fn a_code_ref_that_git_could_read_as_an_option_is_refused() {
+        let cfg = parse_config("schema_version: 1\ncode:\n  - { id: web, ref: release/2026.09 }\n")
+            .unwrap();
+        assert_eq!(cfg.code[0].rev(), "release/2026.09");
+        assert!(write_config(&cfg).contains("ref: release/2026.09"));
+        for bad in ["--output=/tmp/x", "main..evil", "a b"] {
+            let text = format!("schema_version: 1\ncode:\n  - {{ id: web, ref: \"{bad}\" }}\n");
+            let err = parse_config(&text).expect_err(bad);
+            assert!(
+                matches!(&err, SchemaError::BadValue { key, .. } if key == "code"),
+                "{bad}: {err:?}"
+            );
+        }
     }
 
     #[test]

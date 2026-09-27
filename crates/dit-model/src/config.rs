@@ -84,6 +84,12 @@ pub struct CodeRoot {
     /// Paths indexed but reported as generated — never the place to edit.
     #[serde(default)]
     pub generated: Vec<String>,
+    /// The branch or tag to map (`ref:` in the file), read through git
+    /// without checking it out. `None` maps whatever the checkout's HEAD is;
+    /// a linked repository whose checkout moves between branches should pin
+    /// one, or the map changes with whoever last switched it.
+    #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub git_ref: Option<String>,
 }
 
 impl CodeRoot {
@@ -92,6 +98,11 @@ impl CodeRoot {
         let included =
             self.include.is_empty() || self.include.iter().any(|g| crate::glob_match(g, path));
         included && !self.exclude.iter().any(|g| crate::glob_match(g, path))
+    }
+
+    /// The revision to read: the pinned ref, or `HEAD`.
+    pub fn rev(&self) -> &str {
+        self.git_ref.as_deref().unwrap_or("HEAD")
     }
 
     /// Whether `path` is generated code.

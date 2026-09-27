@@ -328,6 +328,7 @@ impl Dit {
                 include: Vec::new(),
                 exclude: vec![".dit/**".to_owned()],
                 generated: REPO_MAP_GENERATED.iter().map(|g| (*g).to_owned()).collect(),
+                git_ref: None,
             }],
             ..Config::default()
         };

@@ -3,7 +3,7 @@
 //! the index, never written to a file (I5).
 
 /// A language the extractor has a grammar for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum CodeLang {
     TypeScript,
     /// TSX; also used for `.js` / `.jsx`, which it parses as a superset.
@@ -47,7 +47,7 @@ impl CodeLang {
 }
 
 /// What a defined symbol is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SymbolKind {
     Function,
     Class,
@@ -95,7 +95,7 @@ impl SymbolKind {
 }
 
 /// A top-level symbol a file defines.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CodeSymbol {
     pub name: String,
     pub kind: SymbolKind,
@@ -108,7 +108,7 @@ pub struct CodeSymbol {
 /// One import — or re-export — as written: the module it names and the
 /// symbols it takes. `names` is empty for a side-effect import or a module
 /// declaration; `*` stands for a namespace or glob import.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CodeImport {
     /// The specifier as written: `./hooks`, `@/crud/hooks`, `crate::agent`.
     pub specifier: String,
@@ -119,7 +119,7 @@ pub struct CodeImport {
 }
 
 /// A call (or JSX use) of a named function or component.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CodeCall {
     /// The name called: `useResourceList`, `api.get`, `Repo::open`.
     pub callee: String,
@@ -127,14 +127,14 @@ pub struct CodeCall {
 }
 
 /// A type relation: `from` extends or implements `to`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CodeRelation {
     pub from: String,
     pub to: String,
     pub kind: RelationKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum RelationKind {
     Inherits,
     Implements,
@@ -145,7 +145,7 @@ pub enum RelationKind {
 /// name a plain identifier, `${}` otherwise, so a constant can be put back
 /// in at query time; whether it is an API call is decided against the
 /// registered specs then, never here.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CodeString {
     pub text: String,
     pub line: u32,
@@ -154,14 +154,14 @@ pub struct CodeString {
 /// A string constant a file defines (`const P = "api/v1/x"`, `const val
 /// BASE = "…"`), in the same `${name}` form, so a literal built from it can
 /// be read whole.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CodeConst {
     pub name: String,
     pub value: String,
 }
 
 /// Everything the extractor reads out of one file.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct FileFacts {
     pub symbols: Vec<CodeSymbol>,
     pub imports: Vec<CodeImport>,

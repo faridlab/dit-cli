@@ -447,6 +447,7 @@ CREATE TABLE IF NOT EXISTS code_files (
   package   TEXT,
   PRIMARY KEY (root, path)
 );
+CREATE INDEX IF NOT EXISTS code_files_blob ON code_files (blob_sha);
 CREATE TABLE IF NOT EXISTS code_symbols (
   root     TEXT NOT NULL,
   path     TEXT NOT NULL,
@@ -456,6 +457,9 @@ CREATE TABLE IF NOT EXISTS code_symbols (
   exported INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS code_symbols_name ON code_symbols (name);
+-- Every per-file table is replaced by (root, path) whenever a file changes;
+-- without these each replacement scans the whole table.
+CREATE INDEX IF NOT EXISTS code_symbols_path ON code_symbols (root, path);
 CREATE TABLE IF NOT EXISTS code_imports (
   id        INTEGER PRIMARY KEY,
   root      TEXT NOT NULL,
@@ -487,6 +491,7 @@ CREATE TABLE IF NOT EXISTS code_relations (
   to_name   TEXT NOT NULL,
   kind      TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS code_relations_path ON code_relations (root, path);
 -- Path-shaped string literals and string constants: the seam link (ADR 0025
 -- milestone 3) matches them against the registered specs at query time.
 CREATE TABLE IF NOT EXISTS code_strings (
@@ -495,6 +500,7 @@ CREATE TABLE IF NOT EXISTS code_strings (
   text TEXT NOT NULL,
   line INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS code_strings_path ON code_strings (root, path);
 CREATE TABLE IF NOT EXISTS code_consts (
   root  TEXT NOT NULL,
   path  TEXT NOT NULL,
@@ -502,12 +508,23 @@ CREATE TABLE IF NOT EXISTS code_consts (
   value TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS code_consts_path ON code_consts (root, path);
+-- What the extractor read out of one blob, whatever path or branch it came
+-- from: switching back to a branch never parses a file seen before. `facts`
+-- is the extractor's output as JSON; `used` orders what to evict first.
+CREATE TABLE IF NOT EXISTS code_blob_cache (
+  blob_sha TEXT NOT NULL,
+  lang     TEXT NOT NULL,
+  facts    TEXT NOT NULL,
+  used     INTEGER NOT NULL,
+  PRIMARY KEY (blob_sha, lang)
+);
 CREATE TABLE IF NOT EXISTS code_type_refs (
   root TEXT NOT NULL,
   path TEXT NOT NULL,
   name TEXT NOT NULL,
   line INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS code_type_refs_path ON code_type_refs (root, path);
 
 -- The authored half of the code map (ADR 0025): each `dit-map` fence as read
 -- at reindex, and each entry as judged against the code at refresh.
@@ -594,7 +611,7 @@ fn flag(on: bool) -> String {
 /// Bumped whenever the schema below changes shape. The index is disposable —
 /// an on-disk file stamped with an older version is dropped and rebuilt from
 /// git rather than migrated in place (§6: SQLite is only an index).
-const INDEX_VERSION: i64 = 10;
+const INDEX_VERSION: i64 = 11;
 
 /// The column list every issue SELECT shares, in a fixed order. Hand-written
 /// SELECTs drifting out of step with the schema is the known failure mode of
@@ -689,6 +706,7 @@ impl Index {
                  DROP TABLE IF EXISTS code_strings;
                  DROP TABLE IF EXISTS code_consts;
                  DROP TABLE IF EXISTS code_type_refs;
+                 DROP TABLE IF EXISTS code_blob_cache;
                  DROP TABLE IF EXISTS issues;",
             )?;
         }
@@ -1313,6 +1331,80 @@ impl Index {
             .prepare("SELECT path, blob_sha FROM code_files WHERE root = ?1")?;
         let rows = stmt.query_map(params![root], |r| Ok((r.get(0)?, r.get(1)?)))?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// The cached extractor output for these `(blob, lang)` pairs, as stored.
+    pub fn cached_facts(
+        &self,
+        keys: &[(String, String)],
+    ) -> Result<std::collections::HashMap<(String, String), String>, IndexError> {
+        let mut out = std::collections::HashMap::new();
+        let mut stmt = self
+            .conn
+            .prepare("SELECT facts FROM code_blob_cache WHERE blob_sha = ?1 AND lang = ?2")?;
+        for (blob, lang) in keys {
+            use rusqlite::OptionalExtension;
+            let hit: Option<String> = stmt
+                .query_row(params![blob, lang], |r| r.get(0))
+                .optional()?;
+            if let Some(facts) = hit {
+                out.insert((blob.clone(), lang.clone()), facts);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Remember extractor output by blob, and mark these entries used now.
+    pub fn store_facts(
+        &mut self,
+        rows: &[(String, String, String)],
+        touched: &[(String, String)],
+        now: i64,
+    ) -> Result<(), IndexError> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut put = tx.prepare(
+                "INSERT OR REPLACE INTO code_blob_cache (blob_sha, lang, facts, used) \
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for (blob, lang, facts) in rows {
+                put.execute(params![blob, lang, facts, now])?;
+            }
+            let mut touch = tx.prepare(
+                "UPDATE code_blob_cache SET used = ?3 WHERE blob_sha = ?1 AND lang = ?2",
+            )?;
+            for (blob, lang) in touched {
+                touch.execute(params![blob, lang, now])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Keep the `keep` most recently used cache entries, plus every blob a
+    /// mapped file holds now.
+    pub fn prune_blob_cache(&mut self, keep: usize) -> Result<usize, IndexError> {
+        // Counting is cheap; the delete is not — run it only once over.
+        let size: i64 = self
+            .conn
+            .query_row("SELECT count(*) FROM code_blob_cache", [], |r| r.get(0))?;
+        if size as usize <= keep {
+            return Ok(0);
+        }
+        let n = self.conn.execute(
+            "DELETE FROM code_blob_cache WHERE rowid IN ( \
+               SELECT c.rowid FROM code_blob_cache c \
+               WHERE NOT EXISTS (SELECT 1 FROM code_files f WHERE f.blob_sha = c.blob_sha) \
+               ORDER BY c.used DESC LIMIT -1 OFFSET ?1)",
+            params![keep as i64],
+        )?;
+        Ok(n)
+    }
+
+    /// Forget every cached extraction — a new extractor reads differently.
+    pub fn clear_blob_cache(&mut self) -> Result<(), IndexError> {
+        self.conn.execute("DELETE FROM code_blob_cache", [])?;
+        Ok(())
     }
 
     /// Replace one file's facts. Its imports are stored unresolved; the

@@ -358,7 +358,7 @@ grepping — one answer instead of a page of matches.
 - **Code roots** here: {code_line}.
 - `dit code users <file|symbol>` — who imports it; the blast radius of changing it.
 - `dit code uses <file|symbol>` — what it imports and calls.
-- `dit code explain <name>`, `dit code where <text>`, `dit code path <a> <b>`,
+- `dit code explain <name>`, `dit code where <words…>`, `dit code path <a> <b>`,
   `dit code hubs` — a node in full, a name search, the import chain between two, and the
   most depended-on files (generated ones left out).
 - `dit code api` — path literals matched to spec operations: orphans, and seams unproven.
@@ -569,6 +569,7 @@ code:
     include: ["src/**"]
     exclude: ["src/**/*.test.ts"]
     generated: ["src/generated/**"]
+    ref: main                 # optional: map this branch, not whatever is checked out
 ```
 
 Files under `generated:` are mapped but left out of `dit code hubs`, and `dit code explain`
@@ -582,7 +583,8 @@ brings the map up to HEAD, reading only the files whose content changed; `dit co
 | `dit code uses <file\|symbol>` | what it imports (resolved, external or unresolved) and calls |
 | `dit code explain <name>` | what it defines, whether it is generated, who uses it |
 | `dit code path <a> <b>` | the shortest import chain from one to the other |
-| `dit code where <text>` | files and symbols whose name contains the text |
+| `dit code where <words…>` | the files to read for a question, ranked by the words they answer |
+| `dit code hook install` | opt in: refresh in the background after every commit, merge, checkout |
 | `dit code hubs [--root r]` | the most depended-on files |
 | `dit code api [--all]` | path literals against the registered specs: orphans, unproven seams |
 

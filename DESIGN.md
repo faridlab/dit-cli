@@ -3079,6 +3079,9 @@ layers kept apart for the same reason Morse keeps endpoints and scenarios apart 
   maps the repository it runs in as one root, with no config, its index in `.dit/code/`
   behind a `.gitignore` of its own — visible, never committed, the repository's own
   `.gitignore` untouched.
+- **Branches.** Extraction is cached by blob, so switching branches costs cache reads; a
+  root may pin `ref:` to map one branch whatever is checked out. `dit code hook install`
+  opts a repository into refreshing in the background after git moves HEAD.
 - **Committed code only.** The map reads HEAD, never the working tree: what it says is what
   everyone who pulls sees.
 - **Nothing reaches the network, and nothing runs.** Roots are read through git (I3); the
