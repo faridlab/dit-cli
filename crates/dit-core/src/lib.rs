@@ -16,7 +16,10 @@
 mod agent;
 pub mod board;
 pub mod code;
-pub use code::{ApiCall, ApiOperation, ApiReport, MapEntryView, MapHealth};
+pub use code::{
+    ApiCall, ApiOperation, ApiReport, CodeNeighbour, CodeNeighbourhood, CodeOverview, CodeUnit,
+    CodeUnitEdge, MapEntryView, MapHealth,
+};
 pub mod diagnostics;
 pub mod error;
 pub mod flow;

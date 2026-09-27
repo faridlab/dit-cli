@@ -1822,3 +1822,130 @@ mod morse_boundary_tests {
         );
     }
 }
+
+// -- the code map (ADR 0025) --------------------------------------------------
+
+/// A code root the map screen can open.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct CodeRootDto {
+    pub id: String,
+    /// The linked repository it reads, or `None` for this one.
+    pub repo: Option<String>,
+    /// The pinned branch or tag, when there is one.
+    pub git_ref: Option<String>,
+    pub files: usize,
+}
+
+/// The roots, after a refresh to HEAD.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct CodeRootsDto {
+    pub roots: Vec<CodeRootDto>,
+    /// Files parsed by the refresh this answer ran.
+    pub parsed: usize,
+    /// Roots that could not be read, with why.
+    pub problems: Vec<String>,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct CodeUnitDto {
+    pub path: String,
+    pub folder: bool,
+    pub files: usize,
+    pub generated: usize,
+    pub inbound: usize,
+    pub outbound: usize,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct CodeUnitEdgeDto {
+    pub from: String,
+    pub to: String,
+    pub imports: usize,
+}
+
+/// One folder of a root, drawn.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct CodeOverviewDto {
+    pub root: String,
+    pub folder: String,
+    pub units: Vec<CodeUnitDto>,
+    pub edges: Vec<CodeUnitEdgeDto>,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct CodeNeighbourDto {
+    pub path: String,
+    pub generated: bool,
+    pub users: usize,
+    pub names: Vec<String>,
+    pub via: Option<String>,
+}
+
+/// One file in focus, with both of its sides.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct CodeNeighbourhoodDto {
+    pub root: String,
+    pub path: String,
+    pub generated: bool,
+    pub defines: Vec<String>,
+    pub users: Vec<CodeNeighbourDto>,
+    pub uses: Vec<CodeNeighbourDto>,
+    pub external: Vec<String>,
+}
+
+pub fn code_overview_dto(o: &dit_core::CodeOverview) -> CodeOverviewDto {
+    CodeOverviewDto {
+        root: o.root.clone(),
+        folder: o.folder.clone(),
+        units: o
+            .units
+            .iter()
+            .map(|u| CodeUnitDto {
+                path: u.path.clone(),
+                folder: u.folder,
+                files: u.files,
+                generated: u.generated,
+                inbound: u.inbound,
+                outbound: u.outbound,
+            })
+            .collect(),
+        edges: o
+            .edges
+            .iter()
+            .map(|e| CodeUnitEdgeDto {
+                from: e.from.clone(),
+                to: e.to.clone(),
+                imports: e.imports,
+            })
+            .collect(),
+    }
+}
+
+fn code_neighbour_dto(n: &dit_core::CodeNeighbour) -> CodeNeighbourDto {
+    CodeNeighbourDto {
+        path: n.path.clone(),
+        generated: n.generated,
+        users: n.users,
+        names: n.names.clone(),
+        via: n.via.clone(),
+    }
+}
+
+pub fn code_neighbourhood_dto(n: &dit_core::CodeNeighbourhood) -> CodeNeighbourhoodDto {
+    CodeNeighbourhoodDto {
+        root: n.root.clone(),
+        path: n.path.clone(),
+        generated: n.generated,
+        defines: n.defines.clone(),
+        users: n.users.iter().map(code_neighbour_dto).collect(),
+        uses: n.uses.iter().map(code_neighbour_dto).collect(),
+        external: n.external.clone(),
+    }
+}

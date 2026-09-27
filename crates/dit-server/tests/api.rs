@@ -1042,3 +1042,23 @@ async fn a_scenario_that_does_not_exist_is_a_404_and_history_starts_empty() {
     assert_eq!(status, StatusCode::OK, "{text}");
     assert_eq!(runs, json!([]));
 }
+
+// The code map screen's three reads (ADR 0025). What they compute is pinned
+// in dit-core; here, that they are wired, answer the shapes the screen reads,
+// and name a missing file as a 404 rather than a crash.
+#[tokio::test]
+async fn the_code_map_reads_answer_their_shapes() {
+    let (app, _tmp) = test_app();
+    let (status, roots, _) = req(&app, "GET", "/api/code", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(roots["roots"].is_array() && roots["problems"].is_array());
+
+    let (status, overview, _) =
+        req(&app, "GET", "/api/code/overview?root=web&folder=src", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(overview["folder"], "src");
+    assert!(overview["units"].is_array() && overview["edges"].is_array());
+
+    let (status, _, _) = req(&app, "GET", "/api/code/node?name=src/nowhere.ts", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

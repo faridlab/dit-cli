@@ -101,13 +101,13 @@ describe("the activity bar", () => {
   it("offers every kind of place, with Settings pinned last", () => {
     bar();
     const labels = [...container.querySelectorAll(".ab-i")].map((b) => b.getAttribute("aria-label"));
-    expect(labels).toEqual(["Home", "Docs", "Morse", "Work", "Flow", "Plan", "Search", "Settings"]);
+    expect(labels).toEqual(["Home", "Docs", "Morse", "Work", "Flow", "Code", "Plan", "Search", "Settings"]);
   });
 
   it("asks for the activity each icon names", () => {
     bar();
-    for (const label of ["Home", "Docs", "Morse", "Work", "Flow", "Plan", "Search", "Settings"]) click(icon(label));
-    expect(activated).toEqual(["home", "docs", "morse", "work", "flow", "plan", "search", "settings"]);
+    for (const label of ["Home", "Docs", "Morse", "Work", "Flow", "Code", "Plan", "Search", "Settings"]) click(icon(label));
+    expect(activated).toEqual(["home", "docs", "morse", "work", "flow", "code", "plan", "search", "settings"]);
   });
 
   it("lights the active icon and badges Work with the inbox", () => {

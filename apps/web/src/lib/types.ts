@@ -177,3 +177,13 @@ export type { FlowShapeProblemDto } from "./schema/FlowShapeProblemDto";
 export type { FlowNodeDto } from "./schema/FlowNodeDto";
 export type { FlowOutsideBlockerDto } from "./schema/FlowOutsideBlockerDto";
 export type { FlowSummaryDto } from "./schema/FlowSummaryDto";
+
+// The code map (wire types, verbatim from the server): roots, one folder of
+// a root drawn as units, and one file in focus with both of its sides.
+export type { CodeRootsDto } from "./schema/CodeRootsDto";
+export type { CodeRootDto } from "./schema/CodeRootDto";
+export type { CodeOverviewDto } from "./schema/CodeOverviewDto";
+export type { CodeUnitDto } from "./schema/CodeUnitDto";
+export type { CodeUnitEdgeDto } from "./schema/CodeUnitEdgeDto";
+export type { CodeNeighbourhoodDto } from "./schema/CodeNeighbourhoodDto";
+export type { CodeNeighbourDto } from "./schema/CodeNeighbourDto";

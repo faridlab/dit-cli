@@ -30,13 +30,14 @@ describe("which icon a screen belongs to", () => {
   });
 
   it("lands each icon somewhere it owns", () => {
-    for (const id of ["home", "docs", "morse", "work", "flow", "plan", "search", "settings"] as const) {
+    for (const id of ["home", "docs", "morse", "work", "flow", "code", "plan", "search", "settings"] as const) {
       expect(activityOf(defaultRoute(id))).toBe(id);
     }
   });
 
   it("keeps the side panel out of Morse, which has its own explorer", () => {
     expect(hasSidePanel("morse")).toBe(false);
+    expect(hasSidePanel("code")).toBe(false);
     expect(hasSidePanel("work")).toBe(true);
   });
 });

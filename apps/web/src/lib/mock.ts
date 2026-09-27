@@ -14,6 +14,7 @@
 // disagree, this copy is the one that is wrong.
 
 import { setToken, getToken } from "./auth";
+import { mockCodeNode, mockCodeOverview, mockCodeRoots } from "./mockCode";
 import type {
   BoardDto,
   CommentDto,
@@ -1211,6 +1212,24 @@ export function installMockApi(): void {
         if (index >= 0) DOC_ENTRIES.splice(index, 1);
         return new Response(null, { status: 204 });
       }
+    }
+
+    // The code map, derived from one made-up file list (see mockCode.ts).
+    // The roots call is slow on a real server — it refreshes to HEAD first —
+    // so the mock pauses too, and the loading state gets seen.
+    if (path === "/api/code" && method === "GET") {
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      return jsonResponse(mockCodeRoots());
+    }
+    if (path === "/api/code/overview" && method === "GET") {
+      const root = url.searchParams.get("root") ?? "";
+      const overview = mockCodeOverview(root, url.searchParams.get("folder") ?? "");
+      return overview ? jsonResponse(overview) : jsonResponse({ error: `no code root \`${root}\`` }, 404);
+    }
+    if (path === "/api/code/node" && method === "GET") {
+      const name = url.searchParams.get("name") ?? "";
+      const node = mockCodeNode(name);
+      return node ? jsonResponse(node) : jsonResponse({ error: `nothing indexed is named \`${name}\`` }, 404);
     }
 
     return jsonResponse({ error: `mock does not implement ${method} ${path}` }, 404);

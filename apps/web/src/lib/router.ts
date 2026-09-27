@@ -72,6 +72,21 @@ export type Route =
       /** Which dimension the node colours mean. */
       paint?: string | null;
     }
+  /** The code map: one folder of one code root drawn as a graph, and one
+   *  file in focus beside it. All three ride in the URL so a link reopens
+   *  the same reading. */
+  | {
+      name: "code";
+      /** The code root's id; absent means the first root. */
+      root?: string | null;
+      /** A folder inside the root; absent or empty is the top of the tree. */
+      folder?: string | null;
+      /** The file (or symbol) in focus. */
+      focus?: string | null;
+      /** Which half is showing: the folder graph or the file in focus.
+       *  Absent means focus when a file is in focus, else the folder. */
+      view?: "folder" | "focus" | null;
+    }
   | { name: "issue"; id: string; from?: PeekHost | null }
   /** The composer; `type` preselects the issue type (the roadmap's "New epic"). */
   | { name: "new-issue"; type?: string | null }
@@ -129,6 +144,13 @@ export function routeToHash(route: Route): string {
         ["k", route.k],
         ["paint", route.paint],
         ["issue", route.issue],
+      ])}`;
+    case "code":
+      return `#/code${query([
+        ["root", route.root],
+        ["folder", route.folder],
+        ["focus", route.focus],
+        ["view", route.view],
       ])}`;
     case "issue":
       return `#/issue/${encodeURIComponent(route.id)}${query([["from", route.from]])}`;
@@ -198,6 +220,16 @@ export function parseHash(hash: string): Route {
       r: nonEmpty("r"),
       k: nonEmpty("k"),
       paint: nonEmpty("paint"),
+    };
+  }
+  if (first === "code") {
+    const view = nonEmpty("view");
+    return {
+      name: "code",
+      root: nonEmpty("root"),
+      folder: nonEmpty("folder"),
+      focus: nonEmpty("focus"),
+      view: view === "folder" || view === "focus" ? view : null,
     };
   }
   if (first === "new") return { name: "new-issue", type: nonEmpty("type") };

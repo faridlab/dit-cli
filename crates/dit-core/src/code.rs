@@ -156,6 +156,70 @@ pub struct CodeUser {
     pub via: Option<String>,
 }
 
+/// One place in a folder view: a subfolder or a file directly inside it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeUnit {
+    /// The full path: `src/crud` for a folder, `src/main.tsx` for a file.
+    pub path: String,
+    pub folder: bool,
+    /// Files it holds (1 for a file).
+    pub files: usize,
+    /// Of those, generated.
+    pub generated: usize,
+    /// Imports reaching it from outside the folder being viewed.
+    pub inbound: usize,
+    /// Imports it makes to outside the folder being viewed.
+    pub outbound: usize,
+}
+
+/// Imports from one unit to another inside the folder being viewed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeUnitEdge {
+    pub from: String,
+    pub to: String,
+    /// Distinct file-to-file imports the edge stands for.
+    pub imports: usize,
+}
+
+/// One folder of a root, as the map draws it: its subfolders and files, and
+/// the imports between them, counted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeOverview {
+    pub root: String,
+    /// `""` for the root itself.
+    pub folder: String,
+    pub units: Vec<CodeUnit>,
+    pub edges: Vec<CodeUnitEdge>,
+}
+
+/// A file next to the one in focus.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeNeighbour {
+    pub path: String,
+    pub generated: bool,
+    /// Files importing it, across the root.
+    pub users: usize,
+    /// The names that cross the edge.
+    pub names: Vec<String>,
+    /// For a user that imported through a barrel: the barrel.
+    pub via: Option<String>,
+}
+
+/// One file and the files on either side of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeNeighbourhood {
+    pub root: String,
+    pub path: String,
+    pub generated: bool,
+    pub defines: Vec<String>,
+    /// Files importing it.
+    pub users: Vec<CodeNeighbour>,
+    /// Files it imports.
+    pub uses: Vec<CodeNeighbour>,
+    /// Packages it imports, by name.
+    pub external: Vec<String>,
+}
+
 /// A much-depended-on file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodeHub {
@@ -1089,6 +1153,143 @@ impl Dit {
             .into_iter()
             .map(|(root, path, users)| CodeHub { root, path, users })
             .collect())
+    }
+
+    /// One folder of a root: each subfolder and file directly inside it, and
+    /// the imports between them. Imports crossing the folder's edge count as
+    /// inbound or outbound on the unit they touch.
+    pub fn code_overview(&self, root: &str, folder: &str) -> Result<CodeOverview, DitError> {
+        let folder = folder.trim_matches('/');
+        let prefix = if folder.is_empty() {
+            String::new()
+        } else {
+            format!("{folder}/")
+        };
+        let unit_of = |path: &str| -> Option<(String, bool)> {
+            let rest = path.strip_prefix(&prefix)?;
+            Some(match rest.split_once('/') {
+                Some((head, _)) => (format!("{prefix}{head}"), true),
+                None => (path.to_owned(), false),
+            })
+        };
+        let mut units: std::collections::BTreeMap<String, CodeUnit> = Default::default();
+        for (path, generated) in self.index.code_files_of(root)? {
+            let Some((unit, is_folder)) = unit_of(&path) else {
+                continue;
+            };
+            let u = units.entry(unit.clone()).or_insert(CodeUnit {
+                path: unit,
+                folder: is_folder,
+                files: 0,
+                generated: 0,
+                inbound: 0,
+                outbound: 0,
+            });
+            u.files += 1;
+            if generated {
+                u.generated += 1;
+            }
+        }
+        let mut edges: HashMap<(String, String), usize> = HashMap::new();
+        for (from, to) in self.index.code_edges(root)? {
+            match (unit_of(&from), unit_of(&to)) {
+                (Some((a, _)), Some((b, _))) if a != b => *edges.entry((a, b)).or_default() += 1,
+                (Some(_), Some(_)) => {}
+                (None, Some((b, _))) => {
+                    if let Some(u) = units.get_mut(&b) {
+                        u.inbound += 1;
+                    }
+                }
+                (Some((a, _)), None) => {
+                    if let Some(u) = units.get_mut(&a) {
+                        u.outbound += 1;
+                    }
+                }
+                (None, None) => {}
+            }
+        }
+        let mut edges: Vec<CodeUnitEdge> = edges
+            .into_iter()
+            .map(|((from, to), imports)| CodeUnitEdge { from, to, imports })
+            .collect();
+        edges.sort_by(|a, b| {
+            b.imports
+                .cmp(&a.imports)
+                .then(a.from.cmp(&b.from))
+                .then(a.to.cmp(&b.to))
+        });
+        Ok(CodeOverview {
+            root: root.to_owned(),
+            folder: folder.to_owned(),
+            units: units.into_values().collect(),
+            edges,
+        })
+    }
+
+    /// A file, what imports it and what it imports — each neighbour with how
+    /// much of the root leans on it, so a picture can size it.
+    pub fn code_neighbourhood(&self, name: &str) -> Result<CodeNeighbourhood, DitError> {
+        let (root, path) = self.file_of(name)?;
+        let generated_of = |p: &str| -> Result<bool, DitError> {
+            Ok(self.index.code_file_generated(&root, p)?.unwrap_or(false))
+        };
+        let fan_in =
+            |p: &str| -> Result<usize, DitError> { Ok(self.index.code_importers(&root, p)?.len()) };
+        let mut users = Vec::new();
+        let mut seen = HashSet::new();
+        let mut found = Vec::new();
+        self.file_users(&root, &path, None, None, 0, &mut seen, &mut found)?;
+        for u in found {
+            users.push(CodeNeighbour {
+                generated: generated_of(&u.path)?,
+                users: fan_in(&u.path)?,
+                path: u.path,
+                names: u.names,
+                via: u.via,
+            });
+        }
+        let mut uses: Vec<CodeNeighbour> = Vec::new();
+        let mut external = Vec::new();
+        for imp in self.index.code_imports_of(&root, &path)? {
+            match imp.target {
+                Some(t) => match uses.iter_mut().find(|n| n.path == t) {
+                    Some(n) => {
+                        for name in imp.names {
+                            if !n.names.contains(&name) {
+                                n.names.push(name);
+                            }
+                        }
+                    }
+                    None => uses.push(CodeNeighbour {
+                        generated: generated_of(&t)?,
+                        users: fan_in(&t)?,
+                        path: t,
+                        names: imp.names,
+                        via: None,
+                    }),
+                },
+                None if imp.external && !external.contains(&imp.specifier) => {
+                    external.push(imp.specifier);
+                }
+                None => {}
+            }
+        }
+        let defines = self
+            .index
+            .code_symbols_of(&root, &path)?
+            .into_iter()
+            .filter(|s| s.exported)
+            .map(|s| s.name)
+            .collect();
+        Ok(CodeNeighbourhood {
+            generated: generated_of(&path)?,
+            root,
+            path,
+            defines,
+            users,
+            uses,
+            external,
+        })
     }
 
     /// A node and its neighbourhood.

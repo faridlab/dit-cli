@@ -5,6 +5,9 @@
 import { getToken } from "./auth";
 import type {
   BoardDto,
+  CodeNeighbourhoodDto,
+  CodeOverviewDto,
+  CodeRootsDto,
   CommentDto,
   DocBodyDto,
   DocEntryDto,
@@ -214,6 +217,27 @@ export function getFlows(): Promise<FlowSummaryDto[]> {
 /** One flow as a diagram; `__all__` is the union of every flow. */
 export function getFlowBoard(name: string): Promise<FlowBoardDto> {
   return request<FlowBoardDto>(`/api/flow/${encodeURIComponent(name)}`);
+}
+
+// -- the code map ---------------------------------------------------------------
+
+/** Every code root, after the server brings the map up to HEAD — so the
+ *  first call can take a few seconds while it parses. */
+export function getCodeRoots(): Promise<CodeRootsDto> {
+  return request<CodeRootsDto>("/api/code");
+}
+
+/** One folder of a root as units (its subfolders and files) and the imports
+ *  between them; `""` is the top of the tree. */
+export function getCodeOverview(root: string, folder: string): Promise<CodeOverviewDto> {
+  const search = new URLSearchParams({ root, folder });
+  return request<CodeOverviewDto>(`/api/code/overview?${search.toString()}`);
+}
+
+/** One file (named by path or by a symbol it defines) with who uses it and
+ *  what it uses. A 404 means nothing indexed goes by that name. */
+export function getCodeNode(name: string): Promise<CodeNeighbourhoodDto> {
+  return request<CodeNeighbourhoodDto>(`/api/code/node?${new URLSearchParams({ name }).toString()}`);
 }
 
 // -- docs (ADR 0010) ----------------------------------------------------------

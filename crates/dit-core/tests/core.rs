@@ -4760,3 +4760,64 @@ fn code_hooks_install_beside_existing_ones_and_refuse_committed_hooks() {
     let refused = dit_core::code::install_code_hooks(path).unwrap_err();
     assert!(refused.to_string().contains("committed"), "{refused}");
 }
+
+/// The map's picture is drawn one folder at a time: subfolders and files as
+/// units, imports between them counted, imports across the edge kept as
+/// inbound and outbound — and a file in focus with both of its sides.
+#[test]
+fn the_code_map_is_drawn_one_folder_at_a_time_and_one_file_in_focus() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = code_workspace(tmp.path());
+    dit.refresh_code().unwrap();
+
+    let top = dit.code_overview("web", "src").unwrap();
+    let units: Vec<(&str, bool, usize)> = top
+        .units
+        .iter()
+        .map(|u| (u.path.as_str(), u.folder, u.files))
+        .collect();
+    assert_eq!(
+        units,
+        [
+            ("src/crud", true, 2),
+            ("src/generated", true, 1),
+            ("src/pages", true, 3)
+        ]
+    );
+    let edge = top
+        .edges
+        .iter()
+        .find(|e| e.from == "src/pages" && e.to == "src/crud")
+        .expect("pages import crud");
+    assert_eq!(edge.imports, 2, "Page → hooks and Other → the barrel");
+    assert_eq!(top.units[1].generated, 1);
+
+    let pages = dit.code_overview("web", "src/pages").unwrap();
+    let page = pages
+        .units
+        .iter()
+        .find(|u| u.path == "src/pages/Page.tsx")
+        .unwrap();
+    assert!(!page.folder);
+    assert_eq!(page.outbound, 1, "its import of the hook leaves the folder");
+    assert!(pages
+        .edges
+        .iter()
+        .any(|e| e.from == "src/pages/Page.tsx" && e.to == "src/pages/View.tsx"));
+
+    let focus = dit.code_neighbourhood("src/crud/hooks.ts").unwrap();
+    let users: Vec<(&str, Option<&str>)> = focus
+        .users
+        .iter()
+        .map(|u| (u.path.as_str(), u.via.as_deref()))
+        .collect();
+    assert!(users.contains(&("src/pages/Page.tsx", None)), "{users:?}");
+    assert!(
+        users.contains(&("src/pages/Other.tsx", Some("src/crud/index.ts"))),
+        "{users:?}"
+    );
+    assert!(focus.defines.contains(&"useThing".to_owned()));
+    let page = dit.code_neighbourhood("src/pages/Page.tsx").unwrap();
+    let uses: Vec<&str> = page.uses.iter().map(|u| u.path.as_str()).collect();
+    assert_eq!(uses, ["src/crud/hooks.ts", "src/pages/View.tsx"]);
+}

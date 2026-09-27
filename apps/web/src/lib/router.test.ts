@@ -30,12 +30,31 @@ const ROUTES: Route[] = [
   { name: "new-issue" },
   { name: "new-issue", type: "story" },
   { name: "settings" },
+  { name: "code" },
+  { name: "code", root: "web", folder: "src/desks", focus: "src/crud/hooks.ts" },
+  { name: "code", root: null, folder: null, focus: "useCodeRoots" },
+  { name: "code", root: "web", folder: "src", focus: "src/crud/hooks.ts", view: "folder" },
+  { name: "code", root: "web", folder: null, focus: "src/crud/hooks.ts", view: "focus" },
 ];
 
 describe("route round trip", () => {
   it.each(ROUTES)("survives hash → parse → hash for %o", (route) => {
     const hash = routeToHash(route);
     expect(routeToHash(parseHash(hash))).toBe(hash);
+  });
+
+  it("reads a code-map link with its root, folder and focus", () => {
+    expect(parseHash("#/code?root=web&folder=src%2Fdesks&focus=src%2Fcrud%2Fhooks.ts")).toEqual({
+      name: "code",
+      root: "web",
+      folder: "src/desks",
+      focus: "src/crud/hooks.ts",
+      view: null,
+    });
+    expect(parseHash("#/code")).toEqual({ name: "code", root: null, folder: null, focus: null, view: null });
+    expect(parseHash("#/code?view=focus").name === "code" && parseHash("#/code?view=focus")).toMatchObject({ view: "focus" });
+    expect(parseHash("#/code?view=sideways")).toMatchObject({ view: null });
+    expect(routeToHash({ name: "code", root: "web", folder: "", focus: null })).toBe("#/code?root=web");
   });
 
   it("keeps query values intact through encoding", () => {

@@ -9,7 +9,16 @@
 
 import type { Route } from "./router";
 
-export type ActivityId = "home" | "docs" | "morse" | "work" | "flow" | "plan" | "search" | "settings";
+export type ActivityId =
+  | "home"
+  | "docs"
+  | "morse"
+  | "work"
+  | "flow"
+  | "code"
+  | "plan"
+  | "search"
+  | "settings";
 
 /** The activity each route belongs to — the icon lit up while it is open. */
 export function activityOf(route: Route): ActivityId {
@@ -27,6 +36,8 @@ export function activityOf(route: Route): ActivityId {
       return "work";
     case "flow":
       return "flow";
+    case "code":
+      return "code";
     case "timeline":
     case "roadmap":
     case "gantt":
@@ -51,6 +62,8 @@ export function defaultRoute(activity: ActivityId): Route {
       return { name: "board" };
     case "flow":
       return { name: "flow" };
+    case "code":
+      return { name: "code" };
     case "plan":
       return { name: "timeline" };
     case "search":
@@ -86,10 +99,11 @@ export const SHORTCUT_VIEWS: Route[] = [
   { name: "morse" },
 ];
 
-/** Morse keeps its own explorer and tabs inside the screen (ADR 0023), so
- *  the side panel stays out of its way rather than stacking a second one. */
+/** Morse keeps its own explorer and tabs inside the screen (ADR 0023), and
+ *  the code map its own breadcrumb and focus panel, so the side panel stays
+ *  out of their way rather than stacking a second one. */
 export function hasSidePanel(activity: ActivityId): boolean {
-  return activity !== "morse";
+  return activity !== "morse" && activity !== "code";
 }
 
 // ---- the side panel's width ------------------------------------------------

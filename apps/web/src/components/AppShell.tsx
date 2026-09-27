@@ -58,6 +58,7 @@ import { GanttView } from "../views/GanttView";
 import { RoadmapView } from "../views/RoadmapView";
 import { TimelineView } from "../views/TimelineView";
 import { FlowView } from "../views/FlowView";
+import { CodeView } from "../views/CodeView";
 
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -89,6 +90,8 @@ function cliFor(route: Route): string {
       return route.p ? `dit doc show ${route.p}` : "dit doc ls";
     case "morse":
       return "dit morse check";
+    case "code":
+      return route.focus ? `dit code explain ${route.focus}` : "dit code hubs";
     default:
       return "dit ui";
   }
@@ -442,6 +445,8 @@ function Shell() {
         click a node to trace it · f finds · 0 fits · [ ] walk the critical path
       </HeaderHint>
     );
+  } else if (route.name === "code") {
+    right = <HeaderHint>hover to trace · click a folder to open it · click a file to focus it</HeaderHint>;
   } else if (route.name === "settings") {
     section = { title: "Settings", node: <SettingsPane /> };
   }
@@ -534,6 +539,15 @@ function Shell() {
             {route.name === "roadmap" ? <RoadmapView onOpen={openIssue} /> : null}
             {route.name === "gantt" ? <GanttView onOpen={openIssue} /> : null}
             {route.name === "flow" ? <FlowView onOpen={openIssue} /> : null}
+            {route.name === "code" ? (
+              <CodeView
+                root={route.root ?? null}
+                folder={route.folder ?? null}
+                focus={route.focus ?? null}
+                view={route.view ?? null}
+                onGo={navigate}
+              />
+            ) : null}
             {route.name === "issue" ? (
               <IssueDetailView
                 id={route.id}

@@ -71,6 +71,9 @@ pub fn app(state: Arc<AppState>) -> Router {
             "/api/morse/scenarios/{scenario}/steps",
             put(save_morse_step),
         )
+        .route("/api/code", get(get_code_roots))
+        .route("/api/code/overview", get(get_code_overview))
+        .route("/api/code/node", get(get_code_node))
         .route("/api/flow", get(list_flows))
         .route("/api/flow/{name}", get(get_flow))
         .route("/api/settings", get(get_settings).put(put_settings))
@@ -777,6 +780,78 @@ async fn list_flows(
 }
 
 /// One flow as a diagram. `__all__` is the union of every flow.
+/// The code roots, after bringing the map up to HEAD — the screen's entry,
+/// so what it draws is never older than the last commit.
+async fn get_code_roots(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<dto::CodeRootsDto>, ApiError> {
+    let roots = read_dit(&state, |dit| {
+        let report = dit.refresh_code().map_err(ServerError::Dit)?;
+        let roots = dit
+            .config()
+            .code
+            .iter()
+            .map(|r| {
+                let files = dit
+                    .code_overview(&r.id, "")
+                    .map(|o| o.units.iter().map(|u| u.files).sum())
+                    .unwrap_or(0);
+                dto::CodeRootDto {
+                    id: r.id.clone(),
+                    repo: r.repo.clone(),
+                    git_ref: r.git_ref.clone(),
+                    files,
+                }
+            })
+            .collect();
+        Ok(dto::CodeRootsDto {
+            roots,
+            parsed: report.parsed,
+            problems: report.problems,
+        })
+    })
+    .await?;
+    Ok(Json(roots))
+}
+
+#[derive(Debug, Deserialize)]
+struct CodeOverviewQuery {
+    root: String,
+    #[serde(default)]
+    folder: String,
+}
+
+async fn get_code_overview(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<CodeOverviewQuery>,
+) -> Result<Json<dto::CodeOverviewDto>, ApiError> {
+    let overview = read_dit(&state, move |dit| {
+        let o = dit
+            .code_overview(&q.root, &q.folder)
+            .map_err(ServerError::Dit)?;
+        Ok(dto::code_overview_dto(&o))
+    })
+    .await?;
+    Ok(Json(overview))
+}
+
+#[derive(Debug, Deserialize)]
+struct CodeNodeQuery {
+    name: String,
+}
+
+async fn get_code_node(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<CodeNodeQuery>,
+) -> Result<Json<dto::CodeNeighbourhoodDto>, ApiError> {
+    let node = read_dit(&state, move |dit| {
+        let n = dit.code_neighbourhood(&q.name).map_err(ServerError::Dit)?;
+        Ok(dto::code_neighbourhood_dto(&n))
+    })
+    .await?;
+    Ok(Json(node))
+}
+
 async fn get_flow(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,

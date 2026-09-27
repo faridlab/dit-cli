@@ -47,6 +47,9 @@ export const queryKeys = {
   morseEnvs: ["morse-envs"] as const,
   morseRuns: ["morse-runs"] as const,
   morseScenario: (name: string) => ["morse-scenario", name] as const,
+  codeRoots: ["code-roots"] as const,
+  codeOverview: (root: string, folder: string) => ["code-overview", root, folder] as const,
+  codeNode: (name: string) => ["code-node", name] as const,
 };
 
 /** Mark everything a commit can change as stale. The schema is deliberately
@@ -65,6 +68,10 @@ export function invalidateWorkspaceData(client: QueryClient) {
     // either — all three change what Morse reports.
     queryKeys.morse,
     ["morse-scenario"],
+    // A commit moves HEAD, and the code map is read at HEAD.
+    queryKeys.codeRoots,
+    ["code-overview"],
+    ["code-node"],
     ["issue"],
     ["comments"],
     ["history"],
@@ -189,6 +196,38 @@ export function useFlowBoard(name: string) {
     queryKey: queryKeys.flowBoard(name),
     queryFn: () => api.getFlowBoard(name),
     staleTime: STALE_TIME_MS,
+  });
+}
+
+/** The code roots. The call itself refreshes the map to HEAD, so it is the
+ *  one the screen waits on before asking for a folder. */
+export function useCodeRoots() {
+  return useQuery({
+    queryKey: queryKeys.codeRoots,
+    queryFn: api.getCodeRoots,
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+/** One folder of a root; waits until a root is known. */
+export function useCodeOverview(root: string | null, folder: string) {
+  return useQuery({
+    queryKey: queryKeys.codeOverview(root ?? "", folder),
+    queryFn: () => api.getCodeOverview(root ?? "", folder),
+    enabled: root !== null,
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+/** One file's neighbourhood. A 404 is an answer ("nothing by that name"),
+ *  not a hiccup, so it is not retried. */
+export function useCodeNode(name: string | null, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.codeNode(name ?? ""),
+    queryFn: () => api.getCodeNode(name ?? ""),
+    enabled: enabled && name !== null && name.length > 0,
+    staleTime: STALE_TIME_MS,
+    retry: (count, error) => !(error instanceof api.ApiError && error.status === 404) && count < 2,
   });
 }
 

@@ -1933,6 +1933,15 @@ impl Index {
     }
 
     /// Every resolved import edge of a root: `(from, to)`.
+    /// Every mapped file of a root, with whether it is generated.
+    pub fn code_files_of(&self, root: &str) -> Result<Vec<(String, bool)>, IndexError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path, generated FROM code_files WHERE root = ?1 ORDER BY path")?;
+        let rows = stmt.query_map(params![root], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     pub fn code_edges(&self, root: &str) -> Result<Vec<(String, String)>, IndexError> {
         let mut stmt = self.conn.prepare(
             "SELECT DISTINCT path, target FROM code_imports WHERE root = ?1 AND target IS NOT NULL",

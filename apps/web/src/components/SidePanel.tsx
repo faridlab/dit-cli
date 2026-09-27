@@ -138,6 +138,7 @@ export const PANEL_TITLES: Record<ActivityId, string> = {
   morse: "Morse",
   work: "Work",
   flow: "Flow",
+  code: "Code",
   plan: "Plan",
   search: "Search",
   settings: "Settings",
