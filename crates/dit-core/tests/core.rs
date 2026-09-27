@@ -4593,6 +4593,7 @@ fn any_repository_maps_itself_under_dit_code_without_committing_it() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path();
     let repo = Repo::init(path).unwrap();
+    repo.set_identity("DIT Test", "dit@test.local").unwrap();
     let files: &[(&str, &str)] = &[
         (
             "src/hooks.ts",
