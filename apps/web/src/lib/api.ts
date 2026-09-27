@@ -5,6 +5,7 @@
 import { getToken } from "./auth";
 import type {
   BoardDto,
+  CodeGraphDto,
   CodeNeighbourhoodDto,
   CodeOverviewDto,
   CodeRootsDto,
@@ -232,6 +233,13 @@ export function getCodeRoots(): Promise<CodeRootsDto> {
 export function getCodeOverview(root: string, folder: string): Promise<CodeOverviewDto> {
   const search = new URLSearchParams({ root, folder });
   return request<CodeOverviewDto>(`/api/code/overview?${search.toString()}`);
+}
+
+/** Every file of a root and every import between them — the whole network,
+ *  about half a megabyte on a big repository, so asked for only when the
+ *  All view opens. */
+export function getCodeGraph(root: string): Promise<CodeGraphDto> {
+  return request<CodeGraphDto>(`/api/code/graph?${new URLSearchParams({ root }).toString()}`);
 }
 
 /** One file (named by path or by a symbol it defines) with who uses it and

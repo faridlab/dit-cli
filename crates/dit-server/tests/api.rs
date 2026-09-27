@@ -1059,6 +1059,10 @@ async fn the_code_map_reads_answer_their_shapes() {
     assert_eq!(overview["folder"], "src");
     assert!(overview["units"].is_array() && overview["edges"].is_array());
 
+    let (status, graph, _) = req(&app, "GET", "/api/code/graph?root=web", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(graph["files"].is_array() && graph["edges"].is_array());
+
     let (status, _, _) = req(&app, "GET", "/api/code/node?name=src/nowhere.ts", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }

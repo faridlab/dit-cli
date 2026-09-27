@@ -17,8 +17,8 @@ mod agent;
 pub mod board;
 pub mod code;
 pub use code::{
-    ApiCall, ApiOperation, ApiReport, CodeNeighbour, CodeNeighbourhood, CodeOverview, CodeUnit,
-    CodeUnitEdge, MapEntryView, MapHealth,
+    ApiCall, ApiOperation, ApiReport, CodeGraph, CodeNeighbour, CodeNeighbourhood, CodeOverview,
+    CodeUnit, CodeUnitEdge, MapEntryView, MapHealth,
 };
 pub mod diagnostics;
 pub mod error;

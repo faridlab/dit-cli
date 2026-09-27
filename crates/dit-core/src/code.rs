@@ -223,6 +223,17 @@ pub struct CodeNeighbourhood {
     pub api_calls: Vec<ApiCall>,
 }
 
+/// Every file of a root and every import between them — the whole network,
+/// for a picture that draws it at once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeGraph {
+    pub root: String,
+    /// `(path, generated, users)`, sorted by path.
+    pub files: Vec<(String, bool, usize)>,
+    /// Imports as indexes into `files`: `(importer, imported)`.
+    pub edges: Vec<(u32, u32)>,
+}
+
 /// A much-depended-on file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodeHub {
@@ -1225,6 +1236,40 @@ impl Dit {
             root: root.to_owned(),
             folder: folder.to_owned(),
             units: units.into_values().collect(),
+            edges,
+        })
+    }
+
+    /// The whole root at once: every file, how many import it, and every
+    /// file-to-file import, by index. Imports into files outside the map (an
+    /// excluded path) are left out.
+    pub fn code_graph(&self, root: &str) -> Result<CodeGraph, DitError> {
+        let listed = self.index.code_files_of(root)?;
+        let at: HashMap<&str, u32> = listed
+            .iter()
+            .enumerate()
+            .map(|(i, (p, _))| (p.as_str(), i as u32))
+            .collect();
+        let mut users = vec![0usize; listed.len()];
+        let mut edges = Vec::new();
+        for (from, to) in self.index.code_edges(root)? {
+            if let (Some(&a), Some(&b)) = (at.get(from.as_str()), at.get(to.as_str())) {
+                if a != b {
+                    edges.push((a, b));
+                    users[b as usize] += 1;
+                }
+            }
+        }
+        edges.sort_unstable();
+        edges.dedup();
+        let files = listed
+            .into_iter()
+            .zip(users)
+            .map(|((path, generated), n)| (path, generated, n))
+            .collect();
+        Ok(CodeGraph {
+            root: root.to_owned(),
+            files,
             edges,
         })
     }

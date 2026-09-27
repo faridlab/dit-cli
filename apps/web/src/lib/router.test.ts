@@ -35,6 +35,7 @@ const ROUTES: Route[] = [
   { name: "code", root: null, folder: null, focus: "useCodeRoots" },
   { name: "code", root: "web", folder: "src", focus: "src/crud/hooks.ts", view: "folder" },
   { name: "code", root: "web", folder: null, focus: "src/crud/hooks.ts", view: "focus" },
+  { name: "code", root: "web", folder: null, focus: null, view: "all" },
 ];
 
 describe("route round trip", () => {

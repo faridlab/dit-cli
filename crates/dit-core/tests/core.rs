@@ -4818,6 +4818,17 @@ fn the_code_map_is_drawn_one_folder_at_a_time_and_one_file_in_focus() {
         .iter()
         .any(|e| e.from == "src/pages/Page.tsx" && e.to == "src/pages/View.tsx"));
 
+    // The whole root at once, edges by index.
+    let all = dit.code_graph("web").unwrap();
+    assert_eq!(all.files.len(), 6);
+    let idx = |p: &str| all.files.iter().position(|f| f.0 == p).unwrap() as u32;
+    assert!(all
+        .edges
+        .contains(&(idx("src/pages/Page.tsx"), idx("src/crud/hooks.ts"))));
+    let hooks = &all.files[idx("src/crud/hooks.ts") as usize];
+    assert_eq!(hooks.2, 2, "Page and the barrel import it: {hooks:?}");
+    assert!(all.files[idx("src/generated/Model.ts") as usize].1);
+
     let focus = dit.code_neighbourhood("src/crud/hooks.ts").unwrap();
     let users: Vec<(&str, Option<&str>)> = focus
         .users

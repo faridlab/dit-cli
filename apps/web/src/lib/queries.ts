@@ -50,6 +50,7 @@ export const queryKeys = {
   codeRoots: ["code-roots"] as const,
   codeOverview: (root: string, folder: string) => ["code-overview", root, folder] as const,
   codeNode: (name: string) => ["code-node", name] as const,
+  codeGraph: (root: string) => ["code-graph", root] as const,
 };
 
 /** Mark everything a commit can change as stale. The schema is deliberately
@@ -72,6 +73,7 @@ export function invalidateWorkspaceData(client: QueryClient) {
     queryKeys.codeRoots,
     ["code-overview"],
     ["code-node"],
+    ["code-graph"],
     ["issue"],
     ["comments"],
     ["history"],
@@ -217,6 +219,16 @@ export function useCodeOverview(root: string | null, folder: string) {
     queryFn: () => api.getCodeOverview(root ?? "", folder),
     enabled: root !== null,
     staleTime: STALE_TIME_MS,
+  });
+}
+
+/** The whole network of a root — fetched only while the All view is open. */
+export function useCodeGraph(root: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.codeGraph(root ?? ""),
+    queryFn: () => api.getCodeGraph(root ?? ""),
+    enabled: enabled && root !== null,
+    staleTime: 60_000,
   });
 }
 

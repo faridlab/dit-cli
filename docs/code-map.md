@@ -55,6 +55,13 @@ a file written but not committed appears after its commit.
   until you hover a node; a folder of more than 30 units is laid out in layers, left to
   right along the imports, so names never collide. Wheel to zoom, drag to pan, double-click
   to fit. Generated code is drawn muted.
+- **All view.** The whole root at once: every file a dot sized by how many import it,
+  coloured by its top folder so the clusters show, every import a faint line. Drawn on a
+  canvas with the layout computed in a worker, so the screen pans while it settles.
+  Generated files are hidden until you ask for them, tests can be hidden, and a minimum
+  number of importers thins the picture; hover a file to light its neighbours, click it to
+  focus it, click a folder in the legend to isolate its cluster. The 6,296 files and 17,653
+  imports of serpa-webapp-admin settle in under five seconds.
 - **Focus view.** One file between the files that import it and the files it imports, the
   twelve most depended-on on each side first, with what it defines, the packages it uses,
   and — in a workspace with registered specs — every API path it calls: the operation it

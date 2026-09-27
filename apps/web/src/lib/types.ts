@@ -189,3 +189,5 @@ export type { CodeNeighbourhoodDto } from "./schema/CodeNeighbourhoodDto";
 export type { CodeNeighbourDto } from "./schema/CodeNeighbourDto";
 export type { CodeApiCallDto } from "./schema/CodeApiCallDto";
 export type { CodeApiOperationDto } from "./schema/CodeApiOperationDto";
+export type { CodeGraphDto } from "./schema/CodeGraphDto";
+export type { CodeGraphFileDto } from "./schema/CodeGraphFileDto";

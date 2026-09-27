@@ -83,9 +83,10 @@ export type Route =
       folder?: string | null;
       /** The file (or symbol) in focus. */
       focus?: string | null;
-      /** Which half is showing: the folder graph or the file in focus.
-       *  Absent means focus when a file is in focus, else the folder. */
-      view?: "folder" | "focus" | null;
+      /** Which view is showing: the folder graph, the file in focus, or
+       *  every file of the root at once. Absent means focus when a file is
+       *  in focus, else the folder. */
+      view?: "folder" | "focus" | "all" | null;
     }
   | { name: "issue"; id: string; from?: PeekHost | null }
   /** The composer; `type` preselects the issue type (the roadmap's "New epic"). */
@@ -229,7 +230,7 @@ export function parseHash(hash: string): Route {
       root: nonEmpty("root"),
       folder: nonEmpty("folder"),
       focus: nonEmpty("focus"),
-      view: view === "folder" || view === "focus" ? view : null,
+      view: view === "folder" || view === "focus" || view === "all" ? view : null,
     };
   }
   if (first === "new") return { name: "new-issue", type: nonEmpty("type") };

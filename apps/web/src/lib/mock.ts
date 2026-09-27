@@ -14,7 +14,7 @@
 // disagree, this copy is the one that is wrong.
 
 import { setToken, getToken } from "./auth";
-import { mockCodeNode, mockCodeOverview, mockCodeRoots } from "./mockCode";
+import { mockCodeGraph, mockCodeNode, mockCodeOverview, mockCodeRoots } from "./mockCode";
 import type {
   BoardDto,
   CommentDto,
@@ -1233,6 +1233,11 @@ export function installMockApi(): void {
       const root = url.searchParams.get("root") ?? "";
       const overview = mockCodeOverview(root, url.searchParams.get("folder") ?? "");
       return overview ? jsonResponse(overview) : jsonResponse({ error: `no code root \`${root}\`` }, 404);
+    }
+    if (path === "/api/code/graph" && method === "GET") {
+      const root = url.searchParams.get("root") ?? "";
+      const graph = mockCodeGraph(root);
+      return graph ? jsonResponse(graph) : jsonResponse({ error: `no code root \`${root}\`` }, 404);
     }
     if (path === "/api/code/node" && method === "GET") {
       const name = url.searchParams.get("name") ?? "";

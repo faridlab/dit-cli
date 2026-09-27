@@ -1994,3 +1994,40 @@ pub fn code_neighbourhood_dto(n: &dit_core::CodeNeighbourhood) -> CodeNeighbourh
             .collect(),
     }
 }
+
+/// One file of the whole-root network.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct CodeGraphFileDto {
+    pub path: String,
+    pub generated: bool,
+    /// Files importing it.
+    pub users: usize,
+}
+
+/// Every file of a root and every import between them. Edges are pairs of
+/// indexes into `files`, importer first — the whole network is thousands of
+/// edges, and paths repeated in each would multiply the payload.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct CodeGraphDto {
+    pub root: String,
+    pub files: Vec<CodeGraphFileDto>,
+    pub edges: Vec<(u32, u32)>,
+}
+
+pub fn code_graph_dto(g: &dit_core::CodeGraph) -> CodeGraphDto {
+    CodeGraphDto {
+        root: g.root.clone(),
+        files: g
+            .files
+            .iter()
+            .map(|(path, generated, users)| CodeGraphFileDto {
+                path: path.clone(),
+                generated: *generated,
+                users: *users,
+            })
+            .collect(),
+        edges: g.edges.clone(),
+    }
+}

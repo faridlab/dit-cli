@@ -74,6 +74,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/api/code", get(get_code_roots))
         .route("/api/code/overview", get(get_code_overview))
         .route("/api/code/node", get(get_code_node))
+        .route("/api/code/graph", get(get_code_graph))
         .route("/api/flow", get(list_flows))
         .route("/api/flow/{name}", get(get_flow))
         .route("/api/settings", get(get_settings).put(put_settings))
@@ -846,6 +847,23 @@ async fn get_code_overview(
     })
     .await?;
     Ok(Json(overview))
+}
+
+#[derive(Debug, Deserialize)]
+struct CodeGraphQuery {
+    root: String,
+}
+
+async fn get_code_graph(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<CodeGraphQuery>,
+) -> Result<Json<dto::CodeGraphDto>, ApiError> {
+    let graph = read_dit(&state, move |dit| {
+        let g = dit.code_graph(&q.root).map_err(ServerError::Dit)?;
+        Ok(dto::code_graph_dto(&g))
+    })
+    .await?;
+    Ok(Json(graph))
 }
 
 #[derive(Debug, Deserialize)]

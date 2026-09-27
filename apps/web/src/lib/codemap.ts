@@ -511,8 +511,8 @@ export function connector(x1: number, y1: number, x2: number, y2: number): strin
   return `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`;
 }
 
-/** The two halves of the code screen. */
-export type CodeHalf = "folder" | "focus";
+/** The views of the code screen. */
+export type CodeHalf = "folder" | "focus" | "all";
 
 /** Which half shows when the link does not say: the file, if one is in focus. */
 export function halfOf(view: CodeHalf | null | undefined, focus: string | null): CodeHalf {
@@ -553,15 +553,27 @@ export interface ViewTransform {
 export const ZOOM = { min: 0.3, max: 3, step: 1.25, readable: 0.6, natural: 1.15 } as const;
 
 /** Keep a scale inside the zoom range. */
-export function clampScale(k: number): number {
+/** A zoom range; the folder views use `ZOOM`, the whole-root view a wider one. */
+export interface ZoomLimits {
+  min: number;
+  max: number;
+}
+
+export function clampScale(k: number, limits: ZoomLimits = ZOOM): number {
   if (!Number.isFinite(k) || k <= 0) return 1;
-  return Math.min(ZOOM.max, Math.max(ZOOM.min, k));
+  return Math.min(limits.max, Math.max(limits.min, k));
 }
 
 /** Zoom by `factor` around the screen point (px, py): the world point under
  *  it stays under it, so the thing you point at is the thing that grows. */
-export function zoomAt(t: ViewTransform, factor: number, px: number, py: number): ViewTransform {
-  const k = clampScale(t.k * factor);
+export function zoomAt(
+  t: ViewTransform,
+  factor: number,
+  px: number,
+  py: number,
+  limits: ZoomLimits = ZOOM,
+): ViewTransform {
+  const k = clampScale(t.k * factor, limits);
   const wx = (px - t.x) / t.k;
   const wy = (py - t.y) / t.k;
   return { k, x: px - wx * k, y: py - wy * k };
@@ -595,10 +607,14 @@ export function fitTransform(
   width: number,
   height: number,
   mode: "whole" | "width" = "whole",
+  limits: ZoomLimits = ZOOM,
 ): ViewTransform {
   if (width <= 0 || height <= 0 || box.w <= 0 || box.h <= 0) return { x: 0, y: 0, k: 1 };
   const raw = mode === "whole" ? Math.min(width / box.w, height / box.h) : width / box.w;
-  const k = clampScale(mode === "whole" ? Math.min(raw, ZOOM.natural) : Math.min(ZOOM.natural, Math.max(ZOOM.readable, raw)));
+  const k = clampScale(
+    mode === "whole" ? Math.min(raw, ZOOM.natural) : Math.min(ZOOM.natural, Math.max(ZOOM.readable, raw)),
+    limits,
+  );
   const x = box.w * k <= width ? (width - box.w * k) / 2 - box.x * k : 0 - box.x * k;
   const y = box.h * k <= height ? (height - box.h * k) / 2 - box.y * k : 0 - box.y * k;
   return { x, y, k };

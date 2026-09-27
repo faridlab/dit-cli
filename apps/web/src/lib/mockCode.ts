@@ -5,6 +5,7 @@
 
 import type {
   CodeApiCallDto,
+  CodeGraphDto,
   CodeNeighbourDto,
   CodeNeighbourhoodDto,
   CodeOverviewDto,
@@ -195,6 +196,124 @@ for (const [k, name] of PEOPLE_PAGES.entries()) {
 FILES.push(W(`${PEOPLE}/payroll/PayrollRunPage.tsx`, ["PayrollRunPage"], [i("src/crud/hooks.ts", "useList"), i(`${PEOPLE}/EmployeePicker.tsx`, "EmployeePicker")], ["react"]));
 FILES.push(W(`${PEOPLE}/payroll/SlipLine.tsx`, ["SlipLine"], [i("src/lib/format.ts", "formatMoney")], ["react"]));
 
+// ---- a whole root big enough to feel real, for the All view ----------------------
+//
+// About 1,900 files across a dozen top folders, with a generated tree large
+// enough that hiding it matters, and around 5,000 imports: mostly within a
+// folder, some to a few shared hubs, some across. Built from a seeded
+// generator, so every load of the mock draws the same network.
+
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const WORDS_A = ["Order", "Invoice", "Customer", "Stock", "Ledger", "Payment", "Vendor", "Shipment", "Quote", "Budget", "Asset", "Tax", "Price", "Report", "Account", "Batch"];
+const WORDS_B = ["Table", "Form", "Panel", "Card", "List", "Detail", "Editor", "Picker", "Summary", "Filter", "Chart", "Dialog", "Row", "Badge"];
+
+interface SynthFolder {
+  dir: string;
+  subs: string[];
+  count: number;
+  ext: string;
+  generated?: boolean;
+}
+
+const SYNTH: SynthFolder[] = [
+  { dir: "src/components", subs: ["table", "form", "layout", "charts", "feedback"], count: 170, ext: "tsx" },
+  { dir: "src/features", subs: ["billing", "inventory", "sales", "purchasing", "reports", "assets"], count: 250, ext: "tsx" },
+  { dir: "src/hooks", subs: [""], count: 55, ext: "ts" },
+  { dir: "src/utils", subs: ["", "date", "money", "text"], count: 70, ext: "ts" },
+  { dir: "src/crud", subs: ["cells", "editors", "filters"], count: 80, ext: "tsx" },
+  { dir: "src/desks", subs: ["finance", "ops", "sales"], count: 140, ext: "tsx" },
+  { dir: "src/lib", subs: ["http", "i18n", "cache"], count: 55, ext: "ts" },
+  { dir: "src/resources", subs: ["catalog", "ledger", "party"], count: 130, ext: "ts" },
+  { dir: "src/shell", subs: ["nav", "palette"], count: 35, ext: "tsx" },
+  { dir: "src/i18n", subs: ["en", "id"], count: 40, ext: "ts" },
+  { dir: "src/generated/backbone/domain/entity", subs: [""], count: 620, ext: "schema.ts", generated: true },
+];
+
+function synthesise(): void {
+  const rand = mulberry32(20260927);
+  const pick = <T,>(list: readonly T[]): T => list[Math.floor(rand() * list.length)] as T;
+  const byFolder = new Map<string, MockFile[]>();
+  let n = 0;
+  for (const folder of SYNTH) {
+    const list: MockFile[] = [];
+    for (let k = 0; k < folder.count; k += 1) {
+      const sub = folder.subs[k % folder.subs.length] ?? "";
+      const name = `${WORDS_A[(k * 7 + n) % WORDS_A.length]}${WORDS_B[(k * 3 + n) % WORDS_B.length]}${k}`;
+      const dir = sub ? `${folder.dir}/${sub}` : folder.dir;
+      const base = folder.ext === "ts" || folder.ext === "schema.ts" ? name.charAt(0).toLowerCase() + name.slice(1) : name;
+      const file: MockFile = {
+        root: "web",
+        path: `${dir}/${folder.generated ? name : base}.${folder.ext}`,
+        generated: folder.generated === true,
+        defines: [name],
+        imports: [],
+        external: folder.ext === "tsx" ? ["react"] : [],
+      };
+      list.push(file);
+      // Every ninth component or feature has a test beside it.
+      if (!folder.generated && folder.ext === "tsx" && k % 9 === 0) {
+        list.push({
+          root: "web",
+          path: `${dir}/${name}.test.tsx`,
+          defines: [],
+          imports: [{ to: file.path, names: [name] }],
+          external: ["vitest"],
+        });
+      }
+    }
+    byFolder.set(folder.dir, list);
+    n += 1;
+  }
+  const all = [...byFolder.values()].flat();
+  const handWritten = all.filter((f) => !f.generated);
+  const generated = byFolder.get("src/generated/backbone/domain/entity") ?? [];
+  // A few files everyone reaches for.
+  const hubs = [
+    ...(byFolder.get("src/hooks") ?? []).slice(0, 8),
+    ...(byFolder.get("src/utils") ?? []).slice(0, 8),
+    ...(byFolder.get("src/lib") ?? []).slice(0, 6),
+    ...(byFolder.get("src/components") ?? []).slice(0, 8),
+  ];
+  const add = (from: MockFile, to: MockFile | undefined) => {
+    if (!to || to === from || from.imports.some((i) => i.to === to.path)) return;
+    from.imports.push({ to: to.path, names: to.defines.slice(0, 1) });
+  };
+  for (const [dir, list] of byFolder) {
+    for (const file of list) {
+      if (file.path.endsWith(".test.tsx")) continue;
+      if (file.generated) {
+        // Entities reference one or two others.
+        for (let j = 0; j < 1 + Math.floor(rand() * 2); j += 1) add(file, pick(generated));
+        continue;
+      }
+      const m = 2 + Math.floor(rand() * 4);
+      for (let j = 0; j < m; j += 1) {
+        const roll = rand();
+        if (roll < 0.55) add(file, pick(list));
+        else if (roll < 0.8) add(file, pick(hubs));
+        else add(file, pick(handWritten));
+      }
+      if (dir === "src/resources") add(file, pick(generated));
+      if (dir === "src/resources" && rand() < 0.5) add(file, pick(generated));
+    }
+  }
+  FILES.push(...all);
+  // The existing hooks are hubs too.
+  const hooks = FILES.find((f) => f.path === "src/crud/hooks.ts");
+  for (const f of (byFolder.get("src/features") ?? []).filter((_, i) => i % 5 === 0)) if (hooks) add(f, hooks);
+}
+synthesise();
+
 // API calls, the three verdicts side by side: proven, unproven, orphan.
 const API: Record<string, CodeApiCallDto[]> = {
   "src/crud/hooks.ts": [
@@ -300,6 +419,30 @@ export function mockCodeOverview(root: string, rawFolder: string): CodeOverviewD
 
 function fanIn(root: string, path: string): number {
   return filesOf(root).filter((f) => f.imports.some((imp) => imp.to === path)).length;
+}
+
+/** The whole network of a root, the way `/api/code/graph` answers it. */
+export function mockCodeGraph(root: string): CodeGraphDto | null {
+  const files = filesOf(root)
+    .slice()
+    .sort((a, b) => (a.path < b.path ? -1 : 1));
+  if (files.length === 0) return null;
+  const index = new Map(files.map((f, i) => [f.path, i]));
+  const users = new Array<number>(files.length).fill(0);
+  const edges: Array<[number, number]> = [];
+  files.forEach((f, i) => {
+    for (const imp of f.imports) {
+      const j = index.get(imp.to);
+      if (j === undefined || j === i) continue;
+      edges.push([i, j]);
+      users[j] = (users[j] ?? 0) + 1;
+    }
+  });
+  return {
+    root,
+    files: files.map((f, i) => ({ path: f.path, generated: f.generated === true, users: users[i] ?? 0 })),
+    edges,
+  };
 }
 
 export function mockCodeNode(name: string): CodeNeighbourhoodDto | null {

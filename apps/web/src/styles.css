@@ -130,6 +130,17 @@
   --dit-p4: #9aa3aa;
 
   /* HTTP methods, on the Morse screen only — a verb, never a state. */
+  /* Code map clusters: a categorical set, one per top folder; the last is "other". */
+  --dit-cat-0: #2563eb;
+  --dit-cat-1: #ea580c;
+  --dit-cat-2: #059669;
+  --dit-cat-3: #dc2626;
+  --dit-cat-4: #7c3aed;
+  --dit-cat-5: #0891b2;
+  --dit-cat-6: #db2777;
+  --dit-cat-7: #65a30d;
+  --dit-cat-8: #a16207;
+  --dit-cat-9: #8b98a1;
   --dit-m-get: #047857;
   --dit-m-post: #b45309;
   --dit-m-put: #1d4ed8;
@@ -194,6 +205,16 @@
     --dit-p2: #facc15;
     --dit-p3: #38bdf8;
     --dit-p4: #5f6a73;
+    --dit-cat-0: #60a5fa;
+    --dit-cat-1: #fb923c;
+    --dit-cat-2: #34d399;
+    --dit-cat-3: #f87171;
+    --dit-cat-4: #a78bfa;
+    --dit-cat-5: #22d3ee;
+    --dit-cat-6: #f472b6;
+    --dit-cat-7: #a3e635;
+    --dit-cat-8: #facc15;
+    --dit-cat-9: #6b7780;
     --dit-m-get: #34d399;
     --dit-m-post: #fbbf24;
     --dit-m-put: #60a5fa;
@@ -253,6 +274,16 @@
   --dit-p2: #facc15;
   --dit-p3: #38bdf8;
   --dit-p4: #5f6a73;
+  --dit-cat-0: #60a5fa;
+  --dit-cat-1: #fb923c;
+  --dit-cat-2: #34d399;
+  --dit-cat-3: #f87171;
+  --dit-cat-4: #a78bfa;
+  --dit-cat-5: #22d3ee;
+  --dit-cat-6: #f472b6;
+  --dit-cat-7: #a3e635;
+  --dit-cat-8: #facc15;
+  --dit-cat-9: #6b7780;
   --dit-m-get: #34d399;
   --dit-m-post: #fbbf24;
   --dit-m-put: #60a5fa;

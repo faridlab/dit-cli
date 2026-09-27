@@ -19,6 +19,7 @@ import { cn } from "../lib/cn";
 import { IBtn, INPUT_CLASS } from "../components/chrome";
 import { SelectField } from "../components/SelectField";
 import { Empty, ErrorBox, Loading } from "../components/states";
+import { AllView } from "./code/AllView";
 import { FocusView } from "./code/FocusView";
 import { FolderGraph } from "./code/FolderGraph";
 
@@ -60,6 +61,8 @@ export function CodeView({
   const overview = useCodeOverview(half === "folder" ? (active?.id ?? null) : null, at);
   const [back, setBack] = useState<string[]>([]);
   const [text, setText] = useState(focus ?? "");
+  // Enter in the All view centres on the best match instead of focusing.
+  const [seek, setSeek] = useState(0);
   useEffect(() => setText(focus ?? ""), [focus]);
 
   const go = useCallback(
@@ -105,7 +108,7 @@ export function CodeView({
           className="w-auto min-w-56 font-mono"
         />
         <div className="seg" style={{ marginLeft: 0 }} role="tablist" aria-label="Show">
-          {(["folder", "focus"] as const).map((h) => (
+          {(["folder", "focus", "all"] as const).map((h) => (
             <button
               key={h}
               type="button"
@@ -114,7 +117,7 @@ export function CodeView({
               className={cn(half === h && "on")}
               onClick={() => go({ view: h })}
             >
-              {h === "folder" ? "Folder" : "Focus"}
+              {h === "folder" ? "Folder" : h === "focus" ? "Focus" : "All"}
             </button>
           ))}
         </div>
@@ -145,7 +148,9 @@ export function CodeView({
           onSubmit={(ev) => {
             ev.preventDefault();
             const name = text.trim();
-            if (name.length > 0) focusOn(name);
+            if (name.length === 0) return;
+            if (half === "all") setSeek((n) => n + 1);
+            else focusOn(name);
           }}
         >
           <IBtn onClick={goBack} disabled={back.length === 0} title="Back to the previous file" aria-label="Back to the previous file">
@@ -157,7 +162,7 @@ export function CodeView({
               className={cn(INPUT_CLASS, "w-80 pl-7 font-mono")}
               value={text}
               onChange={(ev) => setText(ev.target.value)}
-              placeholder="File path or symbol, then Enter"
+              placeholder={half === "all" ? "Find a file in the network, then Enter" : "File path or symbol, then Enter"}
               aria-label="Focus a file path or symbol"
               spellCheck={false}
             />
@@ -167,8 +172,10 @@ export function CodeView({
 
       {roots.data.problems.length > 0 ? <Problems problems={roots.data.problems} /> : null}
 
-      <section className="flex min-h-0 flex-1 flex-col bg-app" aria-label={half === "folder" ? "Folder map" : "Focus"}>
-        {half === "focus" ? (
+      <section className="flex min-h-0 flex-1 flex-col bg-app" aria-label={half === "folder" ? "Folder map" : half === "focus" ? "Focus" : "All files"}>
+        {half === "all" ? (
+          <AllView root={active.id} query={text} seek={seek} onOpen={focusOn} />
+        ) : half === "focus" ? (
           <FocusView
             focus={focus}
             onFocus={focusOn}
