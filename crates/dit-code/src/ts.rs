@@ -1,8 +1,11 @@
 //! TypeScript / TSX extraction.
 
 use dit_model::{
-    CodeCall, CodeImport, CodeRelation, CodeSymbol, FileFacts, RelationKind, SymbolKind,
+    path_shaped, CodeCall, CodeConst, CodeImport, CodeRelation, CodeString, CodeSymbol, FileFacts,
+    RelationKind, SymbolKind,
 };
+
+use crate::kotlin::placeholder;
 use tree_sitter::{Node, Parser};
 
 pub(crate) fn extract(text: &str, tsx: bool) -> FileFacts {
@@ -27,7 +30,73 @@ pub(crate) fn extract(text: &str, tsx: bool) -> FileFacts {
     }
     collect_calls(root, src, &mut facts.calls);
     collect_dynamic_imports(root, src, &mut facts.imports);
+    collect_strings(root, src, &mut facts.strings);
     facts
+}
+
+/// A string or template literal in the `${name}` form; `None` for anything
+/// else.
+fn literal(node: Node<'_>, src: &[u8]) -> Option<String> {
+    match node.kind() {
+        "string" => Some(string_value(node, src)),
+        "template_string" => {
+            let (start, end) = (node.start_byte() + 1, node.end_byte().saturating_sub(1));
+            if end <= start {
+                return Some(String::new());
+            }
+            let mut out = String::new();
+            let mut at = start;
+            let mut cursor = node.walk();
+            for sub in node.named_children(&mut cursor) {
+                if sub.kind() != "template_substitution" {
+                    continue;
+                }
+                out.push_str(std::str::from_utf8(&src[at..sub.start_byte()]).unwrap_or_default());
+                let inner = text(sub, src);
+                let expr = inner
+                    .strip_prefix("${")
+                    .and_then(|e| e.strip_suffix('}'))
+                    .unwrap_or_default();
+                out.push_str(&placeholder(expr.trim()));
+                at = sub.end_byte();
+            }
+            out.push_str(std::str::from_utf8(&src[at..end]).unwrap_or_default());
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
+/// Path-shaped literals anywhere in the file, except module specifiers —
+/// an import names a file, not an endpoint.
+fn collect_strings(node: Node<'_>, src: &[u8], out: &mut Vec<CodeString>) {
+    match node.kind() {
+        "import_statement" | "export_statement" if node.child_by_field_name("source").is_some() => {
+            return
+        }
+        "call_expression" => {
+            let loader = node
+                .child_by_field_name("function")
+                .is_some_and(|f| f.kind() == "import" || text(f, src) == "require");
+            if loader {
+                return;
+            }
+        }
+        "string" | "template_string" => {
+            if let Some(t) = literal(node, src).filter(|t| path_shaped(t)) {
+                out.push(CodeString {
+                    text: t,
+                    line: line(node),
+                });
+            }
+            return;
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_strings(child, src, out);
+    }
 }
 
 /// `import("…")` with a literal target: a dependency like any other. A target
@@ -160,6 +229,15 @@ fn top_level(node: Node<'_>, src: &[u8], exported: bool, facts: &mut FileFacts) 
                             line: line(decl),
                             exported,
                         });
+                        if let Some(value) = decl
+                            .child_by_field_name("value")
+                            .and_then(|v| literal(v, src))
+                        {
+                            facts.consts.push(CodeConst {
+                                name: text(name, src).to_owned(),
+                                value,
+                            });
+                        }
                     }
                 }
             }
@@ -402,5 +480,38 @@ function helper() { return str(1); }
         ] {
             assert!(callees.contains(&want), "missing {want}: {callees:?}");
         }
+    }
+
+    #[test]
+    fn path_literals_and_string_constants_are_read() {
+        let f = extract(
+            r#"import { x } from "./a/b";
+const P = "api/v1/performance";
+export const PERF = {
+  open: (id: string) => `${P}/cycles/${id}/open`,
+  rate: (r: Row) => `${P}/appraisals/${r.id}/rate`,
+};
+const lazy = import("./lazy/page");
+const when = "dd/MM/yyyy hh";
+const icon = "/img/logo.svg";
+"#,
+            false,
+        );
+        let strings: Vec<&str> = f.strings.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(
+            strings,
+            [
+                "api/v1/performance",
+                "${P}/cycles/${id}/open",
+                "${P}/appraisals/${r.id}/rate"
+            ]
+        );
+        assert_eq!(
+            f.consts[0],
+            CodeConst {
+                name: "P".into(),
+                value: "api/v1/performance".into()
+            }
+        );
     }
 }

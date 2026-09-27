@@ -31,8 +31,9 @@ mod time;
 mod workflow;
 
 pub use code::{
-    glob_match, CodeCall, CodeImport, CodeLang, CodeMap, CodeRelation, CodeSymbol, FileFacts,
-    MapEntry, MapPath, RelationKind, SymbolKind,
+    api_fit, api_segments, glob_match, path_shaped, ApiFit, ApiSegment, CodeCall, CodeConst,
+    CodeImport, CodeLang, CodeMap, CodeRelation, CodeString, CodeSymbol, FileFacts, MapEntry,
+    MapPath, RelationKind, SymbolKind,
 };
 pub use comment::{Author, Comment};
 pub use config::{CodeRoot, Config, Numbering, RepoLink, SpecEntry, SCHEMA_MAX};

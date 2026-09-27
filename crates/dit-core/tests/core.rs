@@ -4497,3 +4497,90 @@ fn map_entries_are_judged_against_the_code_and_confirmed_by_a_person() {
         dit_core::MapHealth::Stale { commits: 1 }
     );
 }
+
+/// ADR 0025 milestone 3: Kotlin resolves by declaration, a same-package use
+/// is an edge although nothing imports it, and path literals are read
+/// against the registered specs — a call, an orphan, or too generic to name.
+#[test]
+fn kotlin_resolves_by_declaration_and_literals_meet_the_spec() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path();
+    let _ = workspace(path);
+    let files: &[(&str, &str)] = &[
+        (
+            "app/data/Repo.kt",
+            "package com.acme.data\n\nclass Repo\n\nobject Routes {\n    const val BASE = \"api/v1/users\"\n}\n",
+        ),
+        (
+            "app/data/Helper.kt",
+            "package com.acme.data\n\nfun helper(r: Repo) = r\n",
+        ),
+        (
+            "app/ui/Screen.kt",
+            "package com.acme.ui\n\nimport com.acme.data.Repo\nimport kotlinx.coroutines.launch\n\nclass Screen(val repo: Repo) {\n    fun open(id: String) = get(\"${Routes.BASE}/$id\")\n}\n",
+        ),
+        (
+            "web/api.ts",
+            "const P = \"api/v1/users\";\nexport const U = {\n  one: (id: string) => `${P}/${id}`,\n  gone: \"api/v1/teams/x/y\",\n  any: (a: string, b: string) => `api/${a}/${b}`,\n};\n",
+        ),
+        (
+            "api/openapi.yaml",
+            "openapi: 3.0.3\npaths:\n  /api/v1/users:\n    get:\n      operationId: listUsers\n  /api/v1/users/{id}:\n    get:\n      operationId: getUser\n  /api/v1/users/bulk:\n    post:\n      operationId: bulkUsers\n",
+        ),
+    ];
+    for (rel, text) in files {
+        let p = path.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+    std::fs::create_dir_all(path.join(".dit")).unwrap();
+    std::fs::write(
+        path.join(".dit/config.yaml"),
+        "schema_version: 1\nlayout: root\nnumbering: local\nspecs:\n  - { id: users, path: api/openapi.yaml }\ncode:\n  - { id: app, include: [\"app/**\"] }\n  - { id: web, include: [\"web/**\"] }\n",
+    )
+    .unwrap();
+    let repo = Repo::open(path).unwrap();
+    repo.add(".").unwrap();
+    repo.commit("a kotlin client and a web client").unwrap();
+    let mut dit = Dit::open(path).unwrap();
+    dit.reindex(ReindexMode::State).unwrap();
+    let report = dit.refresh_code().unwrap();
+    assert_eq!(
+        report.unresolved, 0,
+        "a library import is external: {report:?}"
+    );
+
+    // The explicit import, and the same-package type use nobody imported.
+    let users: Vec<String> = dit
+        .code_users("Repo")
+        .unwrap()
+        .into_iter()
+        .map(|u| u.path)
+        .collect();
+    assert!(users.contains(&"app/ui/Screen.kt".to_owned()), "{users:?}");
+    assert!(
+        users.contains(&"app/data/Helper.kt".to_owned()),
+        "{users:?}"
+    );
+
+    let api = dit.code_api().unwrap();
+    let call = |resolved: &str| api.calls.iter().find(|c| c.resolved == resolved);
+    // A constant from the file, and one from an object in another file.
+    let web = call("api/v1/users/${id}").expect("the web literal, constant put back");
+    let ops: Vec<&str> = web
+        .operations
+        .iter()
+        .map(|o| o.operation_id.as_str())
+        .collect();
+    assert_eq!(ops, ["getUser"], "the closest fit only, not /bulk");
+    assert!(
+        api.calls
+            .iter()
+            .any(|c| c.root == "app" && c.resolved == "api/v1/users/${id}"),
+        "the Kotlin literal through Routes.BASE: {api:?}"
+    );
+    let orphans: Vec<&str> = api.orphans().map(|c| c.resolved.as_str()).collect();
+    assert_eq!(orphans, ["api/v1/teams/x/y"]);
+    assert_eq!(api.generic, 1, "api/${{a}}/${{b}} names no one path");
+    assert!(api.unproven().iter().any(|o| o.operation_id == "getUser"));
+}

@@ -16,7 +16,7 @@
 mod agent;
 pub mod board;
 pub mod code;
-pub use code::{MapEntryView, MapHealth};
+pub use code::{ApiCall, ApiOperation, ApiReport, MapEntryView, MapHealth};
 pub mod diagnostics;
 pub mod error;
 pub mod flow;

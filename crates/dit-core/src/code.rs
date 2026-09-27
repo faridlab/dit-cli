@@ -6,9 +6,9 @@
 //! stored import against the files that exist. Everything else here reads
 //! the index only (I2).
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
-use dit_index::{StoredCodeMap, StoredMapEntry};
+use dit_index::{KotlinReferences, StoredCodeMap, StoredMapEntry};
 use dit_model::{glob_match, CodeLang, CodeMap, CodeRoot, MapPath};
 
 use crate::{Dit, DitError};
@@ -41,6 +41,69 @@ pub struct MapEntryView {
     pub never: Vec<String>,
     pub health: MapHealth,
 }
+
+/// An operation a literal calls, and where it was proven.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiOperation {
+    pub spec: String,
+    pub operation_id: String,
+    pub method: String,
+    pub path: String,
+    /// Environments where a scenario exercising it holds a fresh proof.
+    pub proven: Vec<String>,
+}
+
+/// One path literal in the code, read against the registered specs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiCall {
+    pub root: String,
+    pub path: String,
+    pub line: u32,
+    /// As written, in the `${name}` form.
+    pub written: String,
+    /// With every constant it names put back in.
+    pub resolved: String,
+    /// Empty for an orphan: no registered spec describes it.
+    pub operations: Vec<ApiOperation>,
+}
+
+/// The seam link (ADR 0025 milestone 3): every literal that looks like a
+/// call into a registered spec, matched or not.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ApiReport {
+    pub calls: Vec<ApiCall>,
+    /// The first path segments of the registered specs — a literal must
+    /// start with one to count as a call at all.
+    pub roots: Vec<String>,
+    pub operations: usize,
+    /// Literals too generic to name one path — mostly wildcards, like a
+    /// CRUD client's `${base}/${module}/${collection}` — left out.
+    pub generic: usize,
+}
+
+impl ApiReport {
+    pub fn orphans(&self) -> impl Iterator<Item = &ApiCall> {
+        self.calls.iter().filter(|c| c.operations.is_empty())
+    }
+
+    /// Operations with callers and no fresh proof anywhere, each once.
+    pub fn unproven(&self) -> Vec<&ApiOperation> {
+        let mut seen = HashSet::new();
+        self.calls
+            .iter()
+            .flat_map(|c| c.operations.iter())
+            .filter(|o| o.proven.is_empty())
+            .filter(|o| seen.insert((o.spec.clone(), o.operation_id.clone())))
+            .collect()
+    }
+}
+
+/// A literal whose closest fit still fills more spec-named segments than
+/// this with values is not naming a path; it is a template for many.
+const MAX_GUESSED: usize = 1;
+
+/// How deep a constant may be built from other constants.
+const MAX_CONST_DEPTH: usize = 4;
 
 /// What a refresh did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -280,6 +343,167 @@ impl Dit {
         }
     }
 
+    /// Every path literal in the code, matched against the registered
+    /// specs' operations. Read from the index only (I2); nothing is stored
+    /// (I5). A heuristic over literals, and it says so: a path assembled at
+    /// runtime from variables is not seen.
+    pub fn code_api(&self) -> Result<ApiReport, DitError> {
+        // The operations, and where each is proven.
+        let mut ops: Vec<(ApiOperation, Vec<dit_model::ApiSegment>)> = Vec::new();
+        for spec in &self.config.specs {
+            for op in self.index.morse_operations(&spec.id)? {
+                let segments = dit_model::api_segments(&op.path);
+                ops.push((
+                    ApiOperation {
+                        spec: spec.id.clone(),
+                        operation_id: op.operation_id,
+                        method: op.method,
+                        path: op.path,
+                        proven: Vec::new(),
+                    },
+                    segments,
+                ));
+            }
+        }
+        let proven_envs: HashMap<String, Vec<String>> = self
+            .morse_report()?
+            .scenarios
+            .into_iter()
+            .map(|s| {
+                let envs = s
+                    .proofs
+                    .iter()
+                    .filter(|p| p.holds())
+                    .map(|p| p.env.clone())
+                    .collect();
+                (s.scenario, envs)
+            })
+            .collect();
+        for stored in self.index.morse_scenarios()? {
+            let Some(envs) = proven_envs.get(&stored.scenario).filter(|e| !e.is_empty()) else {
+                continue;
+            };
+            let Ok(scenario) = dit_parse::parse_morse_scenario(&stored.body) else {
+                continue;
+            };
+            for step in &scenario.steps {
+                let hit: Vec<usize> = match &step.operation {
+                    dit_model::StepTarget::Operation(r) => ops
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, (o, _))| o.spec == r.spec && o.operation_id == r.operation)
+                        .map(|(i, _)| i)
+                        .collect(),
+                    dit_model::StepTarget::Inline(id) => {
+                        let Some(req) = scenario.requests.iter().find(|q| &q.id == id) else {
+                            continue;
+                        };
+                        let segs = dit_model::api_segments(&req.path);
+                        ops.iter()
+                            .enumerate()
+                            .filter(|(_, (o, s))| {
+                                o.method.eq_ignore_ascii_case(&req.method)
+                                    && dit_model::api_fit(&segs, s)
+                                        == dit_model::ApiFit::Calls { guessed: 0 }
+                            })
+                            .map(|(i, _)| i)
+                            .collect()
+                    }
+                };
+                for i in hit {
+                    for env in envs {
+                        if !ops[i].0.proven.contains(env) {
+                            ops[i].0.proven.push(env.clone());
+                        }
+                    }
+                }
+            }
+        }
+        let mut roots: Vec<String> = ops
+            .iter()
+            .filter_map(|(_, s)| match s.first() {
+                Some(dit_model::ApiSegment::Lit(l)) => Some(l.clone()),
+                _ => None,
+            })
+            .collect();
+        roots.sort();
+        roots.dedup();
+
+        // Constants, and the names each file takes from another.
+        let mut consts: HashMap<(String, String), HashMap<String, String>> = HashMap::new();
+        for (root, path, name, value) in self.index.code_consts()? {
+            consts.entry((root, path)).or_default().insert(name, value);
+        }
+        let mut imported: HashMap<(String, String), HashMap<String, String>> = HashMap::new();
+        for imp in self.index.code_named_imports()? {
+            let into = imported.entry((imp.root, imp.path)).or_default();
+            for n in imp.names {
+                into.entry(n).or_insert_with(|| imp.target.clone());
+            }
+        }
+        let lookup = Lookup {
+            dit: self,
+            consts: &consts,
+            imported: &imported,
+        };
+
+        let mut calls = Vec::new();
+        let mut generic = 0;
+        for (root, path, written, line) in self.index.code_strings()? {
+            let resolved = lookup.expand(&root, &path, &written, 0);
+            let mut segs = dit_model::api_segments(&resolved);
+            // A leading value nobody can read — a base URL from the
+            // environment — is where the host goes, not part of the path.
+            if segs.first() == Some(&dit_model::ApiSegment::Any) && resolved.starts_with("${") {
+                segs.remove(0);
+            }
+            let Some(dit_model::ApiSegment::Lit(first)) = segs.first() else {
+                continue;
+            };
+            if !roots.contains(first) {
+                continue;
+            }
+            let mut prefix = false;
+            let mut fits: Vec<(usize, &ApiOperation)> = Vec::new();
+            for (op, spec) in &ops {
+                match dit_model::api_fit(&segs, spec) {
+                    dit_model::ApiFit::Calls { guessed } => fits.push((guessed, op)),
+                    dit_model::ApiFit::Prefix => prefix = true,
+                    dit_model::ApiFit::None => {}
+                }
+            }
+            // Keep only the closest fits: `items/${id}` calls `items/{id}`,
+            // not `items/bulk`.
+            let closest = fits.iter().map(|(g, _)| *g).min();
+            if closest.is_some_and(|g| g > MAX_GUESSED) {
+                generic += 1;
+                continue;
+            }
+            let operations: Vec<ApiOperation> = fits
+                .into_iter()
+                .filter(|(g, _)| Some(*g) == closest)
+                .map(|(_, op)| op.clone())
+                .collect();
+            if operations.is_empty() && prefix {
+                continue;
+            }
+            calls.push(ApiCall {
+                root,
+                path,
+                line,
+                written,
+                resolved,
+                operations,
+            });
+        }
+        Ok(ApiReport {
+            calls,
+            roots,
+            operations: ops.len(),
+            generic,
+        })
+    }
+
     /// Every judged map entry, from the index (I2).
     pub fn code_map_report(&self) -> Result<Vec<MapEntryView>, DitError> {
         let maps: HashMap<String, StoredCodeMap> = self
@@ -478,10 +702,30 @@ impl Dit {
         report.parsed += parsed.len();
         report.files += covered.len();
 
+        // Kotlin imports name declarations: index them by qualified name.
+        let mut kotlin = dit_code::KotlinIndex::default();
+        for (path, package, name) in self
+            .index
+            .kotlin_decls(&root.id)
+            .map_err(|e| e.to_string())?
+        {
+            kotlin.add_decl(&package, &name, &path);
+        }
+        let references = self
+            .index
+            .kotlin_references(&root.id)
+            .map_err(|e| e.to_string())?;
+        for file in &references {
+            if let Some(p) = &file.package {
+                kotlin.add_package(p);
+            }
+        }
+
         // Resolve every import against the files that exist now.
         let index = dit_code::RootIndex {
             files: &code_files,
             aliases: &aliases,
+            kotlin: &kotlin,
         };
         let imports = self
             .index
@@ -489,15 +733,12 @@ impl Dit {
             .map_err(|e| e.to_string())?;
         let mut targets = Vec::new();
         for imp in &imports {
-            let lang = match imp.lang.as_str() {
-                "rust" => CodeLang::Rust,
-                "typescript" => CodeLang::TypeScript,
-                _ => CodeLang::Tsx,
-            };
+            let lang = CodeLang::parse(&imp.lang).unwrap_or(CodeLang::Tsx);
             let (target, external) =
                 match dit_code::resolve(lang, &imp.path, &imp.specifier, &index) {
                     dit_code::Resolved::File(f) => (Some(f), false),
                     dit_code::Resolved::External => (None, true),
+                    dit_code::Resolved::Package => (None, false),
                     dit_code::Resolved::Unresolved => {
                         report.unresolved += 1;
                         (None, false)
@@ -509,6 +750,10 @@ impl Dit {
         }
         self.index
             .set_code_import_targets(&targets)
+            .map_err(|e| e.to_string())?;
+        let implied = implied_imports(&references, &kotlin.decls);
+        self.index
+            .replace_implied_imports(&root.id, &implied)
             .map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -813,6 +1058,121 @@ impl Dit {
         out.truncate(limit);
         Ok(out)
     }
+}
+
+/// Puts constants back into a literal: the file's own, a name it imports,
+/// or `Obj.NAME` where `Obj` is declared in the same root.
+struct Lookup<'a> {
+    dit: &'a Dit,
+    consts: &'a HashMap<(String, String), HashMap<String, String>>,
+    imported: &'a HashMap<(String, String), HashMap<String, String>>,
+}
+
+impl Lookup<'_> {
+    fn expand(&self, root: &str, path: &str, text: &str, depth: usize) -> String {
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(start) = rest.find("${") {
+            out.push_str(&rest[..start]);
+            let after = &rest[start + 2..];
+            let Some(end) = after.find('}') else {
+                out.push_str(&rest[start..]);
+                return out;
+            };
+            let name = &after[..end];
+            match (depth < MAX_CONST_DEPTH)
+                .then(|| self.value(root, path, name))
+                .flatten()
+            {
+                Some((at, value)) => out.push_str(&self.expand(root, &at, &value, depth + 1)),
+                None => {
+                    out.push_str("${");
+                    out.push_str(name);
+                    out.push('}');
+                }
+            }
+            rest = &after[end + 1..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// The value behind a name, and the file it lives in (a constant built
+    /// from others resolves them where it is defined).
+    fn value(&self, root: &str, path: &str, name: &str) -> Option<(String, String)> {
+        if name.is_empty() {
+            return None;
+        }
+        let key = (root.to_owned(), path.to_owned());
+        if let Some(v) = self.consts.get(&key).and_then(|c| c.get(name)) {
+            return Some((path.to_owned(), v.clone()));
+        }
+        if let Some(target) = self.imported.get(&key).and_then(|i| i.get(name)) {
+            let at = (root.to_owned(), target.clone());
+            if let Some(v) = self.consts.get(&at).and_then(|c| c.get(name)) {
+                return Some((target.clone(), v.clone()));
+            }
+        }
+        // `Obj.NAME`: the constant inside the object or class declaring Obj.
+        let (owner, member) = name.rsplit_once('.')?;
+        let owner = owner.rsplit('.').next().unwrap_or(owner);
+        let files = self.dit.index.code_symbols_named(owner).ok()?;
+        files.into_iter().filter(|s| s.root == root).find_map(|s| {
+            let at = (s.root.clone(), s.path.clone());
+            self.consts
+                .get(&at)
+                .and_then(|c| c.get(member))
+                .map(|v| (s.path.clone(), v.clone()))
+        })
+    }
+}
+
+/// The edges Kotlin does not write down: a file using a declaration of its
+/// own package, or of a package it imports with `*`, depends on the file
+/// declaring it. Read from the names it calls and extends — never from a
+/// guess about a name nobody used.
+fn implied_imports(
+    references: &[KotlinReferences],
+    decls: &HashMap<String, String>,
+) -> Vec<(String, String, Vec<String>, u32, String)> {
+    let mut out = Vec::new();
+    for KotlinReferences {
+        path,
+        package,
+        names,
+        wildcards,
+    } in references
+    {
+        // target → (specifier, names, first line)
+        let mut edges: BTreeMap<String, (String, Vec<String>, u32)> = BTreeMap::new();
+        let scopes = package
+            .iter()
+            .map(|p| (p.as_str(), format!("{p}.(package)")))
+            .chain(wildcards.iter().map(|w| (w.as_str(), format!("{w}.*"))));
+        for (scope, specifier) in scopes {
+            for (name, line) in names {
+                let Some(target) = decls.get(&format!("{scope}.{name}")) else {
+                    continue;
+                };
+                if target == path {
+                    continue;
+                }
+                let edge = edges
+                    .entry(target.clone())
+                    .or_insert_with(|| (specifier.clone(), Vec::new(), *line));
+                if !edge.1.contains(name) {
+                    edge.1.push(name.clone());
+                }
+                if *line > 0 && (edge.2 == 0 || *line < edge.2) {
+                    edge.2 = *line;
+                }
+            }
+        }
+        for (target, (specifier, names, line)) in edges {
+            out.push((path.clone(), specifier, names, line, target));
+        }
+    }
+    out
 }
 
 /// Set the `confirmed:` line of one map's fence, inserting it after `map:`

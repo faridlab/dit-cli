@@ -2,7 +2,7 @@
 //! same code root — or `External` for a package, or `Unresolved` when the
 //! extractor cannot tell. Never a guess.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use dit_model::CodeLang;
 
@@ -14,6 +14,49 @@ pub enum Resolved {
     External,
     /// Looks local but names no file here.
     Unresolved,
+    /// A Kotlin wildcard import of a package in this root: it names every
+    /// file of the package, and which of them it uses is read from the
+    /// importer's calls, not from the import.
+    Package,
+}
+
+/// What Kotlin resolution needs: imports name declarations, not files.
+#[derive(Debug, Default)]
+pub struct KotlinIndex {
+    /// Fully qualified top-level declaration → the file declaring it.
+    pub decls: HashMap<String, String>,
+    /// Every package declared in the root.
+    packages: HashSet<String>,
+    /// The first two segments of each package — the reverse-domain prefix
+    /// a project owns, which tells an unresolved import from a library.
+    prefixes: HashSet<String>,
+}
+
+impl KotlinIndex {
+    pub fn add_package(&mut self, package: &str) {
+        if self.packages.insert(package.to_owned()) {
+            self.prefixes.insert(prefix(package));
+        }
+    }
+
+    pub fn add_decl(&mut self, package: &str, name: &str, path: &str) {
+        self.add_package(package);
+        self.decls
+            .entry(format!("{package}.{name}"))
+            .or_insert_with(|| path.to_owned());
+    }
+
+    fn is_internal(&self, qualified: &str) -> bool {
+        self.prefixes.contains(&prefix(qualified))
+    }
+}
+
+fn prefix(qualified: &str) -> String {
+    qualified
+        .splitn(3, '.')
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 /// The files of one code root, and its TypeScript path aliases.
@@ -22,6 +65,7 @@ pub struct RootIndex<'a> {
     pub files: &'a HashSet<String>,
     /// `(pattern, target)` from `tsconfig.json` `paths`, e.g. `("@/*", "src/*")`.
     pub aliases: &'a [(String, String)],
+    pub kotlin: &'a KotlinIndex,
 }
 
 /// Resolve one specifier written in `from`.
@@ -29,6 +73,36 @@ pub fn resolve(lang: CodeLang, from: &str, specifier: &str, root: &RootIndex<'_>
     match lang {
         CodeLang::TypeScript | CodeLang::Tsx => resolve_ts(from, specifier, root),
         CodeLang::Rust => resolve_rust(from, specifier, root),
+        CodeLang::Kotlin => resolve_kotlin(specifier, root.kotlin),
+    }
+}
+
+/// `a.b.C` → the file declaring `C` in package `a.b`; `a.b.C.Inner` or
+/// `a.b.C.member` → the file declaring `C`; `a.b.*` → the package.
+fn resolve_kotlin(spec: &str, k: &KotlinIndex) -> Resolved {
+    if let Some(pkg) = spec.strip_suffix(".*") {
+        if k.packages.contains(pkg) {
+            return Resolved::Package;
+        }
+        if let Some(file) = k.decls.get(pkg) {
+            return Resolved::File(file.clone());
+        }
+    } else {
+        let mut candidate = spec;
+        loop {
+            if let Some(file) = k.decls.get(candidate) {
+                return Resolved::File(file.clone());
+            }
+            match candidate.rsplit_once('.') {
+                Some((parent, _)) => candidate = parent,
+                None => break,
+            }
+        }
+    }
+    if k.is_internal(spec) {
+        Resolved::Unresolved
+    } else {
+        Resolved::External
     }
 }
 
@@ -241,6 +315,7 @@ mod tests {
         let root = RootIndex {
             files: &files,
             aliases: &aliases,
+            kotlin: &KotlinIndex::default(),
         };
         let from = "src/desks/people/PayrollRunsPage.tsx";
         let r = |spec: &str| resolve(CodeLang::Tsx, from, spec, &root);
@@ -284,6 +359,7 @@ mod tests {
         let root = RootIndex {
             files: &files,
             aliases: &[],
+            kotlin: &KotlinIndex::default(),
         };
         let lib = "crates/dit-core/src/lib.rs";
         let r = |from: &str, spec: &str| resolve(CodeLang::Rust, from, spec, &root);
@@ -325,5 +401,30 @@ mod tests {
             r(lib, "crate::nowhere::deep"),
             Resolved::File("crates/dit-core/src/lib.rs".into())
         );
+    }
+
+    #[test]
+    fn kotlin_imports_resolve_by_declaration() {
+        let files = HashSet::new();
+        let mut k = KotlinIndex::default();
+        k.add_package("com.acme.ui");
+        k.add_decl("com.acme.data", "Repo", "src/data/Repo.kt");
+        let root = RootIndex {
+            files: &files,
+            aliases: &[],
+            kotlin: &k,
+        };
+        let r = |s: &str| resolve(CodeLang::Kotlin, "src/ui/A.kt", s, &root);
+        assert_eq!(
+            r("com.acme.data.Repo"),
+            Resolved::File("src/data/Repo.kt".into())
+        );
+        assert_eq!(
+            r("com.acme.data.Repo.Companion"),
+            Resolved::File("src/data/Repo.kt".into())
+        );
+        assert_eq!(r("com.acme.data.*"), Resolved::Package);
+        assert_eq!(r("com.acme.data.Gone"), Resolved::Unresolved);
+        assert_eq!(r("kotlinx.coroutines.launch"), Resolved::External);
     }
 }

@@ -179,6 +179,27 @@ pub struct StoredCodeImport {
     pub external: bool,
 }
 
+/// What one Kotlin file refers to, for the inferred same-package edges.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct KotlinReferences {
+    pub path: String,
+    pub package: Option<String>,
+    /// Names it calls (their head) or names as a type, with a line; `0`
+    /// when the line is not known (a supertype).
+    pub names: Vec<(String, u32)>,
+    /// Packages it imports with `*`.
+    pub wildcards: Vec<String>,
+}
+
+/// A resolved import that takes names from its target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedImport {
+    pub root: String,
+    pub path: String,
+    pub names: Vec<String>,
+    pub target: String,
+}
+
 /// A file that imports another, and what it takes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodeImporter {
@@ -423,6 +444,7 @@ CREATE TABLE IF NOT EXISTS code_files (
   blob_sha  TEXT NOT NULL,
   lang      TEXT NOT NULL,
   generated INTEGER NOT NULL,
+  package   TEXT,
   PRIMARY KEY (root, path)
 );
 CREATE TABLE IF NOT EXISTS code_symbols (
@@ -443,7 +465,11 @@ CREATE TABLE IF NOT EXISTS code_imports (
   reexport  INTEGER NOT NULL,
   line      INTEGER NOT NULL,
   target    TEXT,
-  external  INTEGER NOT NULL DEFAULT 0
+  external  INTEGER NOT NULL DEFAULT 0,
+  -- 1 for an edge the resolver inferred rather than one written: a Kotlin
+  -- file using a declaration of its own package, or of a wildcard import.
+  -- Rebuilt on every refresh, because it depends on other files.
+  implied   INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS code_imports_target ON code_imports (root, target);
 CREATE INDEX IF NOT EXISTS code_imports_path ON code_imports (root, path);
@@ -460,6 +486,27 @@ CREATE TABLE IF NOT EXISTS code_relations (
   from_name TEXT NOT NULL,
   to_name   TEXT NOT NULL,
   kind      TEXT NOT NULL
+);
+-- Path-shaped string literals and string constants: the seam link (ADR 0025
+-- milestone 3) matches them against the registered specs at query time.
+CREATE TABLE IF NOT EXISTS code_strings (
+  root TEXT NOT NULL,
+  path TEXT NOT NULL,
+  text TEXT NOT NULL,
+  line INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS code_consts (
+  root  TEXT NOT NULL,
+  path  TEXT NOT NULL,
+  name  TEXT NOT NULL,
+  value TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS code_consts_path ON code_consts (root, path);
+CREATE TABLE IF NOT EXISTS code_type_refs (
+  root TEXT NOT NULL,
+  path TEXT NOT NULL,
+  name TEXT NOT NULL,
+  line INTEGER NOT NULL
 );
 
 -- The authored half of the code map (ADR 0025): each `dit-map` fence as read
@@ -547,7 +594,7 @@ fn flag(on: bool) -> String {
 /// Bumped whenever the schema below changes shape. The index is disposable —
 /// an on-disk file stamped with an older version is dropped and rebuilt from
 /// git rather than migrated in place (§6: SQLite is only an index).
-const INDEX_VERSION: i64 = 9;
+const INDEX_VERSION: i64 = 10;
 
 /// The column list every issue SELECT shares, in a fixed order. Hand-written
 /// SELECTs drifting out of step with the schema is the known failure mode of
@@ -639,6 +686,9 @@ impl Index {
                  DROP TABLE IF EXISTS code_relations;
                  DROP TABLE IF EXISTS code_maps;
                  DROP TABLE IF EXISTS code_map_entries;
+                 DROP TABLE IF EXISTS code_strings;
+                 DROP TABLE IF EXISTS code_consts;
+                 DROP TABLE IF EXISTS code_type_refs;
                  DROP TABLE IF EXISTS issues;",
             )?;
         }
@@ -1282,6 +1332,9 @@ impl Index {
             "code_imports",
             "code_calls",
             "code_relations",
+            "code_strings",
+            "code_consts",
+            "code_type_refs",
         ] {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE root = ?1 AND path = ?2"),
@@ -1289,10 +1342,28 @@ impl Index {
             )?;
         }
         tx.execute(
-            "INSERT OR REPLACE INTO code_files (root, path, blob_sha, lang, generated) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![root, path, blob, lang, generated],
+            "INSERT OR REPLACE INTO code_files (root, path, blob_sha, lang, generated, package) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![root, path, blob, lang, generated, facts.package],
         )?;
+        for s in &facts.strings {
+            tx.execute(
+                "INSERT INTO code_strings (root, path, text, line) VALUES (?1, ?2, ?3, ?4)",
+                params![root, path, s.text, s.line],
+            )?;
+        }
+        for t in &facts.type_refs {
+            tx.execute(
+                "INSERT INTO code_type_refs (root, path, name, line) VALUES (?1, ?2, ?3, ?4)",
+                params![root, path, t.callee, t.line],
+            )?;
+        }
+        for c in &facts.consts {
+            tx.execute(
+                "INSERT INTO code_consts (root, path, name, value) VALUES (?1, ?2, ?3, ?4)",
+                params![root, path, c.name, c.value],
+            )?;
+        }
         for s in &facts.symbols {
             tx.execute(
                 "INSERT INTO code_symbols (root, path, name, kind, line, exported) \
@@ -1344,6 +1415,9 @@ impl Index {
             "code_imports",
             "code_calls",
             "code_relations",
+            "code_strings",
+            "code_consts",
+            "code_type_refs",
         ] {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE root = ?1 AND path = ?2"),
@@ -1362,6 +1436,9 @@ impl Index {
             "code_imports",
             "code_calls",
             "code_relations",
+            "code_strings",
+            "code_consts",
+            "code_type_refs",
         ] {
             self.conn.execute(
                 &format!("DELETE FROM {table} WHERE root = ?1"),
@@ -1382,7 +1459,181 @@ impl Index {
 
     /// Every import of a root, with the language of the file it is in.
     pub fn code_imports_of_root(&self, root: &str) -> Result<Vec<StoredCodeImport>, IndexError> {
-        self.code_imports_where("i.root = ?1", &[&root])
+        self.code_imports_where("i.root = ?1 AND i.implied = 0", &[&root])
+    }
+
+    /// Replace a root's inferred edges: `(path, specifier, names, line,
+    /// target)`, each pointing at a file of the same root.
+    pub fn replace_implied_imports(
+        &mut self,
+        root: &str,
+        rows: &[(String, String, Vec<String>, u32, String)],
+    ) -> Result<(), IndexError> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "DELETE FROM code_imports WHERE root = ?1 AND implied = 1",
+            params![root],
+        )?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO code_imports (root, path, specifier, names, reexport, line, target, \
+                 external, implied) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, 0, 1)",
+            )?;
+            for (path, specifier, names, line, target) in rows {
+                stmt.execute(params![
+                    root,
+                    path,
+                    specifier,
+                    names.join(","),
+                    line,
+                    target
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every exported top-level Kotlin declaration of a root, with its file
+    /// and package: `(path, package, name)`.
+    pub fn kotlin_decls(&self, root: &str) -> Result<Vec<(String, String, String)>, IndexError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT f.path, f.package, s.name FROM code_symbols s JOIN code_files f \
+             ON f.root = s.root AND f.path = s.path \
+             WHERE s.root = ?1 AND f.lang = 'kotlin' AND f.package IS NOT NULL \
+             AND s.exported = 1 AND instr(s.name, '::') = 0",
+        )?;
+        let rows = stmt.query_map(params![root], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// The names each Kotlin file of a root refers to — the heads of what it
+    /// calls, the types it names and extends — with its package and the
+    /// wildcard packages it imports.
+    pub fn kotlin_references(&self, root: &str) -> Result<Vec<KotlinReferences>, IndexError> {
+        let mut files: std::collections::BTreeMap<String, KotlinReferences> =
+            std::collections::BTreeMap::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT path, package FROM code_files WHERE root = ?1 AND lang = 'kotlin'",
+            )?;
+            let rows = stmt.query_map(params![root], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+            })?;
+            for row in rows {
+                let (path, package) = row?;
+                files.insert(
+                    path.clone(),
+                    KotlinReferences {
+                        path,
+                        package,
+                        ..KotlinReferences::default()
+                    },
+                );
+            }
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT c.path, c.callee, c.line FROM code_calls c JOIN code_files f \
+             ON f.root = c.root AND f.path = c.path WHERE c.root = ?1 AND f.lang = 'kotlin'",
+        )?;
+        let rows = stmt.query_map(params![root], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)? as u32,
+            ))
+        })?;
+        for row in rows {
+            let (path, callee, line) = row?;
+            let head = callee.split('.').next().unwrap_or(&callee).to_owned();
+            if let Some(entry) = files.get_mut(&path) {
+                entry.names.push((head, line));
+            }
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT t.path, t.name, t.line FROM code_type_refs t JOIN code_files f \
+             ON f.root = t.root AND f.path = t.path WHERE t.root = ?1 AND f.lang = 'kotlin'",
+        )?;
+        let rows = stmt.query_map(params![root], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)? as u32,
+            ))
+        })?;
+        for row in rows {
+            let (path, name, line) = row?;
+            if let Some(entry) = files.get_mut(&path) {
+                entry.names.push((name, line));
+            }
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT r.path, r.to_name FROM code_relations r JOIN code_files f \
+             ON f.root = r.root AND f.path = r.path WHERE r.root = ?1 AND f.lang = 'kotlin'",
+        )?;
+        let rows = stmt.query_map(params![root], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (path, to) = row?;
+            if let Some(entry) = files.get_mut(&path) {
+                entry.names.push((to, 0));
+            }
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT i.path, i.specifier FROM code_imports i JOIN code_files f \
+             ON f.root = i.root AND f.path = i.path \
+             WHERE i.root = ?1 AND f.lang = 'kotlin' AND i.implied = 0 AND i.specifier LIKE '%.*'",
+        )?;
+        let rows = stmt.query_map(params![root], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (path, spec) = row?;
+            if let Some(entry) = files.get_mut(&path) {
+                entry.wildcards.push(spec.trim_end_matches(".*").to_owned());
+            }
+        }
+        Ok(files.into_values().collect())
+    }
+
+    /// Every path-shaped literal: `(root, path, text, line)`.
+    pub fn code_strings(&self) -> Result<Vec<(String, String, String, u32)>, IndexError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT root, path, text, line FROM code_strings ORDER BY root, path, line")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? as u32))
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Every string constant: `(root, path, name, value)`.
+    pub fn code_consts(&self) -> Result<Vec<(String, String, String, String)>, IndexError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT root, path, name, value FROM code_consts")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Every resolved, non-implied import that takes names — how a literal
+    /// finds a constant another file defines.
+    pub fn code_named_imports(&self) -> Result<Vec<NamedImport>, IndexError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT root, path, names, target FROM code_imports \
+             WHERE target IS NOT NULL AND implied = 0 AND names != ''",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let names: String = r.get(2)?;
+            Ok(NamedImport {
+                root: r.get(0)?,
+                path: r.get(1)?,
+                names: split_names(&names),
+                target: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// One file's imports.
@@ -2994,6 +3245,7 @@ mod tests {
                 line: 4,
             }],
             relations: vec![],
+            ..FileFacts::default()
         };
         index
             .replace_code_file("web", "src/Page.tsx", "b1", "tsx", false, &facts)

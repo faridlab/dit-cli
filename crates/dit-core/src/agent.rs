@@ -339,14 +339,19 @@ declarative chain of requests against a registered API spec, with no scripts.
   issue that depends on it gets `needs_scenarios=<scenario>` and `env=<name>`:
   `dit issue set '#619' needs_scenarios=payslip-pdf env=local-hrperf`.
 - {proof_line}
+- **Before calling an endpoint from new code**, `dit code api` reads every path literal in
+  the code against the registered specs. An **orphan** is a call no spec describes — the
+  class that answers 404 — and an operation **called and proven nowhere** is a seam nobody
+  has shown works.
 - **Found a seam that does not answer?** Write or extend the scenario, run it, and put the
   failing step's status and error code in a comment on the issue that owns the seam. The
   scenario then proves the fix when it lands.
 
 ## Reading the code
 
-DIT keeps a map of the code derived from git: which file imports which, what each file
-defines and calls, followed through path aliases and barrel re-exports. It is rebuilt from
+DIT keeps a map of the code derived from git — TypeScript, Rust and Kotlin: which file
+imports which, what each file defines and calls, followed through path aliases, barrel
+re-exports and Kotlin packages. It is rebuilt from
 HEAD on every `dit code` command, so it is never older than the last commit. Ask it before
 grepping — one answer instead of a page of matches.
 
@@ -356,6 +361,7 @@ grepping — one answer instead of a page of matches.
 - `dit code explain <name>`, `dit code where <text>`, `dit code path <a> <b>`,
   `dit code hubs` — a node in full, a name search, the import chain between two, and the
   most depended-on files (generated ones left out).
+- `dit code api` — path literals matched to spec operations: orphans, and seams unproven.
 - **The map of intent** — `dit-map` fences — says what the code cannot: where a task is
   done, the file to copy, the paths never to touch. `dit code check` prints every entry with
   its verdict. Trust an entry that **holds**; re-read one that is **stale** against its
@@ -542,8 +548,10 @@ const TOPIC_CODE: &str = r##"# The code map in depth
 Two layers, kept apart on purpose.
 
 **The derived graph** is computed from the code at HEAD and never written into a file:
-imports, re-exports, definitions, calls and trait/class relations, for TypeScript and Rust.
-Registered code roots: {roots}.
+imports, re-exports, definitions, calls and trait/class relations, for TypeScript, Rust
+and Kotlin. Kotlin imports name declarations, not files: they resolve through each file's
+`package`, and a file using a declaration of its own package — which Kotlin never imports —
+depends on it all the same. Registered code roots: {roots}.
 
 A root is registered in `.dit/config.yaml`:
 
@@ -569,9 +577,21 @@ brings the map up to HEAD, reading only the files whose content changed; `dit co
 | `dit code path <a> <b>` | the shortest import chain from one to the other |
 | `dit code where <text>` | files and symbols whose name contains the text |
 | `dit code hubs [--root r]` | the most depended-on files |
+| `dit code api [--all]` | path literals against the registered specs: orphans, unproven seams |
 
 Name a file by its path (`src/crud/hooks.ts`, or `web:src/crud/hooks.ts` when two roots
 share it) or a symbol by name (`useList`, `Repo::head`).
+
+**The seam link.** String literals shaped like paths are kept, with the constants they
+are built from (`const P = "api/v1/x"`, `const val BASE`, `Routes.BASE`) put back in.
+Each is read against every registered spec's operations, `{id}` and `${…}` standing for
+any one segment and the closest fit winning — `items/${id}` calls `items/{id}`, not
+`items/bulk`. A literal is a call when it starts where the specs' paths start (`/api`); a
+leading value nobody can read, like a base URL from the environment, is skipped as the
+host. A literal that fits no operation is an **orphan**; one that is only the start of a
+path is a base, not a call; one made mostly of wildcards names no single path and is left
+out. It is read from literals and says so: a path built at runtime is not seen, and a call
+is matched by path, not method.
 
 **The map of intent** is authored, in a `dit-map` fence in any document, and says what no
 parser can infer:
@@ -886,6 +906,9 @@ mod tests {
             "confirmed:",
             "dit code map confirm",
             "dit code users",
+            "dit code api",
+            "orphan",
+            "package",
             "generated:",
             "web (src/**; generated src/generated/**)",
         ] {
@@ -903,6 +926,8 @@ mod tests {
         for needle in [
             "dit code users",
             "dit code check",
+            "dit code api",
+            "Kotlin",
             "web (src/**; generated src/generated/**)",
             "**broken**",
         ] {

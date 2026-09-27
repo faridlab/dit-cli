@@ -265,6 +265,15 @@ enum CodeCmd {
     /// broken. Exits non-zero when an entry is broken or a map cannot be
     /// read — stale is a prompt to re-read, not a failure.
     Check,
+    /// Path literals in the code matched against the registered specs:
+    /// orphan calls no spec describes, and operations called but proven
+    /// nowhere. A heuristic over literals — a path built at runtime from
+    /// variables is not seen.
+    Api {
+        /// Every call, including those proven somewhere.
+        #[arg(long)]
+        all: bool,
+    },
     /// Maps of intent (`dit-map` fences).
     Map {
         #[command(subcommand)]
@@ -1264,6 +1273,20 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
                         );
                     }
                 }
+                // The callers' side (ADR 0025): read from the code map as
+                // the last `dit code` command or reindex left it — a check
+                // never starts a first parse of a large root.
+                if !dit.config().code.is_empty() {
+                    let api = dit.code_api()?;
+                    if !api.calls.is_empty() {
+                        println!(
+                            "\ncode: {} orphan call(s) no spec describes, {} operation(s) called and \
+                             proven nowhere — `dit code api`",
+                            api.orphans().count(),
+                            api.unproven().len()
+                        );
+                    }
+                }
                 // Stale never fails the check: it reports that the world
                 // moved, which is the thing to know, not a thing to fix here.
                 Ok(if report.is_clean() {
@@ -1874,6 +1897,7 @@ fn code(cmd: CodeCmd, explicit: Option<&str>) -> Result<ExitCode, DitError> {
     let at = |root: &str, path: &str| format!("{root}:{path}");
     match cmd {
         CodeCmd::Check => return code_check(&dit),
+        CodeCmd::Api { all } => print_code_api(&dit.code_api()?, all),
         CodeCmd::Map {
             cmd: MapCmd::Confirm { map },
         } => {
@@ -1979,6 +2003,78 @@ fn code(cmd: CodeCmd, explicit: Option<&str>) -> Result<ExitCode, DitError> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn print_code_api(report: &dit_core::ApiReport, all: bool) {
+    if report.operations == 0 {
+        println!(
+            "no spec operations to match against — register a spec under `specs:` and run `dit reindex`"
+        );
+        return;
+    }
+    let orphans: Vec<_> = report.orphans().collect();
+    let unproven = report.unproven();
+    let matched = report.calls.len() - orphans.len();
+    println!(
+        "{} literal call(s) into {}: {matched} matched, {} orphan; {} operation(s) called and proven nowhere",
+        report.calls.len(),
+        report.roots.iter().map(|r| format!("/{r}")).collect::<Vec<_>>().join(", "),
+        orphans.len(),
+        unproven.len()
+    );
+    if !orphans.is_empty() {
+        println!("\norphan — no registered spec describes it:");
+        for c in &orphans {
+            println!("  {}:{}:{}  {}", c.root, c.path, c.line, c.resolved);
+        }
+    }
+    if !unproven.is_empty() {
+        println!("\ncalled, proven nowhere:");
+        // One line per path: the methods sharing it are one seam to prove.
+        let mut paths: Vec<(String, String, Vec<String>)> = Vec::new();
+        for o in &unproven {
+            match paths
+                .iter_mut()
+                .find(|(s, p, _)| s == &o.spec && p == &o.path)
+            {
+                Some(entry) => entry.2.push(o.method.clone()),
+                None => paths.push((o.spec.clone(), o.path.clone(), vec![o.method.clone()])),
+            }
+        }
+        for (spec, path, methods) in paths {
+            println!("  {:<24} {path}  ({spec})", methods.join(","));
+        }
+    }
+    if all {
+        println!("\nevery call:");
+        for c in &report.calls {
+            let ops: Vec<String> = c
+                .operations
+                .iter()
+                .map(|o| {
+                    let proven = if o.proven.is_empty() {
+                        "unproven".to_owned()
+                    } else {
+                        format!("proven on {}", o.proven.join(", "))
+                    };
+                    format!("{} {} ({proven})", o.method, o.path)
+                })
+                .collect();
+            let target = if ops.is_empty() {
+                "orphan".to_owned()
+            } else {
+                ops.join("; ")
+            };
+            println!(
+                "  {}:{}:{}  {}  → {target}",
+                c.root, c.path, c.line, c.resolved
+            );
+        }
+    }
+    println!(
+        "\nread from literals: a path assembled at runtime from variables is not seen, a call is matched by path, not method, and {} literal(s) too generic to name one path were left out",
+        report.generic
+    );
 }
 
 fn code_check(dit: &dit_core::Dit) -> Result<ExitCode, DitError> {

@@ -255,6 +255,69 @@ large root must not stall `dit ready`.
 - I7: `code`, `include`, `exclude` and `generated` joined the schema vocabulary; the fence
   refuses the forbidden keys at any depth.
 
+## Milestone 3 as built
+
+**Kotlin.** `tree-sitter-kotlin-ng` `=1.1.0` (tree-sitter-grammars, MIT, on
+`tree-sitter-language ^0.1` like the other grammars). Measured on the KMP client
+`bersihir-mobile-provider` (3,861 Kotlin files), 2026-09-27:
+
+| Check | Result |
+|---|---|
+| Files the grammar parses without an error node | 3,859 of 3,861 |
+| Internal imports resolved to a file | 15,882 of 15,896 (99.9%); 24,820 external (kotlinx, ktor, compose) |
+| Wildcard imports | 1,959, all but 8 of them libraries |
+| Inferred same-package edges | 1,121 from 945 files; 997 before type references were read |
+| Cold refresh / warm refresh | 22.8 s / 0.56 s, on a machine at load average ~15 |
+
+- Imports resolve by declaration: `a.b.C` (and `a.b.C.Inner`) to the file declaring `C`
+  in package `a.b`; `a.b.*` of a package in the root is a package import, not
+  unresolved; a name under none of the root's package prefixes is external.
+- Kotlin never imports its own package, so those edges are inferred: a file naming a
+  declaration of its package — by a call or as a type — depends on the file declaring
+  it. They are stored as *implied* imports and rebuilt on every refresh, because they
+  change when another file does. `dit code users`, `hubs` and `path` read them like any
+  import.
+- Methods are `Type::method`, companion members belong to the type, `private` is the
+  only visibility that hides a declaration, and a class's `: Base(…)` is inheritance
+  while a bare type is an interface.
+
+**The seam link** — ADR 0024's consumer map, built on this index instead of a second
+scan:
+
+- The extractors keep path-shaped string literals (TS strings and templates, Kotlin
+  strings with `$x` and `${x}`) and string constants, in a `${name}` form. At query
+  time `dit code api` puts constants back — the file's own, a name it imports, or
+  `Obj.NAME` — and matches the result against every registered spec's operations,
+  `{id}` and `${…}` each standing for one segment.
+- **The closest fit wins.** A code wildcard that lands on a segment the spec names
+  outright is a guess; only the fits with the fewest guesses count, so `items/${id}`
+  calls `items/{id}` and not `items/bulk`. A literal whose closest fit still guesses
+  more than one segment names no single path — a CRUD client's
+  `${base}/api/v1${seg}/${collection}` matched 266 operations before this rule — and
+  is reported only as a count.
+- A literal counts only when it starts where the specs' paths start (`/api`); a leading
+  unreadable value is skipped as the host. One that is merely the start of an
+  operation's path is a base, not a call.
+- An operation's proof comes from the scenarios that exercise it — by operation
+  reference or by an inline request on its path — and their fresh proofs per
+  environment (ADR 0024).
+- Against serpa-webapp-admin and serpa's 45 registered specs (6,647 operations):
+  139 literal calls, 13 matched, 126 orphan, 12 called paths (32 operations) proven
+  nowhere. The orphans sampled are custom endpoints outside the registered documents,
+  which are the generated CRUD ones: `/attendance/kiosk/punch` is routed in the
+  attendance module and described only in that module's own `openapi.yaml`, and no
+  registered document covers performance or auth at all. That is the finding ADR 0024 started from, now
+  a list rather than an anecdote.
+- Limits, said with the report: a path assembled at runtime is not seen; a call is
+  matched by path, not method; a literal segment where the spec has a parameter
+  (`final_settlements/draft` against `/{id}`) fills the parameter when no route names
+  the segment.
+
+Cold refresh of serpa-webapp-admin, run back to back against the 0.6.0 binary on the
+same machine and load: 25.7 s for 0.6.0 (after one run to warm the cache), 26.4 s and
+29.7 s for this build — within the
+noise of a shared machine. (The 11.5 s in milestone 1 was measured when it was idle.)
+
 ## Consequences
 
 **Easier.** The graph an agent reads is the code at HEAD, every time, with no
