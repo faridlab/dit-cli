@@ -1007,6 +1007,8 @@ dit/
 │   │                  Incremental reindex from git diff.
 │   ├── dit-ai/        Provider trait, prompt template,
 │   │                  context builder, cache.
+│   ├── dit-code/      tree-sitter extraction of imports, symbols
+│   │                  and calls (TS, Rust); path resolution (ADR 0025).
 │   ├── dit-core/      Facade. The only public API.
 │   │                  Orchestrates store + index + vcs + ai.
 │   │
@@ -1547,6 +1549,7 @@ This is the section that usually gets skipped in a design doc and becomes the re
 | 13 | `experimental_minimize_commonmark` is an experimental option on the critical path | Medium | Pin the comrak version. Round-trip regression tests over a corpus of real markdown in CI. Prepare a fallback: our own serializer on top of comrak's AST if that option is removed. |
 | 14 | The editor's license changes tier (core features become paid) | Low | **TipTap decided** (§12.4), MIT core, and its Pro features are irrelevant because git already provides them. The bridge lives on the Rust side, so swapping the editor library does not touch the data format. |
 | 15 | Mode A doubles the contributor setup steps (two clones, two links) | Medium | `dit init --track` is idempotent; `dit doctor` detects a missing link and walks you through fixing it; a `README.md` at the root of the DIT repo explains the structure. |
+| 16 | The code map (ADR 0025) takes a C-backed, pre-1.0 parser: `tree-sitter` `=0.25.10`, `tree-sitter-language` `=0.1.5`, `tree-sitter-typescript` `=0.23.2`, `tree-sitter-rust` `=0.24.2` (all MIT) | Medium | Pinned exactly — 0.25.10 is the newest tree-sitter honoring the workspace's rust-version (0.26+ needs 1.90), and `tree-sitter-language` is pinned below the grammars' own range for the same reason. Confined to the `dit-code` adapter, so the wasm-clean core never links it (I4). A grammar that stops building costs that language its symbols and edges, not the index: files stay indexed. |
 
 Risk #0 is the only one that can destroy user data. Risk #7 and #9 are the ones most likely to kill this project, and neither is a technical problem.
 
@@ -3041,6 +3044,31 @@ upstream issue is done" is not the same claim as "the seam answers for me".
   as `Unproven` until each needed scenario has a fresh proof for its `env`. Off by default.
 - **Nothing new reaches the network.** `sync` already fired the run; recording the environment
   it ran in is one more line in the same commit. `dit ready` and `check` read the index (I2, I11).
+
+## 21. The Code Map (ADR 0025)
+
+An agent's first cost in an unfamiliar repository is finding its way: which file imports
+which, who breaks if this changes, where a task is done. DIT answers that from git, in two
+layers kept apart for the same reason Morse keeps endpoints and scenarios apart (§20.2).
+
+- **The graph is derived.** `code:` in `.dit/config.yaml` registers roots — a repository
+  (this one or a `repos:` entry), `include`/`exclude` globs and `generated` globs. `dit-code`
+  parses each file at HEAD with tree-sitter into imports, re-exports, definitions, calls and
+  relations; the facade resolves specifiers (relative, tsconfig aliases, index files, Rust
+  `crate`/`super`/sibling crates) and stores it in the index keyed by blob. Nothing is
+  written to a file (I5). `dit code uses | users | path | explain | hubs | where` read it;
+  each first refreshes to HEAD, re-reading only changed blobs. An extractor version in the
+  index forces a full re-read when the extractor changes.
+- **The intent is authored and pinned.** A `dit-map` fence names, per task, the paths to
+  change, the file to copy and the paths never to touch, each as `<root>:<glob>`. Every
+  refresh judges each entry: *broken* when a path matches nothing at HEAD or names an
+  unregistered root, *unconfirmed* without a pin, *stale* when the example changed since the
+  pin, *holds* otherwise. Only `dit code map confirm <map>` moves the pin, and it refuses a
+  map with a broken entry — a pin is a person's claim that the map holds.
+- **Committed code only.** The map reads HEAD, never the working tree: what it says is what
+  everyone who pulls sees.
+- **Nothing reaches the network, and nothing runs.** Roots are read through git (I3); the
+  fence refuses every key that names something to run or fetch (I7).
 
 ## Appendix A — The "Hello World" Flow
 
