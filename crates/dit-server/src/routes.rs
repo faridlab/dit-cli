@@ -246,7 +246,19 @@ where
     T: Send + 'static,
     F: FnOnce(&mut Dit) -> CResult<T> + Send + 'static,
 {
-    let out = read_dit(state, f).await?;
+    // A repository served as a code map is not a workspace: a write would put
+    // DIT files into someone's source tree.
+    let out = read_dit(state, move |dit| {
+        if dit.code_only() {
+            return Err(ServerError::Dit(dit_core::DitError::Refuse(
+                "this is a code map of a repository, not a DIT workspace — nothing is written \
+                 here; run `dit init` to make it one"
+                    .into(),
+            )));
+        }
+        f(dit)
+    })
+    .await?;
     state.announce();
     Ok(out)
 }
@@ -265,6 +277,7 @@ async fn get_status(State(state): State<Arc<AppState>>) -> Result<Json<StatusInf
             head: (!repo.head.is_empty()).then_some(repo.head),
             dirty: repo.dirty,
             me: (!me.is_empty()).then_some(me),
+            mode: if dit.code_only() { "code" } else { "workspace" }.to_owned(),
         })
     })
     .await?;

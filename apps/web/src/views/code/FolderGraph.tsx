@@ -3,9 +3,11 @@
 // is laid out by force; a big one in layers, importers left of what they
 // import, one row slot per unit so no two labels meet. Either way the layout
 // is computed once per folder and left alone — a map that moves under the
-// pointer is not a map. Hovering a unit shows every import it takes part in.
+// pointer is not a map — and it is the view that pans and zooms over it.
+// Hovering a unit shows every import it takes part in.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Maximize, Minus, Plus } from "lucide-react";
 import {
   boundsOf,
   boxExit,
@@ -15,17 +17,24 @@ import {
   EDGE_CAP,
   edgeKey,
   edgeWidth,
-  fitViewBox,
+  fitTransform,
   fullyGenerated,
+  isDrag,
   LAYERED_OVER,
   lastSegment,
   layeredLayout,
   layoutUnits,
   middleTruncate,
+  panBy,
   topEdges,
+  wheelFactor,
+  ZOOM,
+  zoomAt,
   type PlacedUnit,
+  type ViewTransform,
 } from "../../lib/codemap";
 import type { CodeOverviewDto, CodeUnitDto, CodeUnitEdgeDto } from "../../lib/types";
+import { IBtn } from "../../components/chrome";
 
 export function FolderGraph({
   overview,
@@ -40,6 +49,7 @@ export function FolderGraph({
   onFile: (path: string) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
+  const surface = useRef<SVGSVGElement>(null);
   const [hover, setHover] = useState<{ path: string; x: number; y: number } | null>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
 
@@ -67,6 +77,65 @@ export function FolderGraph({
     };
   }, [overview]);
 
+  // -- the view: fitted until the reader moves it, then theirs ---------------
+  const fit = useMemo(
+    () => fitTransform(drawn.box, size.w, size.h, drawn.layered ? "width" : "whole"),
+    [drawn.box, drawn.layered, size.h, size.w],
+  );
+  const [moved, setMoved] = useState<ViewTransform | null>(null);
+  useEffect(() => setMoved(null), [drawn]);
+  const view = moved ?? fit;
+  const viewRef = useRef(view);
+  viewRef.current = view;
+
+  const zoomBy = useCallback(
+    (factor: number, px?: number, py?: number) =>
+      setMoved(zoomAt(viewRef.current, factor, px ?? size.w / 2, py ?? size.h / 2)),
+    [size.h, size.w],
+  );
+
+  // React's wheel listener is passive, and a zoom must not also scroll the page.
+  useEffect(() => {
+    const el = surface.current;
+    if (!el) return;
+    const onWheel = (ev: WheelEvent) => {
+      ev.preventDefault();
+      const r = el.getBoundingClientRect();
+      setMoved(zoomAt(viewRef.current, wheelFactor(ev.deltaY, ev.deltaMode), ev.clientX - r.left, ev.clientY - r.top));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  // A press becomes a pan once it travels past the threshold; until then it
+  // may still be a click on a unit, which a real pan must then swallow.
+  const press = useRef<{ id: number; x: number; y: number; from: ViewTransform; dragging: boolean } | null>(null);
+  const dragged = useRef(false);
+  const onPointerDown = (ev: React.PointerEvent<SVGSVGElement>) => {
+    if (ev.button !== 0) return;
+    dragged.current = false;
+    press.current = { id: ev.pointerId, x: ev.clientX, y: ev.clientY, from: viewRef.current, dragging: false };
+  };
+  const onPointerMove = (ev: React.PointerEvent<SVGSVGElement>) => {
+    const p = press.current;
+    if (!p || p.id !== ev.pointerId) return;
+    const dx = ev.clientX - p.x;
+    const dy = ev.clientY - p.y;
+    if (!p.dragging && !isDrag(dx, dy)) return;
+    if (!p.dragging) {
+      p.dragging = true;
+      dragged.current = true;
+      setHover(null);
+      surface.current?.setPointerCapture?.(ev.pointerId);
+    }
+    setMoved(panBy(p.from, dx, dy));
+  };
+  const endPress = (ev: React.PointerEvent<SVGSVGElement>) => {
+    if (press.current?.id !== ev.pointerId) return;
+    if (press.current.dragging) surface.current?.releasePointerCapture?.(ev.pointerId);
+    press.current = null;
+  };
+
   const hovered = hover?.path ?? null;
   const near = useMemo(() => {
     if (hovered === null) return null;
@@ -89,68 +158,87 @@ export function FolderGraph({
   const pairs = useMemo(() => new Set(drawn.edges.map(edgeKey)), [drawn.edges]);
 
   const tip = hover ? drawn.at.get(hover.path) : undefined;
-  // A layered folder draws at its own size and scrolls; a small one is fitted
-  // to the screen (without being blown up).
-  const view = drawn.layered ? drawn.box : fitViewBox(drawn.box, size.w, size.h);
-
-  const nodes = drawn.placed.map((p) => (
-    <Unit
-      key={p.unit.path}
-      placed={p}
-      focused={p.unit.path === focus}
-      dim={near !== null && !near.has(p.unit.path)}
-      lit={hovered === p.unit.path}
-      onEnter={(ev) => {
-        const r = host.current?.getBoundingClientRect();
-        setHover({ path: p.unit.path, x: ev.clientX - (r?.left ?? 0), y: ev.clientY - (r?.top ?? 0) });
-      }}
-      onLeave={() => setHover((h) => (h?.path === p.unit.path ? null : h))}
-      onOpen={() => (p.unit.folder ? onFolder(p.unit.path) : onFile(p.unit.path))}
-    />
-  ));
-
-  const svg = (
-    <svg
-      className={drawn.layered ? "mx-auto block select-none" : "min-h-0 w-full flex-1 select-none"}
-      viewBox={`${view.x} ${view.y} ${view.w} ${view.h}`}
-      width={drawn.layered ? view.w : undefined}
-      height={drawn.layered ? view.h : undefined}
-      preserveAspectRatio="xMidYMid meet"
-      role="img"
-      aria-label={`Code map of ${overview.folder || overview.root}`}
-    >
-      <defs>
-        <marker id="cm-arrow" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto" markerUnits="userSpaceOnUse">
-          <polygon points="0 0, 8 3, 0 6" fill="var(--dit-dim)" />
-        </marker>
-        <marker id="cm-arrow-lit" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto" markerUnits="userSpaceOnUse">
-          <polygon points="0 0, 8 3, 0 6" fill="var(--dit-accent)" />
-        </marker>
-      </defs>
-      <g>
-        {shown.map((e) => (
-          <Edge
-            key={edgeKey(e)}
-            edge={e}
-            a={drawn.at.get(e.from)}
-            b={drawn.at.get(e.to)}
-            layered={drawn.layered}
-            both={pairs.has(`${e.to}\u0000${e.from}`)}
-            state={hovered === null ? "plain" : e.from === hovered || e.to === hovered ? "lit" : "dim"}
-          />
-        ))}
-      </g>
-      <g>{nodes}</g>
-    </svg>
-  );
 
   return (
-    <div ref={host} className="relative flex min-h-0 flex-1 flex-col">
-      {drawn.layered ? <div className="min-h-0 flex-1 overflow-auto p-4">{svg}</div> : svg}
+    <div className="flex min-h-0 flex-1 flex-col">
+    <div ref={host} className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+      <svg
+        ref={surface}
+        className="absolute inset-0 h-full w-full cursor-grab touch-none select-none active:cursor-grabbing"
+        role="img"
+        aria-label={`Code map of ${overview.folder || overview.root}`}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endPress}
+        onPointerCancel={endPress}
+        onDoubleClick={(ev) => {
+          if ((ev.target as Element).closest("[role=button]") === null) setMoved(null);
+        }}
+      >
+        <defs>
+          <marker id="cm-arrow" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto" markerUnits="userSpaceOnUse">
+            <polygon points="0 0, 8 3, 0 6" fill="var(--dit-dim)" />
+          </marker>
+          <marker id="cm-arrow-lit" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto" markerUnits="userSpaceOnUse">
+            <polygon points="0 0, 8 3, 0 6" fill="var(--dit-accent)" />
+          </marker>
+        </defs>
+        <g transform={`translate(${view.x},${view.y}) scale(${view.k})`}>
+          <g>
+            {shown.map((e) => (
+              <Edge
+                key={edgeKey(e)}
+                edge={e}
+                a={drawn.at.get(e.from)}
+                b={drawn.at.get(e.to)}
+                layered={drawn.layered}
+                both={pairs.has(`${e.to}\u0000${e.from}`)}
+                state={hovered === null ? "plain" : e.from === hovered || e.to === hovered ? "lit" : "dim"}
+              />
+            ))}
+          </g>
+          <g>
+            {drawn.placed.map((p) => (
+              <Unit
+                key={p.unit.path}
+                placed={p}
+                focused={p.unit.path === focus}
+                dim={near !== null && !near.has(p.unit.path)}
+                lit={hovered === p.unit.path}
+                onEnter={(ev) => {
+                  if (press.current?.dragging) return;
+                  const r = host.current?.getBoundingClientRect();
+                  setHover({ path: p.unit.path, x: ev.clientX - (r?.left ?? 0), y: ev.clientY - (r?.top ?? 0) });
+                }}
+                onLeave={() => setHover((h) => (h?.path === p.unit.path ? null : h))}
+                onOpen={() => {
+                  if (dragged.current) return;
+                  if (p.unit.folder) onFolder(p.unit.path);
+                  else onFile(p.unit.path);
+                }}
+              />
+            ))}
+          </g>
+        </g>
+      </svg>
 
       {tip && hover ? <Tooltip unit={tip.unit} x={hover.x} y={hover.y} /> : null}
 
-      {/* In the flow, not over it: a legend on top of the graph hides its last row. */}
+      <div className="absolute top-3 right-3 flex items-center gap-1 rounded-md border border-edge bg-card/90 p-0.5">
+        <IBtn onClick={() => zoomBy(ZOOM.step)} title="Zoom in" aria-label="Zoom in">
+          <Plus className="i" aria-hidden />
+        </IBtn>
+        <IBtn onClick={() => zoomBy(1 / ZOOM.step)} title="Zoom out" aria-label="Zoom out">
+          <Minus className="i" aria-hidden />
+        </IBtn>
+        <IBtn onClick={() => setMoved(null)} title="Fit the graph (or double-click the background)" aria-label="Fit">
+          <Maximize className="i" aria-hidden />
+        </IBtn>
+        <span className="w-10 text-center font-mono text-[10.5px] text-muted">{Math.round(view.k * 100)}%</span>
+      </div>
+    </div>
+
+      {/* Below the graph, not over it: a legend on top hides the nodes under it. */}
       <div className="pointer-events-none mx-3 mb-3 flex shrink-0 flex-wrap items-center gap-3 self-start rounded-md border border-edge bg-card/90 px-3 py-1.5 text-[11px] text-muted">
         <Legend />
         {drawn.edges.length > EDGE_CAP ? (

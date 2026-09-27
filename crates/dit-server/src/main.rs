@@ -64,8 +64,11 @@ fn run(args: Args, workspace: PathBuf) -> Result<(), String> {
         )
         .init();
 
-    let dit = dit_core::Dit::open(&workspace)
-        .map_err(|e| format!("`{}` is not a DIT workspace: {e}", workspace.display()))?;
+    // A repository that is not a workspace is served as its code map:
+    // read-only, the Code screen only (ADR 0025) — the same as `dit ui`.
+    let dit = dit_core::Dit::open_for_ui(&workspace)
+        .map_err(|e| format!("`{}` cannot be opened: {e}", workspace.display()))?;
+    let code_only = dit.code_only();
 
     let me = args
         .me
@@ -79,13 +82,25 @@ fn run(args: Args, workspace: PathBuf) -> Result<(), String> {
     // other account on this machine reads it.
     let token = match args.token {
         Some(token) => token,
-        None => dit_server::config::load_or_create_token(&workspace.join(".dit-cache"))
-            .map_err(|e| format!("cannot create the session token: {e}"))?,
+        None => {
+            // A code map keeps it beside its index, which ignores itself, so
+            // nothing lands in the repository's tree.
+            let cache = if code_only {
+                dit.root().join(dit_core::CODE_DIR)
+            } else {
+                workspace.join(".dit-cache")
+            };
+            dit_server::config::load_or_create_token(&cache)
+                .map_err(|e| format!("cannot create the session token: {e}"))?
+        }
     };
 
     let state = dit_server::AppState::with_bind_host(dit, &me, &token, &args.host);
     // Catch the index up, then watch for other processes' writes (ADR 0017).
-    state.start_live_updates();
+    // A code map has no workspace files to watch; it refreshes on read.
+    if !code_only {
+        state.start_live_updates();
+    }
     let app = dit_server::app(state);
 
     let display_host = if args.host == "0.0.0.0" {

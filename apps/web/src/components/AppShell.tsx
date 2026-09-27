@@ -10,7 +10,7 @@ import { toast } from "sonner";
 import { useLiveEvents } from "../lib/events";
 import { useDocTabs } from "../lib/doctabs";
 import { invalidateWorkspaceData, useIssue, useStatus } from "../lib/queries";
-import { parseHash, peekHost, peekOf, useNavigate, useRoute, withPeek, type Route } from "../lib/router";
+import { parseHash, peekHost, peekOf, replaceRoute, useNavigate, useRoute, withPeek, type Route } from "../lib/router";
 import { stepPeek, usePeekList } from "../lib/peeklist";
 import { useTheme } from "../lib/theme";
 import { ViewOptionsProvider, useViewOptions } from "../lib/viewopts";
@@ -20,10 +20,13 @@ import { IssuePeek } from "./issue/IssuePeek";
 import { ActivityBar } from "./ActivityBar";
 import { SidePanel, useInboxCount } from "./SidePanel";
 import {
+  activitiesFor,
   activityOf,
   defaultRoute,
   hasSidePanel,
   readPanelWidth,
+  routeInMode,
+  serveMode,
   SHORTCUT_VIEWS,
   withoutPeek,
   writePanelWidth,
@@ -34,6 +37,7 @@ import { Header, crumbsFor } from "./Header";
 import { DisplayButton, FilterButton, HeaderHint, SortButton } from "./HeaderMenus";
 import { NotesDrawer } from "./NotesDrawer";
 import { Btn, type MenuItem } from "./chrome";
+import { Loading } from "./states";
 import { GanttOptionsProvider, GanttPane } from "./panes/GanttPane";
 import { RoadmapOptionsProvider, RoadmapPane } from "./panes/RoadmapPane";
 import { TimelinePane } from "./panes/TimelinePane";
@@ -109,7 +113,162 @@ export function AppShell() {
   );
 }
 
+/** Which shell to draw is the server's answer, not a guess: a workspace, or
+ *  — `dit ui` outside one — only the code map, read-only. Until the status
+ *  answer arrives the frame stays neutral, so neither UI flashes first. */
 function Shell() {
+  const status = useStatus();
+  const mode = serveMode(status.data);
+  if (mode === "code") return <CodeShell />;
+  // An unreachable server keeps the workspace shell, whose status bar says so.
+  if (mode === null && !status.isError) return <NeutralShell />;
+  return <WorkspaceShell />;
+}
+
+function NeutralShell() {
+  return (
+    <div className="flex h-dvh flex-col overflow-hidden bg-app text-ink">
+      <div className="flex min-h-0 flex-1">
+        <nav className="ab" aria-label="Activities" />
+        <main className="main flex-1">
+          <Loading label="Connecting…" />
+        </main>
+      </div>
+      <footer className="status" />
+    </div>
+  );
+}
+
+/** Code-only mode: the code map and nothing else. No side panel, no issue
+ *  panel, no composer, no settings — every one of those reads or writes
+ *  workspace files this repository does not have, and the server answers
+ *  every write with 409. Any other route lands on the code map. */
+function CodeShell() {
+  const queryClient = useQueryClient();
+  // A commit moves HEAD, and the map is read at HEAD.
+  const conn = useLiveEvents(() => {
+    invalidateWorkspaceData(queryClient);
+  });
+  const raw = useRoute();
+  const navigate = useNavigate();
+  const status = useStatus();
+  const theme = useTheme();
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [notesOpen, setNotesOpen] = useState(false);
+  const route = routeInMode(raw, "code");
+
+  useEffect(() => {
+    if (raw.name !== "code") replaceRoute({ name: "code" });
+  }, [raw.name]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && notesOpen && !event.defaultPrevented) {
+        event.preventDefault();
+        setNotesOpen(false);
+        return;
+      }
+      const mod = event.metaKey || event.ctrlKey;
+      const key = event.key.toLowerCase();
+      if (mod && !event.altKey && (key === "k" || key === "p")) {
+        event.preventDefault();
+        setPaletteOpen((open) => !open);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [notesOpen]);
+
+  const workspace = status.data
+    ? (status.data.repo.split("/").filter(Boolean).pop() ?? status.data.repo)
+    : "…";
+  const go = useCallback((next: Route) => navigate(routeInMode(next, "code")), [navigate]);
+  const menu = useMemo<MenuItem[]>(
+    () => [
+      { kind: "head", label: "Repository" },
+      {
+        kind: "text",
+        node: (
+          <>
+            <span className="mono">{status.data?.repo ?? "…"}</span>
+            <br />
+            {status.data ? `${status.data.branch} @ ${shortSha(status.data.head)}` : ""}
+          </>
+        ),
+      },
+      {
+        label: "Copy CLI command for this view",
+        icon: <Terminal className="i" aria-hidden />,
+        run: () => void copyText(cliFor(route), "Command copied"),
+      },
+    ],
+    [route, status.data],
+  );
+
+  return (
+    <div className="flex h-dvh flex-col overflow-hidden bg-app text-ink">
+      <div className="flex min-h-0 flex-1">
+        <ActivityBar
+          active="code"
+          panelOpen={false}
+          badges={{}}
+          onActivate={() => go({ name: "code" })}
+          workspaceMenu={menu}
+          workspace={workspace}
+          only={activitiesFor("code")}
+        />
+        <main className="main flex-1">
+          <Header
+            crumbs={crumbsFor(route, workspace)}
+            right={<HeaderHint>hover to trace · click a folder to open it · click a file to focus it</HeaderHint>}
+            onNotes={() => setNotesOpen((open) => !open)}
+            notesOpen={notesOpen}
+          />
+          <div className="content">
+            {route.name === "code" ? (
+              <CodeView
+                root={route.root ?? null}
+                folder={route.folder ?? null}
+                focus={route.focus ?? null}
+                view={route.view ?? null}
+                onGo={go}
+              />
+            ) : null}
+          </div>
+        </main>
+      </div>
+      <StatusBar
+        conn={conn}
+        workspaceMenu={menu}
+        onOpenSettings={() => undefined}
+        onNotes={() => setNotesOpen((open) => !open)}
+        codeOnly
+      />
+      <CommandPalette
+        open={paletteOpen}
+        onOpenChange={setPaletteOpen}
+        onNavigate={go}
+        onOpenIssue={() => undefined}
+        onNewIssue={() => undefined}
+        onOpenDoc={() => undefined}
+        onToggleSidebar={() => undefined}
+        sidebarHidden
+        onNotes={() => setNotesOpen(true)}
+        cli={cliFor(route)}
+        codeOnly
+      />
+      <NotesDrawer
+        open={notesOpen}
+        onClose={() => setNotesOpen(false)}
+        onOpenPalette={() => setPaletteOpen(true)}
+        onSwitchTheme={() => theme.setPreference(theme.resolved === "dark" ? "light" : "dark")}
+        onGo={(hash) => go(parseHash(hash))}
+      />
+    </div>
+  );
+}
+
+function WorkspaceShell() {
   const queryClient = useQueryClient();
   // The watcher saw a new commit: everything it can have changed goes stale.
   const conn = useLiveEvents(() => {

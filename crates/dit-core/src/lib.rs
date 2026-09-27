@@ -241,6 +241,9 @@ pub struct Dit {
     /// workflow.yaml must not stop the workspace from opening — reading and
     /// writing still work — but it must be visible in `doctor`.
     schema_problem: Option<String>,
+    /// Opened as a code map of a repository that is not a workspace: there
+    /// are no issues to read and nothing may be written.
+    code_only: bool,
 }
 
 impl std::fmt::Debug for Dit {
@@ -267,6 +270,7 @@ impl Dit {
             workflow: Workflow::default_workflow(),
             config: Config::default(),
             schema_problem: None,
+            code_only: false,
         };
         dit.reload_schema();
         // Self-heal the cache before the first read: a version bump drops it,
@@ -306,6 +310,16 @@ impl Dit {
         Dit::open_repo_map(path)
     }
 
+    /// Open the repository holding `path` for `dit ui`: the workspace when it
+    /// is one — with or without code roots — and otherwise its code map.
+    pub fn open_for_ui(path: &Path) -> Result<Dit, DitError> {
+        if Dit::is_workspace(path)? {
+            Dit::open(path)
+        } else {
+            Dit::open_repo_map(path)
+        }
+    }
+
     fn open_repo_map(path: &Path) -> Result<Dit, DitError> {
         let repo = Repo::open(path)?;
         let root = repo.root().to_path_buf();
@@ -342,7 +356,14 @@ impl Dit {
             workflow: Workflow::default_workflow(),
             config,
             schema_problem: None,
+            code_only: true,
         })
+    }
+
+    /// Whether this is a repository's code map rather than a workspace — the
+    /// UI shows only the Code screen, and every write is refused.
+    pub fn code_only(&self) -> bool {
+        self.code_only
     }
 
     /// The refusal a workspace-only command gives outside one.

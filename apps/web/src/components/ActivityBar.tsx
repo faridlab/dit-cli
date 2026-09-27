@@ -52,6 +52,7 @@ export function ActivityBar({
   onActivate,
   workspaceMenu,
   workspace,
+  only,
 }: {
   active: ActivityId;
   /** Whether the side panel is showing — the lit icon says so too. */
@@ -60,7 +61,10 @@ export function ActivityBar({
   onActivate: (id: ActivityId) => void;
   workspaceMenu: MenuItem[];
   workspace: string;
+  /** The activities to offer, when not all of them (code-only mode). */
+  only?: readonly ActivityId[];
 }) {
+  const offered = (id: ActivityId) => only === undefined || only.includes(id);
   const item = (a: Activity) => {
     const Icon = a.icon;
     const badge = badges[a.id];
@@ -92,9 +96,11 @@ export function ActivityBar({
           <img src={logo} alt="" width={22} height={22} draggable={false} />
         </button>
       </MenuButton>
-      {ACTIVITIES.map(item)}
+      {ACTIVITIES.filter((a) => offered(a.id)).map(item)}
       <span className="ab-sp" />
-      {item({ id: "settings", label: "Settings", icon: Settings, kbd: "⌘,", hint: "Layout, numbering, appearance, people" })}
+      {offered("settings")
+        ? item({ id: "settings", label: "Settings", icon: Settings, kbd: "⌘,", hint: "Layout, numbering, appearance, people" })
+        : null}
     </nav>
   );
 }

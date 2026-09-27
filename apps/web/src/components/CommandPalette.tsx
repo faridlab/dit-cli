@@ -126,6 +126,7 @@ export function CommandPalette({
   sidebarHidden,
   onNotes,
   cli,
+  codeOnly = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -138,6 +139,9 @@ export function CommandPalette({
   onNotes: () => void;
   /** The CLI spelling of the current screen. */
   cli: string;
+  /** Code-only mode: the code map and the harmless actions, nothing that
+   *  reads or writes workspace files. */
+  codeOnly?: boolean;
 }) {
   const [search, setSearch] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -149,7 +153,7 @@ export function CommandPalette({
   }, [open]);
 
   const status = useStatus();
-  const schema = useSchema();
+  const schema = useSchema(!codeOnly);
   const statuses = schema.data?.workflow.statuses ?? [];
   const statusLabel = (id: string) => statuses.find((s) => s.id === id)?.label ?? id;
   const workspace = status.data ? (status.data.repo.split("/").filter(Boolean).pop() ?? status.data.repo) : "…";
@@ -162,10 +166,10 @@ export function CommandPalette({
     : /^[0-9A-HJKMNP-TV-Z]{7}$/i.test(trimmed)
       ? `short_ref = ${trimmed.toUpperCase()}`
       : `body ~ ${dqlText(trimmed)}`;
-  const results = useIssues({ q: searchQuery, limit: 6 }, open && trimmed.length > 0);
-  const all = useIssues({ limit: 1 }, open);
+  const results = useIssues({ q: searchQuery, limit: 6 }, !codeOnly && open && trimmed.length > 0);
+  const all = useIssues({ limit: 1 }, !codeOnly && open);
 
-  const docs = useDocs(open);
+  const docs = useDocs(!codeOnly && open);
   const pages = useMemo(() => {
     if (trimmed.length === 0) return [];
     return (docs.data ?? []).filter((entry) => fuzzyMatch(trimmed, entry.path)).slice(0, 6);
@@ -173,11 +177,11 @@ export function CommandPalette({
 
   const nav = useMemo(
     () =>
-      NAV.filter(
+      NAV.filter((item) => !codeOnly || item.route.name === "code").filter(
         (item) =>
           fuzzyMatch(search, item.label) || item.keywords.split(" ").some((word) => fuzzyMatch(search, word)),
       ),
-    [search],
+    [codeOnly, search],
   );
   const mine = mineQuery(statuses);
 
@@ -186,13 +190,16 @@ export function CommandPalette({
   const { board, setGroupBy } = useViewOptions();
   const nextGroup = board.groupBy === "status" ? "assignee" : "status";
 
-  const actions: Array<{ label: string; icon: Icon; kbd?: string; run: () => void }> = [
+  // `code` marks the actions that touch only this browser, the ones code-only
+  // mode keeps.
+  const actions: Array<{ label: string; icon: Icon; kbd?: string; run: () => void; code?: boolean }> = [
     { label: "New issue", icon: Plus, kbd: "C", run: onNewIssue },
     { label: sidebarHidden ? "Show sidebar" : "Hide sidebar", icon: PanelLeft, kbd: "⌘B", run: onToggleSidebar },
     {
       label: dark ? "Switch to light theme" : "Switch to dark theme",
       icon: dark ? Sun : Moon,
       run: () => theme.setPreference(dark ? "light" : "dark"),
+      code: true,
     },
     {
       label: `Board: group by ${nextGroup}`,
@@ -202,10 +209,12 @@ export function CommandPalette({
         onNavigate({ name: "board" });
       },
     },
-    { label: "Copy CLI command for this view", icon: Terminal, run: () => void copyText(cli, "Command copied") },
-    { label: "Notes", icon: Info, run: onNotes },
+    { label: "Copy CLI command for this view", icon: Terminal, run: () => void copyText(cli, "Command copied"), code: true },
+    { label: "Notes", icon: Info, run: onNotes, code: true },
   ];
-  const shownActions = actions.filter((action) => fuzzyMatch(search, action.label));
+  const shownActions = actions
+    .filter((action) => !codeOnly || action.code === true)
+    .filter((action) => fuzzyMatch(search, action.label));
   const isQuery = looksLikeDql(trimmed);
 
   const pick = (action: () => void) => {
@@ -235,7 +244,7 @@ export function CommandPalette({
                 ref={inputRef}
                 value={search}
                 onValueChange={setSearch}
-                placeholder="Search issues and pages, type DQL, or run a command…"
+                placeholder={codeOnly ? "Go to the code map, or run a command…" : "Search issues and pages, type DQL, or run a command…"}
                 autoComplete="off"
               />
               <span className="esc">esc</span>
@@ -245,7 +254,7 @@ export function CommandPalette({
                 Nothing matches.
               </Command.Empty>
 
-              {trimmed.length > 0 ? (
+              {trimmed.length > 0 && !codeOnly ? (
                 <Command.Group heading="Issues">
                   {results.isFetching && (results.data?.items.length ?? 0) === 0 ? (
                     <div className="empty" style={{ padding: "6px 10px" }}>
@@ -307,7 +316,7 @@ export function CommandPalette({
                 </Command.Group>
               ) : null}
 
-              {trimmed.length > 0 ? (
+              {trimmed.length > 0 && !codeOnly ? (
                 <Command.Group heading="Query">
                   <Command.Item
                     value="query:run"
@@ -350,7 +359,7 @@ export function CommandPalette({
                       <span className="meta">{item.kbd ?? ""}</span>
                     </Command.Item>
                   ))}
-                  {fuzzyMatch(search, "my issues") || fuzzyMatch(search, "mine") ? (
+                  {!codeOnly && (fuzzyMatch(search, "my issues") || fuzzyMatch(search, "mine")) ? (
                     <Command.Item
                       value="nav:mine"
                       onSelect={() => pick(() => onNavigate({ name: "issues", q: mine }))}

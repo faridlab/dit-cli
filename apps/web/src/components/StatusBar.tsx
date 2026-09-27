@@ -43,16 +43,19 @@ export function StatusBar({
   workspaceMenu,
   onOpenSettings,
   onNotes,
+  codeOnly = false,
 }: {
   conn: ConnectionState;
   workspaceMenu: MenuItem[];
   onOpenSettings: () => void;
   onNotes: () => void;
+  /** Code-only mode: no issues or pages to count, no alias to set. */
+  codeOnly?: boolean;
 }) {
   const status = useStatus();
   // Size of the workspace, not of any filtered list.
-  const all = useIssues({ limit: 1 });
-  const docs = useDocs();
+  const all = useIssues({ limit: 1 }, !codeOnly);
+  const docs = useDocs(!codeOnly);
 
   if (status.isError) {
     return (
@@ -103,8 +106,13 @@ export function StatusBar({
           {docs.data.length === 1 ? "page" : "pages"}
         </span>
       ) : null}
+      {codeOnly && data ? (
+        <span className="it" style={{ color: "var(--faint)" }} title="Served by dit ui outside a DIT workspace">
+          code map of {repo} — read-only; <span className="mono">dit init</span> makes it a workspace
+        </span>
+      ) : null}
       <span className="sp" />
-      {data?.me ? (
+      {data?.me && !codeOnly ? (
         <button type="button" className="it" title="The alias your writes are attributed to — change it in Settings" onClick={onOpenSettings}>
           {data.me}
         </button>

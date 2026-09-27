@@ -218,6 +218,9 @@ pub struct CodeNeighbourhood {
     pub uses: Vec<CodeNeighbour>,
     /// Packages it imports, by name.
     pub external: Vec<String>,
+    /// The API paths it calls, against the registered specs — empty where no
+    /// spec is registered.
+    pub api_calls: Vec<ApiCall>,
 }
 
 /// A much-depended-on file.
@@ -1281,6 +1284,15 @@ impl Dit {
             .filter(|s| s.exported)
             .map(|s| s.name)
             .collect();
+        let api_calls = if self.config.specs.is_empty() {
+            Vec::new()
+        } else {
+            self.code_api()?
+                .calls
+                .into_iter()
+                .filter(|c| c.root == root && c.path == path)
+                .collect()
+        };
         Ok(CodeNeighbourhood {
             generated: generated_of(&path)?,
             root,
@@ -1289,6 +1301,7 @@ impl Dit {
             users,
             uses,
             external,
+            api_calls,
         })
     }
 

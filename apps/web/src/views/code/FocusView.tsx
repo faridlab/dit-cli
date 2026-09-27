@@ -8,9 +8,20 @@
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, FolderOpen } from "lucide-react";
 import { ApiError } from "../../lib/api";
-import { capNeighbours, charsFor, connector, FOCUS_GEO, focusGeometry, shortenPath } from "../../lib/codemap";
+import {
+  apiCountLabel,
+  apiSummary,
+  capNeighbours,
+  charsFor,
+  connector,
+  FOCUS_GEO,
+  focusGeometry,
+  proofLabel,
+  shortenPath,
+} from "../../lib/codemap";
 import { useCodeNode } from "../../lib/queries";
-import type { CodeNeighbourDto, CodeNeighbourhoodDto } from "../../lib/types";
+import type { CodeApiCallDto, CodeNeighbourDto, CodeNeighbourhoodDto } from "../../lib/types";
+import { Verb } from "../morse/common";
 import { Empty, ErrorBox, Loading } from "../../components/states";
 import { cn } from "../../lib/cn";
 
@@ -144,8 +155,76 @@ function Neighbourhood({
         {node.users.length === 0 && node.uses.length === 0 ? (
           <p className="mt-4 text-center text-[12px] text-faint">No file in its root imports it, and it imports none.</p>
         ) : null}
+        {node.api_calls.length > 0 ? <ApiCalls calls={node.api_calls} /> : null}
       </div>
     </div>
+  );
+}
+
+/** The API paths the file calls, each against what the registered specs
+ *  say: the operations it reaches and where a scenario proves them — or,
+ *  for an orphan, that no spec describes it at all. */
+function ApiCalls({ calls }: { calls: CodeApiCallDto[] }) {
+  const { orphans } = apiSummary(calls);
+  return (
+    <section className="mt-8" aria-label="API calls">
+      <h3 className="mb-2 text-[11px] font-semibold tracking-wide text-muted uppercase">
+        API calls <span className="font-normal text-faint">{calls.length}</span>
+        {orphans > 0 ? <span className="ml-2 font-normal normal-case text-crit-text">{orphans} orphan{orphans === 1 ? "" : "s"}</span> : null}
+      </h3>
+      <ul className="divide-y divide-rowline overflow-hidden rounded-lg border border-edge bg-card">
+        {calls.map((call) => (
+          <li key={`${call.line}:${call.path}`} className="flex flex-wrap items-start gap-x-4 gap-y-1.5 px-3 py-2">
+            <div className="flex min-w-0 basis-80 items-baseline gap-2">
+              <span className="w-10 shrink-0 text-right font-mono text-[11px] text-faint" title={`line ${call.line}`}>
+                :{call.line}
+              </span>
+              {/* Break after a slash, never inside a segment: `…/complete` stays whole. */}
+              <span className="min-w-0 break-words font-mono text-[12px] text-ink">
+                {call.path.split("/").map((seg, i, all) => (
+                  <span key={`${i}:${seg}`}>
+                    {seg}
+                    {i < all.length - 1 ? (
+                      <>
+                        /<wbr />
+                      </>
+                    ) : null}
+                  </span>
+                ))}
+              </span>
+            </div>
+            <div className="flex min-w-0 flex-1 flex-col gap-1">
+              {call.operations.length === 0 ? (
+                <span className="flex items-center gap-1.5 text-[11.5px] text-crit-text">
+                  <AlertTriangle className="size-3.5 shrink-0" aria-hidden />
+                  no spec describes this — it may answer 404
+                </span>
+              ) : (
+                call.operations.map((op) => (
+                  <div key={`${op.spec}/${op.operation_id}`} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+                    <Verb method={op.method} />
+                    <span className="min-w-0 break-all font-mono text-[11.5px] text-ink-2">{op.path}</span>
+                    <span className="font-mono text-[10.5px] text-faint">
+                      {op.spec}/{op.operation_id}
+                    </span>
+                    <span
+                      className={cn(
+                        "rounded-full border px-1.5 text-[10.5px]",
+                        op.proven.length > 0
+                          ? "border-done-line bg-done-bg text-done-text"
+                          : "border-warn-line bg-warn-bg text-warn-text",
+                      )}
+                    >
+                      {proofLabel(op.proven)}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -254,6 +333,7 @@ function Card({
           <div className="mt-0.5 text-[11.5px] text-muted">
             <span className="font-mono">{node.root}</span> · {node.users.length} user{node.users.length === 1 ? "" : "s"} ·{" "}
             {node.uses.length} import{node.uses.length === 1 ? "" : "s"}
+            {apiCountLabel(node.api_calls)}
           </div>
         </div>
         <button type="button" className="btn shrink-0" onClick={() => onReveal(node)} title="Show its folder in the map">

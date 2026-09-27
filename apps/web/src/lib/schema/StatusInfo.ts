@@ -4,4 +4,9 @@ export type StatusInfo = { ok: boolean, version: string, repo: string, branch: s
 /**
  * The alias writes are attributed to, if the server knows one.
  */
-me: string | null, };
+me: string | null, 
+/**
+ * `workspace`, or `code` when `dit ui` serves a repository that is not a
+ * workspace: only its code map, read-only.
+ */
+mode: string, };

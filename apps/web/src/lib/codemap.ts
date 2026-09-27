@@ -225,22 +225,6 @@ export function boxExit(
   return { x: cx + dx * s, y: cy + dy * s };
 }
 
-/** The viewBox to draw `box` in a `width` × `height` viewport: the box
- *  itself when it is bigger than the viewport can show at `maxScale`,
- *  otherwise grown around its centre — so a folder of four units is drawn at
- *  a readable size instead of being blown up to fill the screen. An unknown
- *  (zero) viewport leaves the box as it is. */
-export function fitViewBox(
-  box: { x: number; y: number; w: number; h: number },
-  width: number,
-  height: number,
-  maxScale = 1.15,
-): { x: number; y: number; w: number; h: number } {
-  if (width <= 0 || height <= 0) return box;
-  const w = Math.max(box.w, width / maxScale);
-  const h = Math.max(box.h, height / maxScale);
-  return { x: box.x + box.w / 2 - w / 2, y: box.y + box.h / 2 - h / 2, w, h };
-}
 
 
 // ---- shortening a name -------------------------------------------------------
@@ -533,4 +517,89 @@ export type CodeHalf = "folder" | "focus";
 /** Which half shows when the link does not say: the file, if one is in focus. */
 export function halfOf(view: CodeHalf | null | undefined, focus: string | null): CodeHalf {
   return view ?? (focus !== null ? "focus" : "folder");
+}
+
+// ---- API calls ------------------------------------------------------------------
+
+/** How a file's API calls stand: how many, and how many no spec describes. */
+export function apiSummary(calls: ReadonlyArray<{ operations: readonly unknown[] }>): { calls: number; orphans: number } {
+  return { calls: calls.length, orphans: calls.filter((c) => c.operations.length === 0).length };
+}
+
+/** The tail of the focus header's counts: ` · 3 API calls (1 orphan)`, or
+ *  nothing at all for a file that calls no API. */
+export function apiCountLabel(calls: ReadonlyArray<{ operations: readonly unknown[] }>): string {
+  const { calls: n, orphans } = apiSummary(calls);
+  if (n === 0) return "";
+  const head = ` · ${n} API call${n === 1 ? "" : "s"}`;
+  return orphans > 0 ? `${head} (${orphans} orphan${orphans === 1 ? "" : "s"})` : head;
+}
+
+/** An operation's proof in words: where a fresh scenario proves it, or that
+ *  nothing does. */
+export function proofLabel(proven: readonly string[]): string {
+  return proven.length === 0 ? "unproven" : `proven on ${proven.join(", ")}`;
+}
+
+// ---- pan and zoom ----------------------------------------------------------------
+
+/** Screen = world × k + (x, y). */
+export interface ViewTransform {
+  x: number;
+  y: number;
+  k: number;
+}
+
+export const ZOOM = { min: 0.3, max: 3, step: 1.25, readable: 0.6, natural: 1.15 } as const;
+
+/** Keep a scale inside the zoom range. */
+export function clampScale(k: number): number {
+  if (!Number.isFinite(k) || k <= 0) return 1;
+  return Math.min(ZOOM.max, Math.max(ZOOM.min, k));
+}
+
+/** Zoom by `factor` around the screen point (px, py): the world point under
+ *  it stays under it, so the thing you point at is the thing that grows. */
+export function zoomAt(t: ViewTransform, factor: number, px: number, py: number): ViewTransform {
+  const k = clampScale(t.k * factor);
+  const wx = (px - t.x) / t.k;
+  const wy = (py - t.y) / t.k;
+  return { k, x: px - wx * k, y: py - wy * k };
+}
+
+export function panBy(t: ViewTransform, dx: number, dy: number): ViewTransform {
+  return { k: t.k, x: t.x + dx, y: t.y + dy };
+}
+
+/** A press that moved less than this is a click, not a drag. */
+export const DRAG_THRESHOLD = 4;
+
+export function isDrag(dx: number, dy: number, threshold: number = DRAG_THRESHOLD): boolean {
+  return Math.hypot(dx, dy) >= threshold;
+}
+
+/** The zoom factor for one wheel event: smooth for a trackpad's pixel
+ *  deltas, a notch-sized step for a mouse wheel's line deltas. */
+export function wheelFactor(deltaY: number, deltaMode = 0): number {
+  const perUnit = deltaMode === 1 ? 0.05 : deltaMode === 2 ? 0.5 : 0.0015;
+  return Math.exp(-deltaY * perUnit);
+}
+
+/** The transform that shows `box` in a `width` × `height` viewport.
+ *  `whole`: all of it, never blown up past natural size. `width`: fill the
+ *  width but never below the readable scale — a big folder starts legible
+ *  and is panned, rather than shrunk to a smudge. What fits is centred;
+ *  what overflows starts at its top-left edge. */
+export function fitTransform(
+  box: { x: number; y: number; w: number; h: number },
+  width: number,
+  height: number,
+  mode: "whole" | "width" = "whole",
+): ViewTransform {
+  if (width <= 0 || height <= 0 || box.w <= 0 || box.h <= 0) return { x: 0, y: 0, k: 1 };
+  const raw = mode === "whole" ? Math.min(width / box.w, height / box.h) : width / box.w;
+  const k = clampScale(mode === "whole" ? Math.min(raw, ZOOM.natural) : Math.min(ZOOM.natural, Math.max(ZOOM.readable, raw)));
+  const x = box.w * k <= width ? (width - box.w * k) / 2 - box.x * k : 0 - box.x * k;
+  const y = box.h * k <= height ? (height - box.h * k) / 2 - box.y * k : 0 - box.y * k;
+  return { x, y, k };
 }

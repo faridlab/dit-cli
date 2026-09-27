@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { Route } from "../lib/router";
-import type { ActivityId } from "../lib/workbench";
+import { activitiesFor, type ActivityId } from "../lib/workbench";
 
 vi.mock("../lib/queries", () => ({
   useOpenPool: () => ({
@@ -102,6 +102,24 @@ describe("the activity bar", () => {
     bar();
     const labels = [...container.querySelectorAll(".ab-i")].map((b) => b.getAttribute("aria-label"));
     expect(labels).toEqual(["Home", "Docs", "Morse", "Work", "Flow", "Code", "Plan", "Search", "Settings"]);
+  });
+
+  it("offers only the code map in code-only mode", () => {
+    act(() =>
+      root.render(
+        <ActivityBar
+          active="code"
+          panelOpen={false}
+          badges={{}}
+          onActivate={(id) => activated.push(id)}
+          workspaceMenu={[]}
+          workspace="kyntati"
+          only={activitiesFor("code")}
+        />,
+      ),
+    );
+    const labels = [...container.querySelectorAll(".ab-i")].map((b) => b.getAttribute("aria-label"));
+    expect(labels).toEqual(["Code"]);
   });
 
   it("asks for the activity each icon names", () => {

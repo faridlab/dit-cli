@@ -4583,6 +4583,19 @@ fn kotlin_resolves_by_declaration_and_literals_meet_the_spec() {
     assert_eq!(orphans, ["api/v1/teams/x/y"]);
     assert_eq!(api.generic, 1, "api/${{a}}/${{b}} names no one path");
     assert!(api.unproven().iter().any(|o| o.operation_id == "getUser"));
+
+    // The focus view carries the same calls, for the one file in focus.
+    let focus = dit.code_neighbourhood("web/api.ts").unwrap();
+    let calls: Vec<(&str, usize)> = focus
+        .api_calls
+        .iter()
+        .map(|c| (c.resolved.as_str(), c.operations.len()))
+        .collect();
+    assert!(calls.contains(&("api/v1/users/${id}", 1)), "{calls:?}");
+    assert!(
+        calls.contains(&("api/v1/teams/x/y", 0)),
+        "the orphan too: {calls:?}"
+    );
 }
 
 /// A repository that is not a DIT workspace maps itself: no config, the index

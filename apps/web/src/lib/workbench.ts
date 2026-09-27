@@ -178,3 +178,32 @@ export function shareDrag(above: number, below: number, delta: number): [number,
   const nextAbove = Math.max(SECTION_MIN, Math.min(total - SECTION_MIN, above + delta));
   return [nextAbove, total - nextAbove];
 }
+
+// ---- code-only mode ----------------------------------------------------------
+
+/** How the server is serving: a DIT workspace, or — `dit ui` in a git
+ *  repository that is not one — only that repository's code map, read-only. */
+export type ServeMode = "workspace" | "code";
+
+/** The mode a status answer names; `null` while it is not known yet, so the
+ *  shell can stay neutral rather than flash the workspace UI first. Anything
+ *  unrecognised is read as a workspace, the long-standing behaviour. */
+export function serveMode(status: { mode?: string | null } | undefined | null): ServeMode | null {
+  if (!status) return null;
+  return status.mode === "code" ? "code" : "workspace";
+}
+
+const ALL_ACTIVITIES: readonly ActivityId[] = ["home", "docs", "morse", "work", "flow", "code", "plan", "search", "settings"];
+
+/** The activities a mode offers. In code mode there is nothing else to go to:
+ *  every other screen reads or writes workspace files that do not exist. */
+export function activitiesFor(mode: ServeMode): readonly ActivityId[] {
+  return mode === "code" ? ["code"] : ALL_ACTIVITIES;
+}
+
+/** The route a mode may show: code mode turns any other route into the code
+ *  map, so an old link or a stray shortcut still lands somewhere real. */
+export function routeInMode(route: Route, mode: ServeMode): Route {
+  if (mode === "workspace" || route.name === "code") return route;
+  return { name: "code" };
+}

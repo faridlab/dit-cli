@@ -41,6 +41,9 @@ pub struct StatusInfo {
     pub dirty: bool,
     /// The alias writes are attributed to, if the server knows one.
     pub me: Option<String>,
+    /// `workspace`, or `code` when `dit ui` serves a repository that is not a
+    /// workspace: only its code map, read-only.
+    pub mode: String,
 }
 
 #[derive(Debug, Serialize, TS)]
@@ -1898,6 +1901,29 @@ pub struct CodeNeighbourhoodDto {
     pub users: Vec<CodeNeighbourDto>,
     pub uses: Vec<CodeNeighbourDto>,
     pub external: Vec<String>,
+    pub api_calls: Vec<CodeApiCallDto>,
+}
+
+/// One API path a file calls, and the operations it reaches.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct CodeApiCallDto {
+    pub line: u32,
+    /// With the constants it is built from put back in.
+    pub path: String,
+    /// Empty for an orphan: no registered spec describes it.
+    pub operations: Vec<CodeApiOperationDto>,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct CodeApiOperationDto {
+    pub spec: String,
+    pub operation_id: String,
+    pub method: String,
+    pub path: String,
+    /// Environments where a scenario exercising it holds a fresh proof.
+    pub proven: Vec<String>,
 }
 
 pub fn code_overview_dto(o: &dit_core::CodeOverview) -> CodeOverviewDto {
@@ -1947,5 +1973,24 @@ pub fn code_neighbourhood_dto(n: &dit_core::CodeNeighbourhood) -> CodeNeighbourh
         users: n.users.iter().map(code_neighbour_dto).collect(),
         uses: n.uses.iter().map(code_neighbour_dto).collect(),
         external: n.external.clone(),
+        api_calls: n
+            .api_calls
+            .iter()
+            .map(|c| CodeApiCallDto {
+                line: c.line,
+                path: c.resolved.clone(),
+                operations: c
+                    .operations
+                    .iter()
+                    .map(|o| CodeApiOperationDto {
+                        spec: o.spec.clone(),
+                        operation_id: o.operation_id.clone(),
+                        method: o.method.clone(),
+                        path: o.path.clone(),
+                        proven: o.proven.clone(),
+                    })
+                    .collect(),
+            })
+            .collect(),
     }
 }

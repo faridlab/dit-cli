@@ -719,15 +719,28 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
             }
         }
         Command::Ui { host, port } => {
-            let dit = open()?;
+            // A repository that is not a workspace opens as its code map:
+            // the Code screen only, read-only (ADR 0025).
+            let dit = Dit::open_for_ui(&std::env::current_dir()?)?;
             // The same token file the standalone server reads, so `dit ui`
-            // and `dit-server` hand the same URL shape for one workspace.
-            let token = dit_server::config::load_or_create_token(&dit.root().join(".dit-cache"))?;
+            // and `dit-server` hand the same URL shape for one workspace; a
+            // code map keeps it beside its index, which ignores itself, so
+            // nothing lands in the repository's tree.
+            let cache = if dit.code_only() {
+                dit.root().join(dit_core::CODE_DIR)
+            } else {
+                dit.root().join(".dit-cache")
+            };
+            let token = dit_server::config::load_or_create_token(&cache)?;
             let me = me_for(&dit, explicit.as_deref());
+            let code_only = dit.code_only();
             let state = dit_server::AppState::with_bind_host(dit, &me, &token, &host);
             // Catch the index up, then watch for other processes' writes
-            // (ADR 0017) — `dit ui` must live-update just like the server.
-            state.start_live_updates();
+            // (ADR 0017) — `dit ui` must live-update just like the server. A
+            // code map has no workspace files to watch; it refreshes on read.
+            if !code_only {
+                state.start_live_updates();
+            }
             let app = dit_server::app(state);
             let display_host = if host == "0.0.0.0" {
                 "127.0.0.1"

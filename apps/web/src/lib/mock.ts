@@ -841,6 +841,9 @@ export function installMockApi(): void {
   if (getToken() === null) setToken("dev-mock-token");
 
   const realFetch = window.fetch.bind(window);
+  // `?mock=1&mode=code` plays `dit ui` outside a workspace: only the code
+  // map, and every write refused the way the real server refuses it.
+  const codeMode = new URLSearchParams(window.location.search).get("mode") === "code";
 
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = new URL(input instanceof Request ? input.url : String(input), window.location.origin);
@@ -852,15 +855,20 @@ export function installMockApi(): void {
 
     if (!path.startsWith("/api/")) return realFetch(input, init);
 
+    if (codeMode && method !== "GET") {
+      return jsonResponse({ error: "this repository is not a DIT workspace — `dit init` makes it one" }, 409);
+    }
+
     if (path === "/api/status" && method === "GET") {
       const status: StatusInfo = {
         ok: true,
         version: "0.1.0-mock",
-        repo: "/home/dev/example",
+        repo: codeMode ? "/home/dev/webapp" : "/home/dev/example",
         branch: "main",
         head: "9f8e7d6c5b4a3f2e1d0c",
         dirty: false,
-        me: ME,
+        me: codeMode ? null : ME,
+        mode: codeMode ? "code" : "workspace",
       };
       return jsonResponse(status);
     }

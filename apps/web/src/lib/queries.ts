@@ -93,10 +93,11 @@ export function useStatus() {
   return useQuery({ queryKey: queryKeys.status, queryFn: api.getStatus, staleTime: STALE_TIME_MS });
 }
 
-export function useSchema() {
+export function useSchema(enabled = true) {
   return useQuery({
     queryKey: queryKeys.schema,
     queryFn: api.getSchema,
+    enabled,
     staleTime: 5 * 60_000,
   });
 }

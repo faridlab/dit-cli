@@ -4,13 +4,21 @@
 // the cut at the unit cap, and the labels.
 import { describe, expect, it } from "vitest";
 import {
+  apiCountLabel,
+  apiSummary,
   boxExit,
   capUnits,
   capNeighbours,
   connector,
   EDGE_CAP,
   FOCUS_GEO,
-  fitViewBox,
+  clampScale,
+  fitTransform,
+  isDrag,
+  panBy,
+  wheelFactor,
+  ZOOM,
+  zoomAt,
   focusGeometry,
   edgeWidth,
   folderCrumbs,
@@ -20,6 +28,7 @@ import {
   lastSegment,
   layoutUnits,
   parentFolder,
+  proofLabel,
   LAYER,
   layeredLayout,
   middleTruncate,
@@ -157,18 +166,55 @@ describe("paths as labels", () => {
   });
 });
 
-describe("fitting the picture to the screen", () => {
-  const box = { x: -50, y: -20, w: 100, h: 40 };
+describe("pan and zoom", () => {
+  const t0 = { x: 0, y: 0, k: 1 };
 
-  it("never blows a small folder up past the scale cap, keeping it centred", () => {
-    const v = fitViewBox(box, 1000, 500, 1);
-    expect(v).toEqual({ x: -500, y: -250, w: 1000, h: 500 });
+  it("zooms around the pointer: the world point under it stays put", () => {
+    const t = zoomAt({ x: 10, y: 20, k: 1 }, 2, 110, 70);
+    // World (100, 50) was under the pointer before, and still is.
+    expect((110 - t.x) / t.k).toBeCloseTo(100);
+    expect((70 - t.y) / t.k).toBeCloseTo(50);
+    expect(t.k).toBe(2);
   });
 
-  it("leaves a big folder's box alone, and an unmeasured viewport too", () => {
-    const big = { x: 0, y: 0, w: 4000, h: 3000 };
-    expect(fitViewBox(big, 1000, 500)).toEqual(big);
-    expect(fitViewBox(box, 0, 0)).toEqual(box);
+  it("clamps the scale, and zooming past a limit stops the drift too", () => {
+    expect(clampScale(10)).toBe(ZOOM.max);
+    expect(clampScale(0.01)).toBe(ZOOM.min);
+    expect(clampScale(Number.NaN)).toBe(1);
+    const atMax = { x: 5, y: 5, k: ZOOM.max };
+    expect(zoomAt(atMax, 2, 300, 300)).toEqual(atMax);
+  });
+
+  it("pans by the drag, and tells a drag from a click by distance", () => {
+    expect(panBy(t0, 5, -3)).toEqual({ x: 5, y: -3, k: 1 });
+    expect(isDrag(2, 2)).toBe(false);
+    expect(isDrag(3, 3)).toBe(true);
+  });
+
+  it("zooms in on a wheel up and out on a wheel down, harder per mouse notch", () => {
+    expect(wheelFactor(-100)).toBeGreaterThan(1);
+    expect(wheelFactor(100)).toBeLessThan(1);
+    expect(wheelFactor(3, 1)).toBeLessThan(wheelFactor(3, 0));
+  });
+
+  it("fits a small graph whole and centred, never past natural size", () => {
+    const t = fitTransform({ x: -50, y: -20, w: 100, h: 40 }, 1000, 500);
+    expect(t.k).toBe(ZOOM.natural);
+    // The box's centre lands on the viewport's centre.
+    expect(t.x + 0 * t.k).toBeCloseTo(500);
+    expect(t.y + 0 * t.k).toBeCloseTo(250);
+  });
+
+  it("fits a big graph by width but never below the readable scale, pinned top-left", () => {
+    const box = { x: 0, y: 0, w: 4000, h: 3000 };
+    const t = fitTransform(box, 1000, 600, "width");
+    expect(t.k).toBe(ZOOM.readable);
+    expect(t).toMatchObject({ x: 0, y: 0 });
+    // A wide-but-short graph fits its width exactly.
+    expect(fitTransform({ x: 0, y: 0, w: 1250, h: 200 }, 1000, 600, "width").k).toBeCloseTo(0.8);
+    // Whole mode shows all of it, even if small.
+    expect(fitTransform(box, 1000, 600).k).toBe(ZOOM.min);
+    expect(fitTransform(box, 0, 0)).toEqual({ x: 0, y: 0, k: 1 });
   });
 });
 
@@ -307,5 +353,22 @@ describe("which half of the screen shows", () => {
     expect(halfOf("folder", "src/a.ts")).toBe("folder");
     expect(halfOf(null, "src/a.ts")).toBe("focus");
     expect(halfOf(undefined, null)).toBe("folder");
+  });
+});
+
+describe("API calls", () => {
+  const op = { spec: "s", operation_id: "o", method: "GET", path: "/p", proven: [] };
+  it("counts calls and orphans, and says nothing for a file that calls no API", () => {
+    const calls = [{ operations: [op] }, { operations: [] }, { operations: [op, op] }];
+    expect(apiSummary(calls)).toEqual({ calls: 3, orphans: 1 });
+    expect(apiCountLabel(calls)).toBe(" · 3 API calls (1 orphan)");
+    expect(apiCountLabel([{ operations: [op] }])).toBe(" · 1 API call");
+    expect(apiCountLabel([{ operations: [] }, { operations: [] }])).toBe(" · 2 API calls (2 orphans)");
+    expect(apiCountLabel([])).toBe("");
+  });
+
+  it("names where an operation is proven, or that it is not", () => {
+    expect(proofLabel(["local", "staging"])).toBe("proven on local, staging");
+    expect(proofLabel([])).toBe("unproven");
   });
 });

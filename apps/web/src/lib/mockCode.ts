@@ -4,6 +4,7 @@
 // neighbours always agree with each other.
 
 import type {
+  CodeApiCallDto,
   CodeNeighbourDto,
   CodeNeighbourhoodDto,
   CodeOverviewDto,
@@ -23,6 +24,8 @@ interface MockFile {
   defines: string[];
   imports: MockImport[];
   external: string[];
+  /** API paths the file calls, and what the registered specs say of them. */
+  api?: CodeApiCallDto[];
 }
 
 const G = (path: string, defines: string[], imports: MockImport[] = []): MockFile => ({
@@ -192,6 +195,39 @@ for (const [k, name] of PEOPLE_PAGES.entries()) {
 FILES.push(W(`${PEOPLE}/payroll/PayrollRunPage.tsx`, ["PayrollRunPage"], [i("src/crud/hooks.ts", "useList"), i(`${PEOPLE}/EmployeePicker.tsx`, "EmployeePicker")], ["react"]));
 FILES.push(W(`${PEOPLE}/payroll/SlipLine.tsx`, ["SlipLine"], [i("src/lib/format.ts", "formatMoney")], ["react"]));
 
+// API calls, the three verdicts side by side: proven, unproven, orphan.
+const API: Record<string, CodeApiCallDto[]> = {
+  "src/crud/hooks.ts": [
+    {
+      line: 42,
+      path: "/api/v1/{resource}",
+      operations: [
+        { spec: "backbone", operation_id: "listRecords", method: "GET", path: "/api/v1/{resource}", proven: ["local", "staging"] },
+      ],
+    },
+    {
+      line: 88,
+      path: "/api/v1/{resource}/{id}",
+      operations: [
+        { spec: "backbone", operation_id: "patchRecord", method: "PATCH", path: "/api/v1/{resource}/{id}", proven: [] },
+        { spec: "backbone", operation_id: "getRecord", method: "GET", path: "/api/v1/{resource}/{id}", proven: ["local"] },
+      ],
+    },
+    { line: 131, path: "/api/v1/{resource}/bulk-archive", operations: [] },
+  ],
+  "src/lib/api.ts": [
+    {
+      line: 17,
+      path: "/api/v1/auth/refresh",
+      operations: [{ spec: "sapiens", operation_id: "refreshToken", method: "POST", path: "/api/v1/auth/refresh", proven: ["local"] }],
+    },
+  ],
+};
+for (const f of FILES) {
+  const calls = API[f.path];
+  if (calls && f.root === "web") f.api = calls;
+}
+
 // A barrel: the form inputs are reached through `components/form/index.ts`,
 // so the file behind it sees CrudForm as a user *via* the barrel.
 const VIA: Record<string, Record<string, string>> = {
@@ -301,5 +337,6 @@ export function mockCodeNode(name: string): CodeNeighbourhoodDto | null {
     users,
     uses,
     external: file.external,
+    api_calls: file.api ?? [],
   };
 }

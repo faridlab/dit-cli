@@ -46,6 +46,24 @@ with it, that branch or tag is read through git without checking it out.
 Languages: TypeScript, TSX and JavaScript, Rust, Kotlin. The map covers committed code:
 a file written but not committed appears after its commit.
 
+## In the browser
+
+`dit ui` has a **Code** screen over the same index.
+
+- **Folder view.** One folder at a time: its subfolders and files as nodes, sized by the
+  files they hold, and the imports between them. Only the 30 heaviest imports are drawn
+  until you hover a node; a folder of more than 30 units is laid out in layers, left to
+  right along the imports, so names never collide. Wheel to zoom, drag to pan, double-click
+  to fit. Generated code is drawn muted.
+- **Focus view.** One file between the files that import it and the files it imports, the
+  twelve most depended-on on each side first, with what it defines, the packages it uses,
+  and — in a workspace with registered specs — every API path it calls: the operation it
+  reaches, whether a scenario has proven it and where, or that no spec describes it.
+- **Choosing what to look at.** In a workspace the root selector lists its code roots. In a
+  repository that is not a workspace, `dit ui` opens the Code screen alone, read-only: the
+  rest of DIT is hidden, every write is refused, and its session token stays in
+  `.dit/code/` so nothing lands in the repository.
+
 ## What it costs, measured
 
 `bench/code-map/bench.py` asks four questions an agent asks before a change, answers each
@@ -112,8 +130,6 @@ Running it found three costs in `dit code` itself, fixed in 0.9.0:
 - See a path built at runtime (`dit code api` reads literals), or tell calls apart by
   HTTP method.
 - Map files it has no grammar for — schema YAML, SQL, Markdown. They are not indexed.
-- Draw the graph. A rendered view in `dit ui` is planned; the index already holds what it
-  needs.
 
 ## Re-running it
 

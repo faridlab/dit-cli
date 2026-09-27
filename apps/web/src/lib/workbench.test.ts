@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  activitiesFor,
   activityOf,
   clampPanelWidth,
   defaultRoute,
@@ -9,6 +10,8 @@ import {
   PANEL_MIN,
   readPanelWidth,
   readSections,
+  routeInMode,
+  serveMode,
   SECTION_MIN,
   shareDrag,
   writePanelWidth,
@@ -81,5 +84,30 @@ describe("what the reader arranged", () => {
   it("survives storage that holds something unreadable", () => {
     localStorage.setItem("dit.panel.sections", "{not json");
     expect(readSections()).toEqual({});
+  });
+});
+
+describe("code-only mode", () => {
+  it("reads the mode from the status answer, and knows nothing before it arrives", () => {
+    expect(serveMode(undefined)).toBeNull();
+    expect(serveMode({ mode: "code" })).toBe("code");
+    expect(serveMode({ mode: "workspace" })).toBe("workspace");
+    // A server from before the field existed is a workspace.
+    expect(serveMode({})).toBe("workspace");
+  });
+
+  it("offers only the code map in code mode, and everything in a workspace", () => {
+    expect(activitiesFor("code")).toEqual(["code"]);
+    expect(activitiesFor("workspace")).toContain("code");
+    expect(activitiesFor("workspace")).toContain("settings");
+    expect(activitiesFor("workspace")).toHaveLength(9);
+  });
+
+  it("sends every other route to the code map in code mode", () => {
+    expect(routeInMode({ name: "board" }, "code")).toEqual({ name: "code" });
+    expect(routeInMode({ name: "settings" }, "code")).toEqual({ name: "code" });
+    const deep = { name: "code", root: "web", folder: "src", focus: null, view: "folder" } as const;
+    expect(routeInMode(deep, "code")).toBe(deep);
+    expect(routeInMode({ name: "board" }, "workspace")).toEqual({ name: "board" });
   });
 });

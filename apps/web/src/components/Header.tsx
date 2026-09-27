@@ -76,8 +76,10 @@ export function Header({
   back?: { title: string; onClick: () => void } | null;
   /** The view's own actions, right of the breadcrumbs. */
   right?: ReactNode;
-  onToggleSidebar: () => void;
-  onNewIssue: () => void;
+  /** Absent where there is no side panel to fold (code-only mode). */
+  onToggleSidebar?: () => void;
+  /** Absent where issues cannot be written (code-only mode). */
+  onNewIssue?: () => void;
   onNotes: () => void;
   notesOpen: boolean;
 }) {
@@ -85,9 +87,11 @@ export function Header({
   const dark = theme.resolved === "dark";
   return (
     <header className="hdr">
-      <IBtn onClick={onToggleSidebar} title="Toggle sidebar (⌘B)" aria-label="Toggle sidebar">
-        <PanelLeft className="i" aria-hidden />
-      </IBtn>
+      {onToggleSidebar ? (
+        <IBtn onClick={onToggleSidebar} title="Toggle sidebar (⌘B)" aria-label="Toggle sidebar">
+          <PanelLeft className="i" aria-hidden />
+        </IBtn>
+      ) : null}
       {back ? (
         <IBtn onClick={back.onClick} title={back.title} aria-label={back.title}>
           <ArrowLeft className="i" aria-hidden />
@@ -96,11 +100,13 @@ export function Header({
       <Crumbs parts={crumbs} />
       <span className="sp" />
       {right}
-      <Btn primary onClick={onNewIssue} title="New issue (C)">
-        <Plus className="i" aria-hidden />
-        New issue
-        <Kbd>C</Kbd>
-      </Btn>
+      {onNewIssue ? (
+        <Btn primary onClick={onNewIssue} title="New issue (C)">
+          <Plus className="i" aria-hidden />
+          New issue
+          <Kbd>C</Kbd>
+        </Btn>
+      ) : null}
       <span className="mx-1 h-[18px] w-px bg-edge" aria-hidden />
       <IBtn
         onClick={() => theme.setPreference(dark ? "light" : "dark")}

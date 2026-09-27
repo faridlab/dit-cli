@@ -1062,3 +1062,49 @@ async fn the_code_map_reads_answer_their_shapes() {
     let (status, _, _) = req(&app, "GET", "/api/code/node?name=src/nowhere.ts", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+// `dit ui` in a repository that is not a workspace serves its code map only:
+// status says so, and a write — which would put DIT files into someone's
+// source tree — is refused.
+#[tokio::test]
+async fn a_repository_served_as_a_code_map_says_so_and_refuses_writes() {
+    let tmp = tempfile::tempdir().unwrap();
+    dit_core::Dit::init(tmp.path(), &std::env::current_exe().unwrap()).unwrap();
+    // A git repository that is no longer a workspace.
+    std::fs::remove_file(tmp.path().join(".dit/config.yaml")).unwrap();
+    let dit = dit_core::Dit::open_for_ui(tmp.path()).unwrap();
+    assert!(dit.code_only());
+    let app = dit_server::app(dit_server::AppState::new(dit, "tester", TOKEN));
+    let files = |p: &std::path::Path| -> usize {
+        fn walk(p: &std::path::Path) -> usize {
+            std::fs::read_dir(p).map_or(0, |d| {
+                d.flatten()
+                    .map(|e| {
+                        if e.path().is_dir() {
+                            walk(&e.path())
+                        } else {
+                            1
+                        }
+                    })
+                    .sum()
+            })
+        }
+        walk(&p.join("issues"))
+    };
+    let before = files(tmp.path());
+
+    let (status, info, _) = req(&app, "GET", "/api/status", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(info["mode"], "code");
+
+    let (status, _, text) = req(
+        &app,
+        "POST",
+        "/api/issues",
+        Some(json!({ "title": "should never be written" })),
+    )
+    .await;
+    assert!(status.is_client_error(), "{status}: {text}");
+    assert!(text.contains("not a DIT workspace"), "{text}");
+    assert_eq!(files(tmp.path()), before, "nothing was written");
+}
