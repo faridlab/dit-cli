@@ -694,7 +694,7 @@ impl Dit {
                     path,
                     blob,
                     lang.as_str(),
-                    root.is_generated(path),
+                    root.is_generated(path) || facts.generated,
                     facts,
                 )
                 .map_err(|e| e.to_string())?;

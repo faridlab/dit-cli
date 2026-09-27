@@ -3075,6 +3075,10 @@ layers kept apart for the same reason Morse keeps endpoints and scenarios apart 
   a call, an *orphan* no spec describes, or a base. `dit code api` lists orphans and
   operations called but proven nowhere (§20.10); `dit morse check` counts them. Nothing is
   stored beyond the literals themselves (I5), and a path built at runtime is not seen.
+- **Every repository maps itself.** Outside a workspace with `code:` roots, `dit code`
+  maps the repository it runs in as one root, with no config, its index in `.dit/code/`
+  behind a `.gitignore` of its own — visible, never committed, the repository's own
+  `.gitignore` untouched.
 - **Committed code only.** The map reads HEAD, never the working tree: what it says is what
   everyone who pulls sees.
 - **Nothing reaches the network, and nothing runs.** Roots are read through git (I3); the

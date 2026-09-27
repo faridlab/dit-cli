@@ -318,6 +318,28 @@ same machine and load: 25.7 s for 0.6.0 (after one run to warm the cache), 26.4 
 29.7 s for this build — within the
 noise of a shared machine. (The 11.5 s in milestone 1 was measured when it was idle.)
 
+## Every repository maps itself
+
+Registering roots in a DIT workspace answers questions across repositories, but an
+agent works inside one repository and asks there. Requiring it to change directory to
+the workspace first — or requiring every source repository to become a workspace — is
+friction graphify never had. So `dit code` works in any git repository:
+
+- In a DIT workspace with `code:` roots, it maps those roots, as above.
+- Anywhere else — a repository that is not a workspace, or a workspace without
+  `code:` — it maps the repository itself as one root, named after its directory,
+  with no config. Generated files are those under `generated/`, `__generated__/`,
+  `*.generated.*`, `*.gen.*`, or whose header says so (`@generated`, `DO NOT EDIT`,
+  `Code generated`) — the header rule applies to registered roots too.
+- The index lives in `.dit/code/index.sqlite`, where a person can see it (and where a
+  rendered view can join it later). A `.gitignore` containing `*` inside that directory
+  keeps all of it out of every commit, so the repository's own `.gitignore` is never
+  edited. `.dit/code/` is not the workspace marker (`.dit/config.yaml` is), so mapping a
+  repository does not make it a workspace, and `dit init` still works there.
+- What needs more than one repository stays in the workspace: the seam link reads specs
+  and callers together, and a `dit-map` is a committed, pinned claim. A repository
+  mapped on its own answers `uses`, `users`, `path`, `explain`, `hubs` and `where`.
+
 ## Consequences
 
 **Easier.** The graph an agent reads is the code at HEAD, every time, with no

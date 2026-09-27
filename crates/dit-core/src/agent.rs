@@ -367,6 +367,10 @@ grepping — one answer instead of a page of matches.
   its verdict. Trust an entry that **holds**; re-read one that is **stale** against its
   example before copying it; never follow one that is **broken**.
 
+It works in any repository, not only here: in a code repository that is not a DIT
+workspace, `dit code` maps that repository itself, with its index in `.dit/code/` (never
+committed). The seam link and `dit-map` need this workspace, where specs and callers meet.
+
 The map covers committed files only: a file you just wrote appears after it is committed.
 `dit ai spec code` has the fence format and the confirm step.
 
@@ -553,7 +557,10 @@ and Kotlin. Kotlin imports name declarations, not files: they resolve through ea
 `package`, and a file using a declaration of its own package — which Kotlin never imports —
 depends on it all the same. Registered code roots: {roots}.
 
-A root is registered in `.dit/config.yaml`:
+In a repository that is not a DIT workspace, none of this is needed: `dit code` maps the
+repository itself, generated files found by path and by a header saying so, its index in
+`.dit/code/` behind a `.gitignore` of its own. Here, a root is registered in
+`.dit/config.yaml`:
 
 ```yaml
 code:
@@ -927,6 +934,7 @@ mod tests {
             "dit code users",
             "dit code check",
             "dit code api",
+            ".dit/code/",
             "Kotlin",
             "web (src/**; generated src/generated/**)",
             "**broken**",

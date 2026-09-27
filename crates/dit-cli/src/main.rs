@@ -1880,7 +1880,7 @@ fn open() -> Result<Dit, DitError> {
 
 /// `dit code …`: refresh the map to HEAD, then answer from the index.
 fn code(cmd: CodeCmd, explicit: Option<&str>) -> Result<ExitCode, DitError> {
-    let mut dit = open()?;
+    let mut dit = Dit::open_code(&std::env::current_dir()?)?;
     if matches!(cmd, CodeCmd::Refresh { full: true }) {
         dit.invalidate_code_map()?;
     }

@@ -175,6 +175,8 @@ pub struct FileFacts {
     /// once with its first line: a same-package dependency is often only a
     /// type, never called.
     pub type_refs: Vec<CodeCall>,
+    /// The header says a tool wrote it (`@generated`, `DO NOT EDIT`).
+    pub generated: bool,
 }
 
 /// Whether a literal is worth keeping as a possible path: it has a `/`, no

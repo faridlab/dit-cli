@@ -216,6 +216,18 @@ fn name_in_fence(body: &str) -> Option<String> {
 }
 
 /// An open workspace: git repo + files on one side, the index on the other.
+/// Where a repository's own code map lives (ADR 0025).
+pub const CODE_DIR: &str = ".dit/code";
+
+/// What a repository mapped without config treats as generated, besides a
+/// file whose header says so (`@generated`, `DO NOT EDIT`).
+const REPO_MAP_GENERATED: [&str; 4] = [
+    "**/generated/**",
+    "**/__generated__/**",
+    "**/*.generated.*",
+    "**/*.gen.*",
+];
+
 pub struct Dit {
     store: Store,
     index: Index,
@@ -273,6 +285,60 @@ impl Dit {
     pub fn is_workspace(path: &Path) -> Result<bool, DitError> {
         let repo = Repo::open(path)?;
         Ok(repo.root().join(".dit").join("config.yaml").exists())
+    }
+
+    /// Open the code map for the repository holding `path` (ADR 0025). A DIT
+    /// workspace with `code:` roots maps those, across repositories. Any
+    /// other repository maps itself, with no config: one root covering the
+    /// whole tree, its index under `.dit/code/`, where a person can see it
+    /// and a `.gitignore` inside keeps it out of every commit — the
+    /// repository's own `.gitignore` is never touched.
+    pub fn open_code(path: &Path) -> Result<Dit, DitError> {
+        if Dit::is_workspace(path)? {
+            let dit = Dit::open(path)?;
+            if !dit.config.code.is_empty() {
+                return Ok(dit);
+            }
+        }
+        Dit::open_repo_map(path)
+    }
+
+    fn open_repo_map(path: &Path) -> Result<Dit, DitError> {
+        let repo = Repo::open(path)?;
+        let root = repo.root().to_path_buf();
+        let dir = root.join(CODE_DIR);
+        let ignore = dir.join(".gitignore");
+        if !ignore.exists() {
+            dit_store::atomic::write(
+                &ignore,
+                "# DIT's code map of this repository: derived from git, rebuilt on demand,\n\
+                 # never committed. Delete the directory at any time.\n*\n",
+            )?;
+        }
+        let index = Index::open(&dir.join("index.sqlite"))?;
+        let id = root
+            .file_name()
+            .map(|n| n.to_string_lossy().replace(':', "-"))
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "repo".to_owned());
+        let config = Config {
+            code: vec![dit_model::CodeRoot {
+                id,
+                repo: None,
+                include: Vec::new(),
+                exclude: vec![".dit/**".to_owned()],
+                generated: REPO_MAP_GENERATED.iter().map(|g| (*g).to_owned()).collect(),
+            }],
+            ..Config::default()
+        };
+        Ok(Dit {
+            store: Store::open(&root),
+            index,
+            repo,
+            workflow: Workflow::default_workflow(),
+            config,
+            schema_problem: None,
+        })
     }
 
     /// The refusal a workspace-only command gives outside one.
