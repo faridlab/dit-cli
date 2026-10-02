@@ -205,6 +205,143 @@ pub struct Expect {
     pub json: Vec<JsonCheck>,
 }
 
+/// What a step sends as its body (ADR 0027). One shape per step; each maps
+/// to a `content-type` the sender sets unless a header says otherwise.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RequestBody {
+    /// `body:` — JSON, as a fence wrote it before there was a choice.
+    Json(MorseValue),
+    /// `form:` — `application/x-www-form-urlencoded`. Values are text.
+    Form(Vec<(String, MorseValue)>),
+    /// `raw:` — text or one committed file, sent as `media_type`.
+    Raw {
+        media_type: String,
+        content: RawContent,
+    },
+    /// `multipart:` — `multipart/form-data`, fields and committed files.
+    Multipart(Vec<MultipartPart>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RawContent {
+    /// Text with `{{variables}}`, sent as written.
+    Text(String),
+    /// A path in the repository, read from HEAD (Postman's "binary").
+    File(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MultipartPart {
+    pub name: String,
+    pub content: PartContent,
+    /// The part's own `content-type`; absent means text for a value and
+    /// `application/octet-stream` for a file.
+    pub media_type: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PartContent {
+    Value(MorseValue),
+    /// A path in the repository, read from HEAD — never the working tree.
+    File(String),
+}
+
+impl RequestBody {
+    /// The body as one value tree, for the passes that only read values —
+    /// the variables it references and the literals that look like
+    /// secrets. File parts contribute nothing: a path is not a value.
+    pub fn scannable(&self) -> MorseValue {
+        match self {
+            RequestBody::Json(value) => value.clone(),
+            RequestBody::Form(pairs) => MorseValue::Map(pairs.clone()),
+            RequestBody::Raw {
+                content: RawContent::Text(text),
+                ..
+            } => MorseValue::Str(text.clone()),
+            RequestBody::Raw {
+                content: RawContent::File(_),
+                ..
+            } => MorseValue::Map(Vec::new()),
+            RequestBody::Multipart(parts) => MorseValue::Map(
+                parts
+                    .iter()
+                    .filter_map(|p| match &p.content {
+                        PartContent::Value(v) => Some((p.name.clone(), v.clone())),
+                        PartContent::File(_) => None,
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    /// Every repository file this body sends, in order.
+    pub fn files(&self) -> Vec<&str> {
+        match self {
+            RequestBody::Raw {
+                content: RawContent::File(path),
+                ..
+            } => vec![path.as_str()],
+            RequestBody::Multipart(parts) => parts
+                .iter()
+                .filter_map(|p| match &p.content {
+                    PartContent::File(path) => Some(path.as_str()),
+                    PartContent::Value(_) => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// A media type a body or a part may declare: `type/subtype` with optional
+/// `; key=value` parameters, and nothing that could end a header line.
+pub fn is_media_type(raw: &str) -> bool {
+    // RFC 9110 token characters, the only ones a type, subtype or parameter
+    // name may hold.
+    let token = |t: &str| {
+        !t.is_empty()
+            && t.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "!#$%&'*+-.^_`|~".contains(c))
+    };
+    let mut pieces = raw.split(';');
+    let essence = pieces.next().unwrap_or_default().trim();
+    let Some((kind, subtype)) = essence.split_once('/') else {
+        return false;
+    };
+    if !token(kind) || !token(subtype) || raw.chars().any(|c| c.is_control()) {
+        return false;
+    }
+    pieces.all(|param| {
+        param
+            .trim()
+            .split_once('=')
+            .is_some_and(|(name, value)| token(name) && token(value.trim_matches('"')))
+    })
+}
+
+/// Why a path a body sends is refused, if it is (ADR 0027): relative, no
+/// climbing, not inside `.dit/` or `.git/` — and it is read from HEAD, so a
+/// git-ignored file is out of reach whatever its name.
+pub fn morse_file_path_problem(path: &str) -> Option<&'static str> {
+    if path.is_empty() {
+        return Some("a file part needs a path");
+    }
+    if path.starts_with('/') || path.contains('\\') || path.contains(':') {
+        return Some("a file part names a path in the repository, never an absolute one");
+    }
+    let segments: Vec<&str> = path.split('/').collect();
+    if segments
+        .iter()
+        .any(|s| s.is_empty() || *s == "." || *s == "..")
+    {
+        return Some("a file part's path may not climb out of the repository");
+    }
+    if matches!(segments.first(), Some(&".dit") | Some(&".git")) {
+        return Some("a file part may not send DIT's or git's own files");
+    }
+    None
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MorseStep {
     pub id: String,
@@ -215,7 +352,7 @@ pub struct MorseStep {
     pub params: Vec<(String, MorseValue)>,
     pub headers: Vec<(String, MorseValue)>,
     pub query: Vec<(String, MorseValue)>,
-    pub body: Option<MorseValue>,
+    pub body: Option<RequestBody>,
     pub expect: Expect,
     pub capture: Vec<Capture>,
 }
@@ -276,7 +413,11 @@ impl MorseScenario {
                 names.extend(v.variables());
             }
             if let Some(body) = &step.body {
-                names.extend(body.variables());
+                names.extend(body.scannable().variables());
+                if let RequestBody::Multipart(parts) = body {
+                    // A file part's name is still a field the server reads.
+                    names.extend(parts.iter().flat_map(|p| variables_in(&p.name)));
+                }
             }
             for check in &step.expect.json {
                 if let ExpectRule::Equals(value) = &check.rule {
@@ -395,7 +536,7 @@ impl MorseScenario {
                 scan(name, value);
             }
             if let Some(body) = &step.body {
-                collect_secrets(&step.id, "body", body, &mut out);
+                collect_secrets(&step.id, "body", &body.scannable(), &mut out);
             }
         }
         out
@@ -486,6 +627,96 @@ fn without_variables(text: &str) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn media_types_are_type_slash_subtype_with_parameters_and_nothing_else() {
+        for ok in [
+            "application/xml",
+            "text/plain",
+            "text/plain; charset=utf-8",
+            "application/vnd.api+json",
+            "image/png",
+        ] {
+            assert!(is_media_type(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "xml",
+            "text/",
+            "/plain",
+            "text/plain\r\nX-Evil: 1",
+            "text/plain\nX: y",
+            "a b/c",
+            "text/plain;",
+            "text/html, x",
+        ] {
+            assert!(!is_media_type(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_file_a_body_sends_stays_inside_the_committed_tree() {
+        for ok in ["fixtures/avatar.png", "api/payloads/order.json", "a.bin"] {
+            assert_eq!(morse_file_path_problem(ok), None, "{ok}");
+        }
+        for bad in [
+            "",
+            "/etc/passwd",
+            "../secret",
+            "fixtures/../../x",
+            ".dit/morse.local.yaml",
+            ".git/config",
+            "C:\\x",
+            "fixtures//a",
+            "a\\b",
+        ] {
+            assert!(morse_file_path_problem(bad).is_some(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn every_body_shape_reads_its_variables_and_its_secrets() {
+        let s = |t: &str| MorseValue::Str(t.to_owned());
+        let shapes = [
+            RequestBody::Json(MorseValue::Map(vec![("email".into(), s("{{email}}"))])),
+            RequestBody::Form(vec![("email".into(), s("{{email}}"))]),
+            RequestBody::Raw {
+                media_type: "text/plain".into(),
+                content: RawContent::Text("hi {{email}}".into()),
+            },
+            RequestBody::Multipart(vec![
+                MultipartPart {
+                    name: "email".into(),
+                    content: PartContent::Value(s("{{email}}")),
+                    media_type: None,
+                },
+                MultipartPart {
+                    name: "avatar".into(),
+                    content: PartContent::File("fixtures/a.png".into()),
+                    media_type: Some("image/png".into()),
+                },
+            ]),
+        ];
+        for body in shapes {
+            let mut scenario = with_headers(&[], None);
+            scenario.steps[0].body = Some(body.clone());
+            assert_eq!(
+                scenario.variables_used(),
+                vec![("one".to_owned(), "email".to_owned())],
+                "{body:?}"
+            );
+        }
+        let leaky = RequestBody::Form(vec![("client_secret".into(), s("hunter2-very-secret"))]);
+        let mut scenario = with_headers(&[], None);
+        scenario.steps[0].body = Some(leaky);
+        assert_eq!(scenario.suspected_secrets().len(), 1);
+        let files = RequestBody::Multipart(vec![MultipartPart {
+            name: "avatar".into(),
+            content: PartContent::File("fixtures/a.png".into()),
+            media_type: None,
+        }]);
+        assert_eq!(files.files(), vec!["fixtures/a.png"]);
+    }
+
     fn step(id: &str, body: Option<MorseValue>, capture: &[(&str, &str)]) -> MorseStep {
         MorseStep {
             id: id.into(),
@@ -496,7 +727,7 @@ mod tests {
             params: vec![],
             headers: vec![],
             query: vec![],
-            body,
+            body: body.map(RequestBody::Json),
             expect: Expect::default(),
             capture: capture
                 .iter()
@@ -527,7 +758,7 @@ mod tests {
                     .map(|(k, v)| ((*k).to_owned(), MorseValue::Str((*v).to_owned())))
                     .collect(),
                 query: vec![],
-                body,
+                body: body.map(RequestBody::Json),
                 expect: Expect::default(),
                 capture: vec![],
             }],

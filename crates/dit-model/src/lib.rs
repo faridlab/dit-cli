@@ -55,9 +55,10 @@ pub use layout::{
     GENERATED_INDEX_MARKER, ISSUE_BODY_FILE, LEGACY_ISSUE_BODY_FILE, RELEASES_DIR, RELEASE_FILE,
 };
 pub use morse::{
-    path_params, variables_in, Capture, Expect, ExpectRule, InlineRequest, JsonCheck,
-    MorseScenario, MorseStep, MorseValue, OperationRef, Proof, Selector, SpecPin, StepTarget,
-    SuspectedSecret, UnboundVariable, VAR_CLOSE, VAR_OPEN,
+    is_media_type, morse_file_path_problem, path_params, variables_in, Capture, Expect, ExpectRule,
+    InlineRequest, JsonCheck, MorseScenario, MorseStep, MorseValue, MultipartPart, OperationRef,
+    PartContent, Proof, RawContent, RequestBody, Selector, SpecPin, StepTarget, SuspectedSecret,
+    UnboundVariable, VAR_CLOSE, VAR_OPEN,
 };
 pub use openapi::{OpenApiSpec, SpecField, SpecOperation, SpecParam, SpecServer};
 pub use readiness::{apply_proof, claim_liveness, readiness, ClaimLiveness, Readiness};

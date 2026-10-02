@@ -14,7 +14,10 @@
 
 use crate::quote::QuoteScan;
 
-use dit_model::{ExpectRule, MorseScenario, MorseStep, MorseValue, Selector, StepTarget};
+use dit_model::{
+    ExpectRule, MorseScenario, MorseStep, MorseValue, PartContent, RawContent, RequestBody,
+    Selector, StepTarget,
+};
 
 use crate::morse::{morse_fences, parse_morse_scenario, scenario_in_fence, MORSE_FENCE};
 
@@ -178,7 +181,7 @@ fn emit_step(out: &mut String, step: &MorseStep) -> Result<(), MorseWriteError> 
         }
     }
     if let Some(body) = &step.body {
-        out.push_str(&format!("    body: {}\n", flow(body)?));
+        emit_body(out, body)?;
     }
     if step.expect.status.is_some() || !step.expect.json.is_empty() {
         out.push_str("    expect:\n");
@@ -207,6 +210,64 @@ fn emit_step(out: &mut String, step: &MorseStep) -> Result<(), MorseWriteError> 
             parts.push(format!("{}: {}", key(&c.name)?, scalar(&from)?));
         }
         out.push_str(&format!("    capture: {{ {} }}\n", parts.join(", ")));
+    }
+    Ok(())
+}
+
+/// One of the four body shapes (ADR 0027). Multi-line raw text is a literal
+/// block, the only YAML form that holds lines as written; the round-trip
+/// check refuses text a block would change (trailing spaces, an indented
+/// first line) rather than writing something else.
+fn emit_body(out: &mut String, body: &RequestBody) -> Result<(), MorseWriteError> {
+    match body {
+        RequestBody::Json(value) => out.push_str(&format!("    body: {}\n", flow(value)?)),
+        RequestBody::Form(pairs) => out.push_str(&format!("    form: {}\n", flow_map(pairs)?)),
+        RequestBody::Raw {
+            media_type,
+            content: RawContent::File(path),
+        } => out.push_str(&format!(
+            "    raw: {{ type: {}, file: {} }}\n",
+            scalar(media_type)?,
+            scalar(path)?
+        )),
+        RequestBody::Raw {
+            media_type,
+            content: RawContent::Text(text),
+        } if !text.contains('\n') => out.push_str(&format!(
+            "    raw: {{ type: {}, text: {} }}\n",
+            scalar(media_type)?,
+            scalar(text)?
+        )),
+        RequestBody::Raw {
+            media_type,
+            content: RawContent::Text(text),
+        } => {
+            out.push_str(&format!(
+                "    raw:\n      type: {}\n      text: |\n",
+                scalar(media_type)?
+            ));
+            for line in text.split('\n') {
+                if line.is_empty() {
+                    out.push('\n');
+                } else {
+                    out.push_str(&format!("        {line}\n"));
+                }
+            }
+        }
+        RequestBody::Multipart(parts) => {
+            out.push_str("    multipart:\n");
+            for part in parts {
+                let mut fields = vec![format!("name: {}", scalar(&part.name)?)];
+                match &part.content {
+                    PartContent::Value(value) => fields.push(format!("value: {}", flow(value)?)),
+                    PartContent::File(path) => fields.push(format!("file: {}", scalar(path)?)),
+                }
+                if let Some(kind) = &part.media_type {
+                    fields.push(format!("type: {}", scalar(kind)?));
+                }
+                out.push_str(&format!("      - {{ {} }}\n", fields.join(", ")));
+            }
+        }
     }
     Ok(())
 }
@@ -283,6 +344,92 @@ fn scalar(s: &str) -> Result<String, MorseWriteError> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    // ---- body shapes (ADR 0027) -------------------------------------------
+
+    const BODIES: &str = r#"scenario: shapes
+spec: { id: auth, commit: a3f9c2d }
+steps:
+  - id: token
+    operation: auth/token
+    form: { grant_type: password, username: "{{email}}", password: "{{password}}" }
+  - id: soap
+    operation: auth/legacy
+    raw:
+      type: application/xml
+      text: |
+        <login>
+          <user>{{email}}</user>
+        </login>
+  - id: plain
+    operation: auth/note
+    raw: { type: "text/plain; charset=utf-8", text: "hello {{email}}" }
+  - id: blob
+    operation: files/put
+    raw: { type: application/octet-stream, file: fixtures/blob.bin }
+  - id: upload
+    operation: files/upload
+    multipart:
+      - { name: title, value: "{{title}}" }
+      - { name: avatar, file: fixtures/avatar.png, type: image/png }
+"#;
+
+    #[test]
+    fn every_body_shape_parses_and_is_written_back_the_same() {
+        use dit_model::{PartContent, RawContent, RequestBody};
+        let parsed = crate::morse::parse_morse_scenario(BODIES).unwrap();
+        let bodies: Vec<_> = parsed
+            .steps
+            .iter()
+            .map(|s| s.body.clone().unwrap())
+            .collect();
+        assert!(matches!(&bodies[0], RequestBody::Form(pairs) if pairs.len() == 3));
+        match &bodies[1] {
+            RequestBody::Raw {
+                media_type,
+                content: RawContent::Text(text),
+            } => {
+                assert_eq!(media_type, "application/xml");
+                assert_eq!(text, "<login>\n  <user>{{email}}</user>\n</login>");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(
+            matches!(&bodies[3], RequestBody::Raw { content: RawContent::File(p), .. } if p == "fixtures/blob.bin")
+        );
+        match &bodies[4] {
+            RequestBody::Multipart(parts) => {
+                assert_eq!(parts.len(), 2);
+                assert!(
+                    matches!(&parts[1].content, PartContent::File(p) if p == "fixtures/avatar.png")
+                );
+                assert_eq!(parts[1].media_type.as_deref(), Some("image/png"));
+            }
+            other => panic!("{other:?}"),
+        }
+        let written = write_morse_scenario(&parsed).unwrap();
+        assert_eq!(
+            crate::morse::parse_morse_scenario(&written).unwrap(),
+            parsed,
+            "{written}"
+        );
+        assert!(
+            written.contains("      text: |\n        <login>\n"),
+            "multi-line text is a literal block:\n{written}"
+        );
+    }
+
+    #[test]
+    fn raw_text_the_reader_would_change_is_refused_rather_than_altered() {
+        use dit_model::{RawContent, RequestBody};
+        let mut parsed = crate::morse::parse_morse_scenario(BODIES).unwrap();
+        // A literal block drops trailing spaces; writing one would change the body.
+        parsed.steps[1].body = Some(RequestBody::Raw {
+            media_type: "text/plain".into(),
+            content: RawContent::Text("line one   \nline two".into()),
+        });
+        assert!(write_morse_scenario(&parsed).is_err());
+    }
 
     #[test]
     fn proofs_survive_a_write_from_the_form() {

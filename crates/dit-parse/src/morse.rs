@@ -10,8 +10,9 @@
 //! anything (I11); what does lives in `dit-morse`.
 
 use dit_model::{
-    Capture, Expect, ExpectRule, InlineRequest, JsonCheck, MorseScenario, MorseStep, MorseValue,
-    OperationRef, Proof, Selector, SpecPin, StepTarget,
+    is_media_type, morse_file_path_problem, Capture, Expect, ExpectRule, InlineRequest, JsonCheck,
+    MorseScenario, MorseStep, MorseValue, MultipartPart, OperationRef, PartContent, Proof,
+    RawContent, RequestBody, Selector, SpecPin, StepTarget,
 };
 
 use crate::flowshape::{fences, Fence};
@@ -84,6 +85,8 @@ pub enum MorseError {
     BadStatus { step: String, found: String },
     #[error("step `{step}`: an `expect.jsonpath` entry must be `{{ exists: true }}` or a value to compare against")]
     BadExpect { step: String },
+    #[error("step `{step}`: {reason}")]
+    BadBody { step: String, reason: String },
 }
 
 impl From<YamlError> for MorseError {
@@ -314,10 +317,107 @@ fn step(node: &Yaml, id: &str, requests: &[InlineRequest]) -> Result<MorseStep, 
         params: pairs("params"),
         headers: pairs("headers"),
         query: pairs("query"),
-        body: node.get("body").map(value),
+        body: request_body(node, id)?,
         expect,
         capture,
     })
+}
+
+/// The body a step sends (ADR 0027): `body:` (JSON), `form:`, `raw:` or
+/// `multipart:` — at most one of them.
+fn request_body(node: &Yaml, id: &str) -> Result<Option<RequestBody>, MorseError> {
+    let bad = |reason: &str| MorseError::BadBody {
+        step: id.to_owned(),
+        reason: reason.to_owned(),
+    };
+    let present: Vec<&str> = ["body", "form", "raw", "multipart"]
+        .into_iter()
+        .filter(|k| node.get(k).is_some())
+        .collect();
+    if present.len() > 1 {
+        return Err(bad(&format!(
+            "a step sends one of `body:`, `form:`, `raw:` or `multipart:`, not {}",
+            present.join(" and ")
+        )));
+    }
+    let file = |raw: Option<String>| -> Result<Option<String>, MorseError> {
+        match raw {
+            None => Ok(None),
+            Some(path) => match morse_file_path_problem(&path) {
+                None => Ok(Some(path)),
+                Some(problem) => Err(bad(&format!("`{path}`: {problem}"))),
+            },
+        }
+    };
+    let media_type = |raw: Option<String>, what: &str| -> Result<Option<String>, MorseError> {
+        match raw {
+            Some(t) if !is_media_type(&t) => Err(bad(&format!(
+                "`{t}` is not a media type for {what} — write it like `application/xml` or `text/plain; charset=utf-8`"
+            ))),
+            other => Ok(other),
+        }
+    };
+    let Some(&key) = present.first() else {
+        return Ok(None);
+    };
+    let Some(shape) = node.get(key) else {
+        return Ok(None);
+    };
+    match key {
+        "body" => Ok(Some(RequestBody::Json(value(shape)))),
+        "form" => match shape {
+            Yaml::Map(entries) => Ok(Some(RequestBody::Form(
+                entries.iter().map(|(k, v)| (k.clone(), value(v))).collect(),
+            ))),
+            _ => Err(bad("`form:` is a map of field names to values")),
+        },
+        "raw" => {
+            let kind = media_type(entry_str(shape, "type"), "`raw:`")?
+                .ok_or_else(|| bad("`raw:` needs a `type:`, like `application/xml`"))?;
+            // Text is kept exactly — not trimmed — so a body means what it says.
+            let text = shape.get("text").and_then(Yaml::as_str).map(str::to_owned);
+            let path = file(entry_str(shape, "file"))?;
+            let content = match (text, path) {
+                (Some(text), None) => RawContent::Text(text),
+                (None, Some(path)) => RawContent::File(path),
+                _ => return Err(bad("`raw:` holds either `text:` or `file:`, exactly one")),
+            };
+            Ok(Some(RequestBody::Raw {
+                media_type: kind,
+                content,
+            }))
+        }
+        _ => {
+            let items = shape
+                .as_seq()
+                .ok_or_else(|| bad("`multipart:` is a list of parts"))?;
+            let mut parts = Vec::new();
+            for item in items {
+                let name = entry_str(item, "name")
+                    .filter(|n| !n.contains(['"', '\r', '\n']))
+                    .ok_or_else(|| {
+                        bad("every `multipart:` part needs a `name:` without quotes or line breaks")
+                    })?;
+                let value_node = item.get("value");
+                let path = file(entry_str(item, "file"))?;
+                let content = match (value_node, path) {
+                    (Some(v), None) => PartContent::Value(value(v)),
+                    (None, Some(path)) => PartContent::File(path),
+                    _ => {
+                        return Err(bad(&format!(
+                            "part `{name}` holds either `value:` or `file:`, exactly one"
+                        )))
+                    }
+                };
+                parts.push(MultipartPart {
+                    media_type: media_type(entry_str(item, "type"), &format!("part `{name}`"))?,
+                    name,
+                    content,
+                });
+            }
+            Ok(Some(RequestBody::Multipart(parts)))
+        }
+    }
 }
 
 /// `{ exists: true }`, or a literal to compare the value against.
@@ -397,6 +497,76 @@ fn refuse_forbidden(node: &Yaml) -> Result<(), MorseError> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    fn step_with(body_lines: &str) -> Result<MorseScenario, MorseError> {
+        parse_morse_scenario(&format!(
+            "scenario: s\nspec: {{ id: auth, commit: a }}\nsteps:\n  - id: one\n    operation: auth/x\n{body_lines}"
+        ))
+    }
+
+    #[test]
+    fn a_step_sends_one_body_shape_at_most() {
+        let err = step_with("    body: { a: b }\n    form: { a: b }\n").unwrap_err();
+        assert!(matches!(err, MorseError::BadBody { .. }), "{err}");
+        assert!(err.to_string().contains("one of"), "{err}");
+    }
+
+    #[test]
+    fn a_body_type_that_could_end_a_header_line_is_refused() {
+        let err =
+            step_with("    raw: { type: \"text/plain\\r\\nX-Evil: 1\", text: hi }\n").unwrap_err();
+        assert!(matches!(err, MorseError::BadBody { .. }), "{err}");
+        let err = step_with("    raw: { type: xml, text: hi }\n").unwrap_err();
+        assert!(matches!(err, MorseError::BadBody { .. }), "{err}");
+    }
+
+    #[test]
+    fn a_file_part_cannot_name_a_path_outside_the_committed_tree() {
+        for path in [
+            "../secrets.env",
+            "/etc/passwd",
+            ".dit/morse.local.yaml",
+            ".git/config",
+        ] {
+            let err = step_with(&format!(
+                "    multipart:\n      - {{ name: f, file: \"{path}\" }}\n"
+            ))
+            .unwrap_err();
+            assert!(matches!(err, MorseError::BadBody { .. }), "{path}: {err}");
+            let err = step_with(&format!(
+                "    raw: {{ type: application/octet-stream, file: \"{path}\" }}\n"
+            ))
+            .unwrap_err();
+            assert!(matches!(err, MorseError::BadBody { .. }), "{path}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_raw_body_is_text_or_a_file_and_a_part_is_a_value_or_a_file() {
+        for lines in [
+            "    raw: { type: text/plain }\n",
+            "    raw: { type: text/plain, text: a, file: b.txt }\n",
+            "    multipart:\n      - { name: f }\n",
+            "    multipart:\n      - { name: f, value: a, file: b.txt }\n",
+            "    multipart:\n      - { value: a }\n",
+            "    multipart: { name: f }\n",
+            "    form: [a, b]\n",
+        ] {
+            assert!(
+                matches!(step_with(lines), Err(MorseError::BadBody { .. })),
+                "{lines}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fence_written_before_body_shapes_still_reads_its_json_body() {
+        let parsed = step_with("    body: { email: \"{{email}}\" }\n").unwrap();
+        assert!(matches!(
+            parsed.steps[0].body,
+            Some(dit_model::RequestBody::Json(_))
+        ));
+    }
 
     const SCENARIO: &str = r#"scenario: register
 spec: { id: auth, commit: a3f9c2d }
