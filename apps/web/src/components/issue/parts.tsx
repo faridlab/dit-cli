@@ -616,6 +616,7 @@ export function DescriptionSection({ issue }: { issue: IssueDto }) {
         key={issue.id}
         issueId={issue.id}
         body={issue.body}
+        attach={{ target: { issue: issue.short_ref }, baseDir: issue.dir }}
         onSaved={refresh}
         className="desc"
         editorClassName="md min-h-6 [&_.dit-rich]:px-0 [&_.dit-rich]:text-[13.5px] [&_.dit-rich]:leading-[1.6]"
@@ -858,7 +859,7 @@ export function IssueActivity({
                   </span>
                 </div>
                 <div className="cm">
-                  <Markdown html={entry.html} className="md" />
+                  <Markdown html={entry.html} className="md" baseDir={`${issue.dir}/comments`} />
                 </div>
                 <button
                   type="button"
@@ -928,6 +929,7 @@ export function IssueActivity({
                 : "Write a comment… type '/' for lists, to-dos, code"
             }
             flushRef={flushDraft}
+            attach={{ target: { comment: issue.short_ref }, baseDir: `${issue.dir}/comments` }}
             className="cmIn"
           />
         </Suspense>

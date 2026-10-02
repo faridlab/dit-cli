@@ -572,9 +572,15 @@ const WikiLink = Node.create({
   },
 });
 
-/** `![alt](src "title")` — alt text is inline content, like comrak has it. */
-const DitImage = Node.create({
+/** `![alt](src "title")` — alt text is inline content, like comrak has it.
+ *  `resolveSrc` turns the `src` as written into one the browser can load (a
+ *  relative attachment link → the attachments route, ADR 0026); the node's
+ *  attr — and so the bytes on disk — keep what was written. */
+const DitImage = Node.create<{ resolveSrc: (src: string) => string }>({
   name: "image",
+  addOptions() {
+    return { resolveSrc: (src: string) => src };
+  },
   group: "inline",
   inline: true,
   content: "inline*",
@@ -589,12 +595,13 @@ const DitImage = Node.create({
     return ["img", mergeAttributes(HTMLAttributes, { "data-dit-image": "" })];
   },
   addNodeView() {
+    const resolveSrc = this.options.resolveSrc;
     return ({ node }) => {
       const dom = document.createElement("span");
       dom.className = "dit-image";
       const img = document.createElement("img");
       const sync = () => {
-        img.src = node.attrs.src;
+        img.src = resolveSrc(node.attrs.src);
         img.alt = node.textContent;
         if (node.attrs.title) img.title = node.attrs.title;
       };
@@ -702,7 +709,7 @@ const DitShape = Extension.create({
   },
 });
 
-export function ditExtensions(options: { placeholder?: string } = {}) {
+export function ditExtensions(options: { placeholder?: string; resolveImageSrc?: (src: string) => string } = {}) {
   return [
     DitShape,
     StarterKit.configure({
@@ -732,7 +739,7 @@ export function ditExtensions(options: { placeholder?: string } = {}) {
     HtmlBlock,
     HtmlInline,
     WikiLink,
-    DitImage,
+    options.resolveImageSrc ? DitImage.configure({ resolveSrc: options.resolveImageSrc }) : DitImage,
     SlashMenu,
     Placeholder.configure({
       placeholder: ({ node }) =>

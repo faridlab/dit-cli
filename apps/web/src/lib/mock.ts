@@ -576,6 +576,7 @@ const ISSUES: IssueDto[] = Array.from({ length: 36 }, (_, index) => {
     body_html: body
       ? `<h2>Context</h2><p>Issue <strong>#${n}</strong> body with some <code>markdown</code>.</p><ul><li>one</li><li>two</li></ul>`
       : "",
+    dir: `issues/2026/08/mock-${n}`,
   };
 });
 
@@ -609,6 +610,7 @@ for (const [i, epic] of EPICS.entries()) {
     updated: new Date(Date.now() - 6 * 3600_000).toISOString(),
     body: "",
     body_html: "",
+    dir: `issues/2026/08/mock-${epic.id}`,
   });
 }
 
@@ -1025,6 +1027,7 @@ export function installMockApi(): void {
         updated: now,
         body: (body.body as string) ?? "",
         body_html: naiveRender((body.body as string) ?? ""),
+        dir: `issues/2026/08/mock-${n}`,
       };
       ISSUES.push(created);
       eventsFor(created);

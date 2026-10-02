@@ -9,6 +9,7 @@ import { usePutIssueBody } from "../lib/queries";
 import { EditorModeToggle, type EditorMode } from "./EditorModeToggle";
 import { Loading } from "./states";
 import { cn } from "../lib/cn";
+import type { AttachContext } from "../lib/attachments";
 
 const CodeMirrorEditor = lazy(() => import("../editor/CodeMirrorEditor"));
 const RichEditor = lazy(() => import("../editor/RichEditor"));
@@ -36,8 +37,11 @@ export function BodyEditor({
   editorClassName,
   header,
   onSaved,
+  attach,
 }: {
   issueId: string;
+  /** Where pasted pictures go and what their links resolve against. */
+  attach?: AttachContext;
   body: string;
   /** Class of the box the editor sits in (the design's `.desc`). */
   className?: string;
@@ -114,6 +118,7 @@ export function BodyEditor({
               onSave={saveNow}
               onFallbackToSource={() => setMode("source")}
               className={cn("desc-body", editorClassName)}
+              attach={attach}
             />
           ) : (
             <CodeMirrorEditor value={text} onChange={setText} onSave={saveNow} />

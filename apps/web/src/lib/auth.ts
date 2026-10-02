@@ -1,7 +1,8 @@
 // Session token handling. The token is the only thing standing between a
 // malicious webpage and this server, so it lives in sessionStorage (dies with
 // the tab), never in localStorage, and is never logged or put in a URL —
-// except the one WebSocket endpoint where the browser cannot set headers.
+// except where the browser cannot set headers: the WebSocket endpoint, and
+// an <img> loading an attachment (ADR 0026).
 
 const STORAGE_KEY = "dit-token";
 

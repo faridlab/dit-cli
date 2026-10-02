@@ -30,6 +30,7 @@ import type { DocBodyDto } from "../lib/types";
 import { ContextMenuFor, type MenuItem } from "../components/chrome";
 import { Empty, Loading } from "../components/states";
 import { cn } from "../lib/cn";
+import { dirOf } from "../lib/attachments";
 
 const CodeMirrorEditor = lazy(() => import("../editor/CodeMirrorEditor"));
 const RichEditor = lazy(() => import("../editor/RichEditor"));
@@ -395,6 +396,7 @@ export function DocsView({
                       // wasm failure) can still be edited as text.
                       onFallbackToSource={() => setDocSource(true)}
                       className=""
+                      attach={{ target: { doc: p }, baseDir: dirOf(p) }}
                     />
                   </div>
                 )}

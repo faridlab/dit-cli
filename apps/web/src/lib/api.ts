@@ -3,7 +3,9 @@
 // wire-format change is a one-file change.
 
 import { getToken } from "./auth";
+import { targetQuery, type AttachTarget } from "./attachments";
 import type {
+  AttachedDto,
   BoardDto,
   CodeGraphDto,
   CodeNeighbourhoodDto,
@@ -52,7 +54,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   const hasBody = init?.body !== undefined && init.body !== null;
-  if (hasBody) headers["Content-Type"] = "application/json";
+  // Every body here is JSON text except an attachment upload's bytes.
+  if (hasBody) headers["Content-Type"] = typeof init?.body === "string" ? "application/json" : "application/octet-stream";
 
   let res: Response;
   try {
@@ -254,6 +257,15 @@ export function getCodeNode(name: string): Promise<CodeNeighbourhoodDto> {
  *  segment separately keeps the slashes the wildcard route needs. */
 function docUrl(path: string): string {
   return `/api/docs/${path.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+/** Commit a picture beside its page or issue (ADR 0026); the answer holds
+ *  the relative link to write into the markdown. */
+export function uploadAttachment(target: AttachTarget, file: Blob, name: string): Promise<AttachedDto> {
+  return request<AttachedDto>(`/api/attachments?${targetQuery(target)}&name=${encodeURIComponent(name)}`, {
+    method: "POST",
+    body: file,
+  });
 }
 
 export function listDocs(): Promise<DocEntryDto[]> {

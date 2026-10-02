@@ -11,7 +11,11 @@
 import { useEffect, useRef, useState } from "react";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 
+import { toast } from "sonner";
+
 import { docToMarkdown, markdownToDoc, type PmDoc } from "./bridge";
+import { uploadAttachment } from "../lib/api";
+import { altFrom, imageFiles, resolveAttachmentSrc, type AttachContext } from "../lib/attachments";
 import { ditExtensions } from "./extensions";
 import { BubbleToolbar } from "./BubbleToolbar";
 import { BlockHandle } from "./BlockHandle";
@@ -23,6 +27,28 @@ import "./editor.css";
 // Typing bursts serialize once per pause, not once per keystroke.
 const SERIALIZE_DEBOUNCE_MS = 300;
 
+/** Commit each picture beside its page or issue (ADR 0026), then put its
+ *  relative link where it was pasted or dropped. */
+export async function uploadImagesInto(
+  editor: Editor,
+  attach: AttachContext,
+  files: File[],
+  at?: number,
+): Promise<void> {
+  for (const file of files) {
+    try {
+      const done = await uploadAttachment(attach.target, file, file.name || "image.png");
+      if (editor.isDestroyed) return;
+      const alt = altFrom(file.name);
+      const node = { type: "image", attrs: { src: done.link, title: "" }, content: alt ? [{ type: "text", text: alt }] : [] };
+      const chain = editor.chain().focus();
+      (at === undefined ? chain.insertContent(node) : chain.insertContentAt(at, node)).run();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "The picture could not be added");
+    }
+  }
+}
+
 export default function RichEditor({
   value,
   onChange,
@@ -32,6 +58,7 @@ export default function RichEditor({
   compact = false,
   placeholder,
   flushRef,
+  attach,
 }: {
   value: string;
   onChange: (markdown: string) => void;
@@ -49,7 +76,24 @@ export default function RichEditor({
    *  button outside the editor that must act on the last keystrokes, which
    *  the debounced `onChange` may not have delivered yet. */
   flushRef?: { current: (() => Promise<string | null>) | null };
+  /** Where pasted and dropped pictures are committed, and the folder their
+   *  relative links resolve against (ADR 0026). Without it (an issue not
+   *  created yet) pictures cannot be added. */
+  attach?: AttachContext;
 }) {
+  const attachRef = useRef(attach);
+  attachRef.current = attach;
+  const takePictures = (files: File[], at?: number): boolean => {
+    if (files.length === 0) return false;
+    const context = attachRef.current;
+    const target = editorRef.current;
+    if (!context || !target) {
+      toast("Pictures can be added once this is saved");
+      return true;
+    }
+    void uploadImagesInto(target, context, files, at);
+    return true;
+  };
   const [initialDoc, setInitialDoc] = useState<PmDoc | null>(null);
   const [bridgeError, setBridgeError] = useState<string | null>(null);
 
@@ -115,7 +159,10 @@ export default function RichEditor({
   const editor = useEditor(
     {
       content: initialDoc ?? { type: "doc", content: [] },
-      extensions: ditExtensions({ placeholder }),
+      extensions: ditExtensions({
+        placeholder,
+        resolveImageSrc: attach ? (src) => resolveAttachmentSrc(src, attach.baseDir) : undefined,
+      }),
       editorProps: {
         attributes: { class: "dit-rich", spellcheck: "true" },
         handleKeyDown: (_view, event) => {
@@ -135,9 +182,23 @@ export default function RichEditor({
           }
           return false;
         },
+        handleDrop: (view, event, _slice, moved) => {
+          if (moved) return false;
+          const files = imageFiles(event.dataTransfer?.files);
+          if (files.length === 0) return false;
+          event.preventDefault();
+          const at = view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos;
+          return takePictures(files, at);
+        },
         handlePaste: (_view, event) => {
           const data = event.clipboardData;
           if (!data) return false;
+          // A screenshot on the clipboard arrives as a file: commit it.
+          const pictures = imageFiles(data.files);
+          if (pictures.length > 0) {
+            event.preventDefault();
+            return takePictures(pictures);
+          }
           // Rich clipboard goes through ProseMirror's HTML parsing; plain
           // text is markdown here, so it goes through the Rust bridge.
           if (data.getData("text/html")) return false;
@@ -251,7 +312,7 @@ export default function RichEditor({
       {compact ? null : <BlockHandle editor={editor} />}
       <BubbleToolbar editor={editor} />
       <TableToolbar editor={editor} />
-      <InsertDialog editor={editor} />
+      <InsertDialog editor={editor} attach={attach} />
     </div>
   );
 }
