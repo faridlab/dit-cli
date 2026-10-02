@@ -13,10 +13,14 @@ const theme = EditorView.theme({
     backgroundColor: "transparent",
     color: "var(--color-ink)",
     fontSize: "13px",
-    height: "100%",
+    // Grows with the text like the rich editor does, up to most of the
+    // screen; past that the editor scrolls itself instead of the page.
+    minHeight: "12rem",
+    maxHeight: "70vh",
   },
   "&.cm-focused": { outline: "none" },
   ".cm-scroller": {
+    overflow: "auto",
     fontFamily: "var(--font-mono)",
     lineHeight: "1.55",
   },
@@ -90,7 +94,7 @@ export default function CodeMirrorEditor({
           onSaveRef.current();
         }
       }}
-      className="h-72 overflow-hidden rounded-md border border-ctl bg-app focus-within:border-accent"
+      className="overflow-hidden rounded-md border border-ctl bg-app focus-within:border-accent"
     />
   );
 }
