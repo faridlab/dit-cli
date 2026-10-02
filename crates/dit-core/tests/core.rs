@@ -5415,3 +5415,143 @@ fn a_scenario_is_renamed_or_deleted_unless_an_issue_names_it() {
         .unwrap_err();
     assert!(err.to_string().contains("register"), "{err}");
 }
+
+// ---- Environments edited from the page (ADR 0027) --------------------------
+
+fn local_file(root: &Path) -> String {
+    std::fs::read_to_string(root.join(dit_core::MORSE_LOCAL_PATH)).unwrap_or_default()
+}
+
+#[test]
+fn an_environment_is_created_and_edited_and_its_values_never_come_back() {
+    use dit_core::EnvEdit;
+    let tmp = tempfile::tempdir().unwrap();
+    let (dit, _) = morse_workspace(tmp.path());
+    std::fs::write(
+        tmp.path().join(dit_core::MORSE_LOCAL_PATH),
+        "allow_hosts:\n  - 127.0.0.1\n",
+    )
+    .unwrap();
+    let tricky = r#"p@ss "quoted" \back\slash ünï"#;
+    dit.morse_edit_env(
+        "staging",
+        EnvEdit::Upsert {
+            server: Some(Some("https://api.staging.acme.test".into())),
+            set: vec![
+                ("email".into(), Some("dev@acme.test".into())),
+                ("password".into(), Some(tricky.into())),
+            ],
+        },
+    )
+    .unwrap();
+    let envs = dit.morse_envs().unwrap();
+    let staging = envs.envs.iter().find(|e| e.name == "staging").unwrap();
+    assert_eq!(
+        staging.server.as_deref(),
+        Some("https://api.staging.acme.test")
+    );
+    assert_eq!(staging.vars, ["email", "password"], "names only");
+    // The value survives the file byte for byte.
+    let reread = dit_morse_local_value(tmp.path(), "staging", "password");
+    assert_eq!(reread.as_deref(), Some(tricky));
+    // The allowlist is exactly what it was: a page cannot trust a host.
+    assert!(local_file(tmp.path()).contains("allow_hosts:\n  - 127.0.0.1\n"));
+    assert!(!local_file(tmp.path()).contains("api.staging.acme.test\n  -"));
+
+    dit.morse_edit_env(
+        "staging",
+        EnvEdit::Upsert {
+            server: Some(None),
+            set: vec![("email".into(), None)],
+        },
+    )
+    .unwrap();
+    let staging = dit
+        .morse_envs()
+        .unwrap()
+        .envs
+        .into_iter()
+        .find(|e| e.name == "staging")
+        .unwrap();
+    assert_eq!(staging.server, None);
+    assert_eq!(staging.vars, ["password"]);
+
+    dit.morse_edit_env("staging", EnvEdit::Rename { to: "stage".into() })
+        .unwrap();
+    assert!(dit
+        .morse_envs()
+        .unwrap()
+        .envs
+        .iter()
+        .any(|e| e.name == "stage"));
+    dit.morse_edit_env("stage", EnvEdit::Delete).unwrap();
+    assert!(dit.morse_envs().unwrap().envs.is_empty());
+    assert!(
+        local_file(tmp.path()).contains("127.0.0.1"),
+        "deleting an env leaves the allowlist"
+    );
+}
+
+#[test]
+fn an_environment_edit_refuses_addresses_and_names_that_would_mislead() {
+    use dit_core::EnvEdit;
+    let tmp = tempfile::tempdir().unwrap();
+    let (dit, _) = morse_workspace(tmp.path());
+    for server in [
+        "ftp://x.test",
+        "https://user:pw@x.test",
+        "x.test",
+        "https://x.test/a b",
+        "javascript:alert(1)",
+    ] {
+        let err = dit
+            .morse_edit_env(
+                "e",
+                EnvEdit::Upsert {
+                    server: Some(Some(server.into())),
+                    set: vec![],
+                },
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, dit_core::DitError::Refuse(_)),
+            "{server}: {err}"
+        );
+    }
+    for (name, var) in [("two words", "a"), ("ok", "has space"), ("ok", "")] {
+        let err = dit
+            .morse_edit_env(
+                name,
+                EnvEdit::Upsert {
+                    server: None,
+                    set: vec![(var.into(), Some("v".into()))],
+                },
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, dit_core::DitError::Refuse(_)),
+            "{name}/{var}: {err}"
+        );
+    }
+    let err = dit
+        .morse_edit_env(
+            "ok",
+            EnvEdit::Upsert {
+                server: None,
+                set: vec![("a".into(), Some("line\nbreak".into()))],
+            },
+        )
+        .unwrap_err();
+    assert!(matches!(err, dit_core::DitError::Refuse(_)), "{err}");
+    assert!(matches!(
+        dit.morse_edit_env("missing", EnvEdit::Delete),
+        Err(dit_core::DitError::NotFound(_))
+    ));
+}
+
+/// What the local file holds for one variable — parsed the way a run reads
+/// it. Through the adapter on purpose: nothing on `Dit` returns a value.
+fn dit_morse_local_value(root: &Path, env: &str, var: &str) -> Option<String> {
+    let local = dit_morse::LocalConfig::parse(&local_file(root)).unwrap();
+    local.envs.get(env)?.vars.get(var).cloned()
+}

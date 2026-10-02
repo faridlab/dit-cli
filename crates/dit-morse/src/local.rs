@@ -29,6 +29,10 @@ pub enum LocalError {
     BadEnvs,
     #[error("`allow_hosts:` must be a list of host names")]
     BadAllowHosts,
+    #[error(
+        "{0} holds both a `'` and a `\"`, which this file has no way to write — change the value"
+    )]
+    Unwritable(String),
 }
 
 /// One environment's values.
@@ -95,7 +99,7 @@ impl LocalConfig {
     /// asking a person to hand-edit YAML. Only ever written to the local,
     /// gitignored path — never through a transaction, because this is not a
     /// DIT file and must not reach a commit.
-    pub fn write(&self) -> String {
+    pub fn write(&self) -> Result<String, LocalError> {
         let mut out = String::from(
             "# Morse environments and the hosts this machine allows (§20.6).\n\
              # Never commit this file — it holds values, and git does not forget.\n",
@@ -105,21 +109,30 @@ impl LocalConfig {
             for (name, env) in &self.envs {
                 out.push_str(&format!("  {name}:\n"));
                 if let Some(server) = &env.server {
-                    out.push_str(&format!("    server: {}\n", quoted(server)));
+                    out.push_str(&format!(
+                        "    server: {}\n",
+                        quoted(server, || format!("the server of `{name}`"))?
+                    ));
                 }
                 if !env.vars.is_empty() {
                     out.push_str("    vars:\n");
                     for (key, value) in &env.vars {
-                        out.push_str(&format!("      {key}: {}\n", quoted(value)));
+                        out.push_str(&format!(
+                            "      {key}: {}\n",
+                            quoted(value, || format!("`{key}` in `{name}`"))?
+                        ));
                     }
                 }
             }
         }
         out.push_str("allow_hosts:\n");
         for host in &self.allow_hosts {
-            out.push_str(&format!("  - {}\n", quoted(host)));
+            out.push_str(&format!(
+                "  - {}\n",
+                quoted(host, || format!("allowed host `{host}`"))?
+            ));
         }
-        out
+        Ok(out)
     }
 
     /// Add a host, keeping the list sorted and free of duplicates. Returns
@@ -172,14 +185,21 @@ impl LocalConfig {
     }
 }
 
-fn quoted(s: &str) -> String {
+/// A value as the reader reads it back: the reader strips one pair of
+/// quotes and processes no escapes, so the only faithful spellings are bare,
+/// `"…"` without a `"` inside, and `'…'` without a `'` inside.
+fn quoted(s: &str, what: impl FnOnce() -> String) -> Result<String, LocalError> {
     let safe = !s.is_empty()
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ':' | '@'));
     if safe {
-        s.to_owned()
+        Ok(s.to_owned())
+    } else if !s.contains('"') {
+        Ok(format!("\"{s}\""))
+    } else if !s.contains('\'') {
+        Ok(format!("'{s}'"))
     } else {
-        format!("{s:?}")
+        Err(LocalError::Unwritable(what()))
     }
 }
 
@@ -187,6 +207,40 @@ fn quoted(s: &str) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn values_with_quotes_and_backslashes_come_back_exactly() {
+        // The writer used Rust's debug escaping (\" and \\), which the reader
+        // does not undo: every `dit morse allow` rewrote such a password
+        // into a different one.
+        let mut local = LocalConfig::default();
+        let mut env = LocalEnv::default();
+        for (name, value) in [
+            ("double", r#"p@ss "quoted""#),
+            ("single", "it's"),
+            ("backslash", r"C:\temp\x"),
+            ("hash", "a # not a comment"),
+            ("unicode", "ünïcødé ✓"),
+            ("plain", "dev@acme.test"),
+        ] {
+            env.vars.insert(name.into(), value.into());
+        }
+        local.envs.insert("local".into(), env.clone());
+        local.allow("127.0.0.1");
+        let text = local.write().unwrap();
+        let back = LocalConfig::parse(&text).unwrap();
+        assert_eq!(back.envs["local"].vars, env.vars, "{text}");
+        assert_eq!(back.allow_hosts, ["127.0.0.1"]);
+    }
+
+    #[test]
+    fn a_value_with_both_kinds_of_quote_is_refused_not_rewritten() {
+        let mut local = LocalConfig::default();
+        let mut env = LocalEnv::default();
+        env.vars.insert("both".into(), r#"it's "both""#.into());
+        local.envs.insert("local".into(), env);
+        assert!(local.write().is_err());
+    }
 
     const FILE: &str = r#"envs:
   local:
@@ -249,7 +303,7 @@ allow_hosts:
         assert!(cfg.allow("staging.acme.com"));
         assert!(!cfg.allow("staging.acme.com"), "twice is not new");
         assert!(!cfg.allow("  "), "and neither is nothing");
-        let back = LocalConfig::parse(&cfg.write()).unwrap();
+        let back = LocalConfig::parse(&cfg.write().unwrap()).unwrap();
         assert_eq!(back, cfg, "what the command wrote is what it reads back");
         assert!(back.allows("staging.acme.com", None));
     }

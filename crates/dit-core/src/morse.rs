@@ -713,8 +713,93 @@ impl Dit {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        dit_store::atomic::write(&path, &local.write())?;
+        let text = local
+            .write()
+            .map_err(|e| DitError::Refuse(format!("{}: {e}", crate::MORSE_LOCAL_PATH)))?;
+        dit_store::atomic::write(&path, &text)?;
         Ok(true)
+    }
+
+    /// Change one of this machine's environments from the page (ADR 0027).
+    /// Values are write-only — nothing here returns one — and the allowlist
+    /// is carried over untouched: a page may point an environment at a new
+    /// server, but only `dit morse allow` makes that server reachable. The
+    /// file is local configuration, never committed, so it is written like
+    /// `morse_allow` writes it: atomically, with no transaction and no commit.
+    pub fn morse_edit_env(&self, name: &str, edit: EnvEdit) -> Result<(), DitError> {
+        check_env_name(name)?;
+        let path = self.repo.root().join(crate::MORSE_LOCAL_PATH);
+        // The file itself, never the CI overlay: a save must not write the
+        // pipeline's values into it.
+        let mut local = match std::fs::read_to_string(&path) {
+            Ok(text) => LocalConfig::parse(&text)
+                .map_err(|e| DitError::Refuse(format!("{}: {e}", crate::MORSE_LOCAL_PATH)))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => LocalConfig::default(),
+            Err(e) => return Err(e.into()),
+        };
+        let allowed_before = local.allow_hosts.clone();
+        match edit {
+            EnvEdit::Upsert { server, set } => {
+                let env = local.envs.entry(name.to_owned()).or_default();
+                if let Some(server) = server {
+                    env.server = match server
+                        .map(|s| s.trim().to_owned())
+                        .filter(|s| !s.is_empty())
+                    {
+                        Some(url) => {
+                            check_env_server(&url)?;
+                            Some(url)
+                        }
+                        None => None,
+                    };
+                }
+                for (var, value) in set {
+                    check_var_name(&var)?;
+                    match value {
+                        Some(value) => {
+                            if value.contains(['\n', '\r']) {
+                                return Err(DitError::Refuse(format!(
+                                    "the value of `{var}` holds a line break, which this file cannot keep"
+                                )));
+                            }
+                            env.vars.insert(var, value);
+                        }
+                        None => {
+                            env.vars.remove(&var);
+                        }
+                    }
+                }
+            }
+            EnvEdit::Rename { to } => {
+                check_env_name(&to)?;
+                if to != name && local.envs.contains_key(&to) {
+                    return Err(DitError::Refuse(format!(
+                        "an environment called `{to}` already exists"
+                    )));
+                }
+                let env = local
+                    .envs
+                    .remove(name)
+                    .ok_or_else(|| DitError::NotFound(format!("environment `{name}`")))?;
+                local.envs.insert(to, env);
+            }
+            EnvEdit::Delete => {
+                local
+                    .envs
+                    .remove(name)
+                    .ok_or_else(|| DitError::NotFound(format!("environment `{name}`")))?;
+            }
+        }
+        // Belt and braces: whatever happened above, trust did not change.
+        local.allow_hosts = allowed_before;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let text = local
+            .write()
+            .map_err(|e| DitError::Refuse(format!("{}: {e}", crate::MORSE_LOCAL_PATH)))?;
+        dit_store::atomic::write(&path, &text)?;
+        Ok(())
     }
 
     /// The hosts this machine allows, including anything the two CI
@@ -975,6 +1060,72 @@ pub enum ScenarioEdit {
         step: String,
         to: String,
     },
+}
+
+/// One change to an environment from the page (ADR 0027).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnvEdit {
+    /// Create the environment if needed. `server`: `None` keeps it,
+    /// `Some(None)` clears it. `set`: each value replaces, `None` removes.
+    Upsert {
+        server: Option<Option<String>>,
+        set: Vec<(String, Option<String>)>,
+    },
+    Rename {
+        to: String,
+    },
+    Delete,
+}
+
+fn check_env_name(name: &str) -> Result<(), DitError> {
+    let mut chars = name.chars();
+    let ok = chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if ok {
+        Ok(())
+    } else {
+        Err(DitError::Refuse(format!(
+            "`{name}` is not an environment name — a letter, then letters, digits, `-` or `_`"
+        )))
+    }
+}
+
+fn check_var_name(name: &str) -> Result<(), DitError> {
+    let mut chars = name.chars();
+    let ok = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+    if ok {
+        Ok(())
+    } else {
+        Err(DitError::Refuse(format!(
+            "`{name}` is not a variable name — like `token` or `api_key`"
+        )))
+    }
+}
+
+/// A server is an `http` or `https` URL with a host and no credentials in
+/// it — a password belongs in a variable, where it is never read back.
+fn check_env_server(url: &str) -> Result<(), DitError> {
+    let refuse = |why: &str| Err(DitError::Refuse(format!("`{url}` {why}")));
+    let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    else {
+        return refuse("is not an http or https address");
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.is_empty() {
+        return refuse("names no host");
+    }
+    if authority.contains('@') {
+        return refuse("carries credentials — put them in a variable instead");
+    }
+    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return refuse("holds a space or a control character");
+    }
+    Ok(())
 }
 
 /// A scenario name: a lowercase letter, then letters, digits, `_` or `-`.
