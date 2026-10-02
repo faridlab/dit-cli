@@ -75,6 +75,14 @@ pub fn app(state: Arc<AppState>) -> Router {
             post(morse_import).layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024)),
         )
         .route("/api/morse/import/env", post(morse_import_env))
+        // Registering a spec is a config commit (ADR 0027); the candidates
+        // are committed files that read as OpenAPI.
+        .route("/api/morse/specs", post(register_morse_spec))
+        .route("/api/morse/specs/candidates", get(get_spec_candidates))
+        .route(
+            "/api/morse/specs/{id}",
+            axum::routing::delete(unregister_morse_spec),
+        )
         .route("/api/morse/envs", get(get_morse_envs))
         // Environments are edited here and trusted nowhere here (ADR 0027):
         // values go in and never come back, and the allowlist is not a field.
@@ -758,6 +766,48 @@ async fn get_morse(
     let report = read_dit(&state, move |dit| {
         let report = dit.morse_report().map_err(ServerError::Dit)?;
         Ok(dto::morse_report_dto(&report))
+    })
+    .await?;
+    Ok(Json(report))
+}
+
+async fn get_spec_candidates(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<String>>, ApiError> {
+    let found = read_dit(&state, move |dit| {
+        dit.morse_spec_candidates().map_err(ServerError::Dit)
+    })
+    .await?;
+    Ok(Json(found))
+}
+
+async fn register_morse_spec(
+    State(state): State<Arc<AppState>>,
+    Json(input): Json<dto::MorseRegisterSpecDto>,
+) -> Result<Json<dto::MorseReportDto>, ApiError> {
+    let me = state.me();
+    let report = write_dit(&state, move |dit| {
+        dit.morse_register_spec(input.id.trim(), &input.path, input.repo.as_deref(), &me)
+            .map_err(ServerError::Dit)?;
+        Ok(dto::morse_report_dto(
+            &dit.morse_report().map_err(ServerError::Dit)?,
+        ))
+    })
+    .await?;
+    Ok(Json(report))
+}
+
+async fn unregister_morse_spec(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<dto::MorseReportDto>, ApiError> {
+    let me = state.me();
+    let report = write_dit(&state, move |dit| {
+        dit.morse_unregister_spec(&id, &me)
+            .map_err(ServerError::Dit)?;
+        Ok(dto::morse_report_dto(
+            &dit.morse_report().map_err(ServerError::Dit)?,
+        ))
     })
     .await?;
     Ok(Json(report))

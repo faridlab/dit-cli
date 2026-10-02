@@ -1523,3 +1523,51 @@ async fn an_import_previews_writes_and_never_echoes_a_credential() {
     assert!(!text.contains("env-secret-value"), "{text}");
     assert!(text.contains("\"staging\""), "{text}");
 }
+
+#[tokio::test]
+async fn a_spec_is_registered_from_a_candidate_and_unregistered_over_the_api() {
+    let (app, tmp) = morse_app();
+    std::fs::write(
+        tmp.path().join("api/second.json"),
+        r#"{"openapi":"3.0.3","info":{"title":"S","version":"1"},"paths":{"/x":{"get":{"operationId":"x"}}}}"#,
+    )
+    .unwrap();
+    for args in [vec!["add", "."], vec!["commit", "-qm", "second spec"]] {
+        std::process::Command::new("git")
+            .args(&args)
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+    }
+    let (status, found, _) = req(&app, "GET", "/api/morse/specs/candidates", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(found, json!(["api/second.json"]));
+    let (status, report, text) = req(
+        &app,
+        "POST",
+        "/api/morse/specs",
+        Some(json!({ "id": "second", "path": "api/second.json" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert!(report["specs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| s["id"] == "second"));
+    let (status, _, _) = req(
+        &app,
+        "POST",
+        "/api/morse/specs",
+        Some(json!({ "id": "web", "path": "https://x.test/openapi.json" })),
+    )
+    .await;
+    assert!(status.is_client_error());
+    let (status, report, _) = req(&app, "DELETE", "/api/morse/specs/second", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!report["specs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| s["id"] == "second"));
+}

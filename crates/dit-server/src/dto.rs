@@ -803,6 +803,18 @@ impl From<MorseScenarioEditDto> for dit_core::ScenarioEdit {
     }
 }
 
+/// Register an OpenAPI document as a spec (ADR 0027).
+#[derive(Debug, Clone, Deserialize, TS)]
+#[ts(export)]
+pub struct MorseRegisterSpecDto {
+    pub id: String,
+    pub path: String,
+    /// A `repos:` entry holding the file (Mode A); absent for this repo.
+    #[serde(default)]
+    #[ts(optional)]
+    pub repo: Option<String>,
+}
+
 /// What to import (ADR 0027): a `curl` command or a Postman collection.
 #[derive(Debug, Clone, Deserialize, TS)]
 #[ts(export)]
