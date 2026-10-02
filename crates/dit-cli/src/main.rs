@@ -390,6 +390,72 @@ enum MorseCmd {
     /// bring its own permission with it. With no host, lists what is
     /// allowed.
     Allow { host: Option<String> },
+    /// Convert a curl command, a Postman collection or a Postman environment
+    /// (ADR 0027). Addresses become a spec's server, credentials become
+    /// `{{variables}}`, and scripts are dropped — each listed as it goes.
+    Import {
+        #[command(subcommand)]
+        what: MorseImport,
+    },
+    /// Change this machine's environments in `.dit/morse.local.yaml`. The
+    /// allowlist is not one of them — that is `dit morse allow`.
+    Env {
+        #[command(subcommand)]
+        what: MorseEnv,
+    },
+}
+
+#[derive(Subcommand)]
+enum MorseImport {
+    /// One curl command, as a scenario of one step.
+    Curl {
+        /// The command, from `curl` on — quote it, or pass it after `--`.
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+        /// The document the scenario goes in.
+        #[arg(long)]
+        doc: String,
+        /// What the scenario is called.
+        #[arg(long, default_value = "imported")]
+        scenario: String,
+        /// The spec a host nothing names goes to.
+        #[arg(long)]
+        spec: Option<String>,
+        /// Show what would be written, and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// A Postman collection (v2.1): one scenario per folder.
+    Postman {
+        file: std::path::PathBuf,
+        #[arg(long)]
+        doc: String,
+        /// The spec `{{baseUrl}}` stands for.
+        #[arg(long)]
+        spec: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// A Postman environment, into this machine's local file only.
+    PostmanEnv { file: std::path::PathBuf },
+}
+
+#[derive(Subcommand)]
+enum MorseEnv {
+    /// Create or change an environment. A value given here lands in your
+    /// shell history — for secrets, prefer `dit ui` or editing the file.
+    Set {
+        name: String,
+        /// The server this environment sends to; `--server ''` clears it.
+        #[arg(long)]
+        server: Option<String>,
+        #[arg(long = "var", value_name = "NAME=VALUE")]
+        vars: Vec<String>,
+        #[arg(long = "unset", value_name = "NAME")]
+        unset: Vec<String>,
+    },
+    /// Remove an environment and its values.
+    Rm { name: String },
 }
 
 #[derive(Subcommand)]
@@ -1159,6 +1225,111 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
                     println!("{host} is now allowed on this machine, and nowhere else");
                 } else {
                     println!("{host} was already allowed");
+                }
+                Ok(ExitCode::SUCCESS)
+            }
+            MorseCmd::Import { what } => {
+                let mut dit = open()?;
+                let me = me_for(&dit, explicit.as_deref());
+                let (source, doc, spec, dry_run) = match what {
+                    MorseImport::Curl {
+                        command,
+                        doc,
+                        scenario,
+                        spec,
+                        dry_run,
+                    } => (
+                        // The shell already split the words; quote each one
+                        // back so the importer reads the same words, not the
+                        // pieces of a header that held a space.
+                        dit_core::ImportSource::Curl {
+                            command: shell_join(&command),
+                            scenario,
+                        },
+                        doc,
+                        spec,
+                        dry_run,
+                    ),
+                    MorseImport::Postman {
+                        file,
+                        doc,
+                        spec,
+                        dry_run,
+                    } => (
+                        dit_core::ImportSource::Postman {
+                            json: std::fs::read_to_string(&file)?,
+                        },
+                        doc,
+                        spec,
+                        dry_run,
+                    ),
+                    MorseImport::PostmanEnv { file } => {
+                        let imported = dit.morse_import_env(&std::fs::read_to_string(&file)?)?;
+                        println!(
+                            "environment {} is on this machine, in {}",
+                            imported.name,
+                            dit_core::MORSE_LOCAL_PATH
+                        );
+                        for note in imported.notes {
+                            println!("  note: {note}");
+                        }
+                        return Ok(ExitCode::SUCCESS);
+                    }
+                };
+                let preview = dit.morse_import_preview(&source, spec.as_deref())?;
+                for scenario in &preview.scenarios {
+                    println!(
+                        "{} ({}, {} step(s))",
+                        scenario.name,
+                        scenario.spec,
+                        scenario.steps.len()
+                    );
+                    for step in &scenario.steps {
+                        println!("  {}  {}", step.id, step.operation.qualified());
+                    }
+                    if !scenario.requires.is_empty() {
+                        println!("  requires {}", scenario.requires.join(", "));
+                    }
+                }
+                for note in &preview.notes {
+                    println!("note: {note}");
+                }
+                if dry_run {
+                    println!("\n--dry-run: nothing written");
+                    return Ok(ExitCode::SUCCESS);
+                }
+                let done = dit.morse_import(&source, spec.as_deref(), &doc, &me)?;
+                println!(
+                    "\nwrote {} into {doc} as one commit",
+                    done.scenarios.join(", ")
+                );
+                Ok(ExitCode::SUCCESS)
+            }
+            MorseCmd::Env { what } => {
+                let dit = open()?;
+                match what {
+                    MorseEnv::Set {
+                        name,
+                        server,
+                        vars,
+                        unset,
+                    } => {
+                        let mut set = Vec::new();
+                        for pair in vars {
+                            let (k, v) = pair.split_once('=').ok_or_else(|| {
+                                DitError::Refuse(format!("`{pair}` is not NAME=VALUE"))
+                            })?;
+                            set.push((k.trim().to_owned(), Some(v.to_owned())));
+                        }
+                        set.extend(unset.into_iter().map(|k| (k, None)));
+                        let server = server.map(|s| Some(s).filter(|s| !s.trim().is_empty()));
+                        dit.morse_edit_env(&name, dit_core::EnvEdit::Upsert { server, set })?;
+                        println!("environment {name} saved in {}", dit_core::MORSE_LOCAL_PATH);
+                    }
+                    MorseEnv::Rm { name } => {
+                        dit.morse_edit_env(&name, dit_core::EnvEdit::Delete)?;
+                        println!("environment {name} removed");
+                    }
                 }
                 Ok(ExitCode::SUCCESS)
             }
@@ -2366,5 +2537,50 @@ fn print_issue(hit: &IndexedIssue) {
         for line in i.body.lines() {
             println!("{line}");
         }
+    }
+}
+
+/// Words joined back into one command line that splits into the same words:
+/// each one single-quoted when it holds anything a shell would treat
+/// specially, a `'` inside written as `'\''`.
+fn shell_join(words: &[String]) -> String {
+    words
+        .iter()
+        .map(|w| {
+            let plain = !w.is_empty()
+                && w.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-_./:=@%+,".contains(c));
+            if plain {
+                w.clone()
+            } else {
+                format!("'{}'", w.replace('\'', "'\\''"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shell_join;
+
+    #[test]
+    fn words_the_shell_split_are_joined_back_into_the_same_words() {
+        // `dit morse import curl -- curl -H 'Authorization: Bearer x'`
+        // arrives as separate words; joined plainly, the header split in two.
+        let words: Vec<String> = [
+            "curl",
+            "-H",
+            "Authorization: Bearer x",
+            "it's",
+            "https://a.test/p?q=1",
+        ]
+        .iter()
+        .map(|w| (*w).to_owned())
+        .collect();
+        assert_eq!(
+            shell_join(&words),
+            "curl -H 'Authorization: Bearer x' 'it'\\''s' 'https://a.test/p?q=1'"
+        );
     }
 }
