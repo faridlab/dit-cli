@@ -170,6 +170,23 @@ export function useEditMorseEnv() {
   });
 }
 
+/** Import a curl line or a collection into a document (ADR 0027). */
+export function useMorseImport() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: api.morseImport,
+    onSuccess: () => void client.invalidateQueries({ queryKey: queryKeys.morse }),
+  });
+}
+
+export function useMorseImportEnv() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (text: string) => api.morseImportEnv(text),
+    onSuccess: (done) => client.setQueryData(queryKeys.morseEnvs, done.envs),
+  });
+}
+
 export function useMorseRuns() {
   return useQuery({ queryKey: queryKeys.morseRuns, queryFn: api.getMorseRuns, staleTime: STALE_TIME_MS });
 }

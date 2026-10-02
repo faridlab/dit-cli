@@ -1734,3 +1734,17 @@ button.mw-li:hover{background:var(--hover)}
 .mw-specsel{border:0;border-right:1px solid var(--edge);background:transparent;color:var(--muted);font:12px var(--mono);padding:0 6px;outline:0;cursor:pointer}
 .mw-pathin{flex:1;min-width:0;border:0;background:transparent;color:var(--ink);font:inherit;outline:0}
 .mw-pathin:focus{background:var(--active)}
+
+/* Import (ADR 0027). */
+.mw-newrow{gap:6px}
+.mw-import{width:min(760px,calc(100vw - 32px))}
+.mw-import .mw-code{min-height:120px;max-height:30vh}
+.mw-import-opts{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.mw-filepick{display:inline-flex;align-items:center;gap:6px;color:var(--accent);cursor:pointer;font-size:12px;margin-top:4px}
+.mw-filepick input{display:none}
+.mw-import-preview{border:1px solid var(--edge);border-radius:8px;padding:10px 12px;max-height:32vh;overflow:auto;display:flex;flex-direction:column;gap:10px}
+.mw-import-scn ul{margin:6px 0 0;padding-left:4px;list-style:none;display:flex;flex-direction:column;gap:3px}
+.mw-import-scn li{display:flex;align-items:center;gap:6px;font-size:12px}
+.mw-inline{color:var(--muted)}
+.mw-import-notes{display:flex;gap:8px;color:var(--muted);font-size:12px}
+.mw-import-notes ul{margin:0;padding-left:16px}

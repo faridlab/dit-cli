@@ -26,6 +26,10 @@ import type {
   MorseRunDto,
   MorseScenarioDetailDto,
   MorseScenarioEditDto,
+  MorseImportDto,
+  MorseImportPreviewDto,
+  MorseImportedDto,
+  MorseEnvImportedDto,
   MorseInlineRequestDto,
   MorseEnvSetDto,
   MorseSendDto,
@@ -209,6 +213,21 @@ export function renameMorseEnv(name: string, to: string): Promise<MorseEnvsDto> 
 
 export function deleteMorseEnv(name: string): Promise<MorseEnvsDto> {
   return request<MorseEnvsDto>(`/api/morse/envs/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
+/** What an import would write (ADR 0027) — nothing is written. */
+export function previewMorseImport(input: MorseImportDto): Promise<MorseImportPreviewDto> {
+  return request<MorseImportPreviewDto>("/api/morse/import/preview", { method: "POST", body: JSON.stringify(input) });
+}
+
+/** Import into a document, one commit. */
+export function morseImport(input: MorseImportDto): Promise<MorseImportedDto> {
+  return request<MorseImportedDto>("/api/morse/import", { method: "POST", body: JSON.stringify(input) });
+}
+
+/** A Postman environment into this machine's local file. */
+export function morseImportEnv(text: string): Promise<MorseEnvImportedDto> {
+  return request<MorseEnvImportedDto>("/api/morse/import/env", { method: "POST", body: JSON.stringify({ text }) });
 }
 
 /** Runs and sends kept in the index since its last rebuild, newest first. */

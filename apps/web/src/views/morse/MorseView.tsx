@@ -55,6 +55,7 @@ import { Explorer, type Seg } from "./Explorer";
 import { AllowTab, EnvTab, Overview, SpecTab } from "./InfoTabs";
 import { RequestTab, type RunState, type SaveState } from "./RequestTab";
 import { ConfirmDialog, SaveDialog, type SaveTarget } from "./SaveDialog";
+import { ImportDialog } from "./ImportDialog";
 import { ScenarioTab } from "./ScenarioTab";
 
 type Sub = Parameters<typeof RequestTab>[0]["sub"];
@@ -118,6 +119,7 @@ export function MorseView() {
   const [saveFor, setSaveFor] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [confirmClose, setConfirmClose] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
   const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   useEffect(() => keep("dit.morse.seg", seg), [seg]);
@@ -730,6 +732,7 @@ export function MorseView() {
         onPin={(ref) => openTab(ref, true)}
         onHistory={openFromHistory}
         onNewRequest={newRequest}
+        onImport={() => setImporting(true)}
         onNewEnv={(name) =>
           editEnv.mutate(
             { kind: "set", name, input: { vars: [] } },
@@ -850,6 +853,22 @@ export function MorseView() {
           pending={saveStep.isPending || createScenario.isPending}
           serverError={saveError}
           onSave={doSave}
+        />
+      ) : null}
+      {importing ? (
+        <ImportDialog
+          open
+          onOpenChange={setImporting}
+          report={report}
+          onImported={(names) => {
+            toast.success(`Imported ${names.join(", ")}`);
+            const first = names[0];
+            if (first) openTab({ kind: "scn", scenario: first }, true);
+          }}
+          onEnvImported={(name) => {
+            toast.success(`Environment ${name} is on this machine`);
+            openTab({ kind: "env", env: name }, true);
+          }}
         />
       ) : null}
       <ConfirmDialog

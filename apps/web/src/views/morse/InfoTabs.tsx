@@ -93,7 +93,10 @@ export function Overview({
       <div className="mw-list">
         <div className="mw-li">
           <b>Endpoints come from the spec</b>
-          <span className="sub">Nothing to import and nothing lost on re-import. When the spec changes, the catalogue is recomputed.</span>
+          <span className="sub">
+            When the spec changes, the catalogue is recomputed. A curl line or a Postman collection is converted once —
+            its addresses, credentials and scripts do not come along.
+          </span>
         </div>
         <div className="mw-li">
           <b>Tests are Expect and Capture</b>

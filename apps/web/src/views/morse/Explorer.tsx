@@ -4,7 +4,7 @@
 // here sends a request.
 
 import { useMemo, useState } from "react";
-import { ChevronRight, Clock, Folder, Globe, Layers, Link2, Plus, Search, ShieldCheck } from "lucide-react";
+import { ChevronRight, Clock, Download, Folder, Globe, Layers, Link2, Plus, Search, ShieldCheck } from "lucide-react";
 import { MenuButton } from "../../components/chrome";
 import { cn } from "../../lib/cn";
 import { runKey } from "../../lib/morse";
@@ -29,6 +29,7 @@ export function Explorer({
   onHistory,
   onNewEnv,
   onNewRequest,
+  onImport,
 }: {
   report: MorseReportDto;
   envs: MorseEnvsDto | undefined;
@@ -46,6 +47,8 @@ export function Explorer({
   onNewEnv: (name: string) => void;
   /** A request no spec describes: a method and a path (ADR 0027). */
   onNewRequest: () => void;
+  /** Bring in a curl line, a Postman collection or environment (ADR 0027). */
+  onImport: () => void;
 }) {
   const [filter, setFilter] = useState("");
   const q = filter.trim().toLowerCase();
@@ -355,6 +358,10 @@ export function Explorer({
         <button type="button" className="mw-btn sm" onClick={onNewRequest} title="A method and a path on one of your specs' servers">
           <Plus className="i" aria-hidden />
           New request
+        </button>
+        <button type="button" className="mw-btn sm" onClick={onImport} title="From a curl command, a Postman collection or environment">
+          <Download className="i" aria-hidden />
+          Import
         </button>
       </div>
       <div className="mw-tree">{body}</div>
