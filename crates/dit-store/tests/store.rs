@@ -791,3 +791,37 @@ fn removing_an_issue_stages_its_body_and_comments_and_prunes_the_folder() {
         Err(dit_store::StoreError::NotFound(_))
     ));
 }
+
+// ---- Attachments (ADR 0026) -------------------------------------------------
+
+const PICTURE: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\xff\xfe\x00 not utf-8";
+
+#[test]
+fn an_attachment_lands_byte_for_byte_under_the_content_root() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path());
+    let path =
+        dit_model::AttachmentPath::parse("docs/attachments/guide-shot-0a1b2c3d.png").unwrap();
+    let mut tx = store.transaction(now(), "farid");
+    tx.write_attachment(&path, PICTURE.to_vec());
+    let changeset = tx.finish().unwrap();
+    let file = tmp.path().join("docs/attachments/guide-shot-0a1b2c3d.png");
+    assert_eq!(fs::read(&file).unwrap(), PICTURE);
+    assert_eq!(changeset.paths().collect::<Vec<_>>(), vec![file.as_path()]);
+}
+
+#[test]
+fn a_rolled_back_transaction_restores_a_picture_byte_for_byte() {
+    // The rollback used to restore previous content through a lossy UTF-8
+    // conversion — harmless for markdown, corruption for an image.
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path());
+    let path = dit_model::AttachmentPath::parse("docs/attachments/a-0a1b2c3d.png").unwrap();
+    let file = tmp.path().join(path.as_str());
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    fs::write(&file, PICTURE).unwrap();
+    let mut tx = store.transaction(now(), "farid");
+    tx.write_attachment(&path, b"\x89PNG\r\n\x1a\nother".to_vec());
+    tx.finish().unwrap().rollback();
+    assert_eq!(fs::read(&file).unwrap(), PICTURE);
+}

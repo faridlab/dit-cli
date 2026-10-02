@@ -123,6 +123,13 @@ impl Layout {
         self.content_dir(path.root()).join(path.strip_root())
     }
 
+    /// An attachment's file (ADR 0026). The path is already sandboxed by
+    /// `AttachmentPath`, so its first segment is a content root.
+    pub fn attachment_file(&self, path: &dit_model::AttachmentPath) -> PathBuf {
+        let (root, rest) = path.as_str().split_once('/').unwrap_or((path.as_str(), ""));
+        self.content_dir(root).join(rest)
+    }
+
     pub fn notes_dir(&self) -> PathBuf {
         self.content_dir("notes")
     }

@@ -4912,3 +4912,164 @@ fn the_code_map_is_drawn_one_folder_at_a_time_and_one_file_in_focus() {
     let uses: Vec<&str> = page.uses.iter().map(|u| u.path.as_str()).collect();
     assert_eq!(uses, ["src/crud/hooks.ts", "src/pages/View.tsx"]);
 }
+
+// ---- Image attachments (ADR 0026) ------------------------------------------
+
+const SHOT: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\x00\x00\x00\x10 a screenshot \xff\xfe";
+
+#[test]
+fn an_image_attached_to_a_page_is_one_commit_beside_it_and_reads_back() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    write_doc(&mut dit, "docs/guide.md", "# Guide\n");
+    let mut tx = dit.transaction("farid").unwrap();
+    let attached = tx
+        .add_attachment(
+            &dit_core::AttachTarget::Doc("docs/guide.md".into()),
+            "Screen Shot 1.png",
+            SHOT,
+        )
+        .unwrap();
+    assert!(
+        attached
+            .path
+            .starts_with("docs/attachments/guide-screen-shot-1-")
+            && attached.path.ends_with(".png"),
+        "{}",
+        attached.path
+    );
+    assert_eq!(
+        attached.link,
+        attached.path.trim_start_matches("docs/"),
+        "relative to the page"
+    );
+    let sha = tx
+        .commit(&format!("dit attach: {}", attached.path))
+        .unwrap();
+    assert!(sha.is_some(), "one commit for the picture");
+    let repo = Repo::open(tmp.path()).unwrap();
+    assert!(
+        repo.show_text(&format!("HEAD:{}", attached.path)).is_some(),
+        "committed, not just written"
+    );
+    let read = dit.read_attachment(&attached.path).unwrap();
+    assert_eq!(read.bytes, SHOT);
+    assert_eq!(read.kind, dit_core::ImageKind::Png);
+}
+
+#[test]
+fn attaching_the_same_picture_twice_writes_nothing_the_second_time() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    let target = dit_core::AttachTarget::Doc("docs/guide.md".into());
+    let mut tx = dit.transaction("farid").unwrap();
+    let first = tx.add_attachment(&target, "shot.png", SHOT).unwrap();
+    tx.commit("dit attach").unwrap().unwrap();
+    let mut tx = dit.transaction("farid").unwrap();
+    let second = tx.add_attachment(&target, "shot.png", SHOT).unwrap();
+    assert_eq!(first, second);
+    assert_eq!(
+        tx.commit("dit attach").unwrap(),
+        None,
+        "nothing new to commit"
+    );
+}
+
+#[test]
+fn an_issue_keeps_its_pictures_in_its_own_folder_and_a_comment_links_up_to_them() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    let id = issue_with(&mut dit, "Login breaks", dit_core::FieldPatch::default());
+    let mut tx = dit.transaction("farid").unwrap();
+    let body = tx
+        .add_attachment(&dit_core::AttachTarget::Issue(id), "error.png", SHOT)
+        .unwrap();
+    let comment = tx
+        .add_attachment(&dit_core::AttachTarget::Comment(id), "error.png", SHOT)
+        .unwrap();
+    tx.commit("dit attach").unwrap().unwrap();
+    assert!(
+        body.path.starts_with("issues/") && body.path.contains("/attachments/error-"),
+        "{}",
+        body.path
+    );
+    let folder = body.path.split("/attachments/").next().unwrap();
+    assert!(
+        tmp.path().join(folder).join("README.md").is_file(),
+        "beside the issue's body"
+    );
+    assert_eq!(
+        body.link,
+        format!("attachments/{}", body.path.rsplit('/').next().unwrap())
+    );
+    assert_eq!(comment.path, body.path);
+    assert_eq!(
+        comment.link,
+        format!("../{}", body.link),
+        "a comment sits one folder down"
+    );
+}
+
+#[test]
+fn a_picture_over_the_cap_or_not_a_picture_is_refused_and_nothing_is_written() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    let target = dit_core::AttachTarget::Doc("docs/guide.md".into());
+    let mut big = SHOT.to_vec();
+    big.resize(dit_core::MAX_ATTACHMENT_BYTES + 1, 0);
+    for (bytes, name) in [
+        (big.as_slice(), "big.png"),
+        (b"<svg onload=alert(1)/>".as_slice(), "x.svg"),
+        (b"plain text".as_slice(), "x.png"),
+    ] {
+        let mut tx = dit.transaction("farid").unwrap();
+        let err = tx.add_attachment(&target, name, bytes).expect_err(name);
+        assert!(
+            matches!(err, dit_core::DitError::Attachment(_)),
+            "{name}: {err:?}"
+        );
+        assert_eq!(
+            tx.commit("dit attach").unwrap(),
+            None,
+            "{name}: nothing staged"
+        );
+    }
+    assert!(!tmp.path().join("docs/attachments").exists());
+}
+
+#[test]
+fn reading_an_attachment_stays_inside_the_sandbox_and_trusts_bytes_not_names() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dit = workspace(tmp.path());
+    for bad in [
+        "../secret.png",
+        "docs/guide.md",
+        "docs/x.png",
+        ".git/attachments/x.png",
+    ] {
+        assert!(
+            matches!(
+                dit.read_attachment(bad),
+                Err(dit_core::DitError::Attachment(_))
+            ),
+            "{bad}"
+        );
+    }
+    // A text file wearing an image's name is not served as one.
+    std::fs::create_dir_all(tmp.path().join("docs/attachments")).unwrap();
+    std::fs::write(
+        tmp.path().join("docs/attachments/fake-0a1b2c3d.png"),
+        "<script>alert(1)</script>",
+    )
+    .unwrap();
+    assert!(matches!(
+        dit.read_attachment("docs/attachments/fake-0a1b2c3d.png"),
+        Err(dit_core::DitError::Attachment(
+            dit_core::AttachmentError::NotAnImage
+        ))
+    ));
+    assert!(matches!(
+        dit.read_attachment("docs/attachments/missing-0a1b2c3d.png"),
+        Err(dit_core::DitError::NotFound(_))
+    ));
+}

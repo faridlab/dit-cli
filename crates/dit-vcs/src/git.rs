@@ -300,6 +300,40 @@ impl Repo {
             .ok()
     }
 
+    /// Git's blob id for `bytes`, without writing the object — a content
+    /// hash that needs no hashing crate and matches what `git add` will
+    /// record. Fed through stdin so binary content (NULs, non-UTF-8) is
+    /// hashed byte for byte.
+    pub fn blob_id(&self, bytes: &[u8]) -> Result<String, VcsError> {
+        use std::io::Write;
+        use std::process::Stdio;
+        let mut child = Command::new("git")
+            .args(["hash-object", "--stdin"])
+            .current_dir(&self.root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|_| VcsError::GitMissing)?;
+        let mut stdin = child.stdin.take().ok_or(VcsError::GitMissing)?;
+        // Written from its own thread so a large picture cannot fill the
+        // pipe while git waits for us to read its answer.
+        let input = bytes.to_vec();
+        let writer = std::thread::spawn(move || stdin.write_all(&input));
+        let out = child.wait_with_output().map_err(|_| VcsError::GitMissing)?;
+        let wrote = writer.join().map_err(|_| VcsError::Git {
+            args: "hash-object --stdin".to_owned(),
+            stderr: "the writer thread panicked".to_owned(),
+        })?;
+        if !out.status.success() || wrote.is_err() {
+            return Err(VcsError::Git {
+                args: "hash-object --stdin".to_owned(),
+                stderr: String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+            });
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    }
+
     /// The text of a blob addressed the way `git show` addresses them, e.g.
     /// `:1:.dit/schema/workflow.yaml` for stage 1 (the common ancestor) of a
     /// file during a merge.

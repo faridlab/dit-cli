@@ -14,6 +14,7 @@
 //! writer per workspace, guarded by a lock file.
 
 mod agent;
+mod attachment;
 pub mod board;
 pub mod code;
 pub use code::{
@@ -51,6 +52,7 @@ pub use error::DitError;
 // construct arguments out of these, so they must be reachable without a
 // second dependency — the facade is the only crate delivery names.
 pub use agent::{AgentDocOptions, AgentDocReport, AGENT_DOC_PATH, AGENT_TOPICS};
+pub use attachment::{AttachTarget, Attached, AttachmentBytes};
 pub use dit_index::{IndexedIssue, IndexedRelease, WorkspaceComment};
 pub use dit_model::{
     claim_liveness, validate_date, validate_release_version, ChangeSummary, ClaimLiveness,
@@ -59,6 +61,7 @@ pub use dit_model::{
     Readiness, Release, ReleasePatch, ReleaseStatus, StatusCategory, StoredFieldEvent, Workflow,
     WorkflowStatus, CONTENT_ROOTS, DOC_ROOTS, GENERATED_INDEX_MARKER,
 };
+pub use dit_model::{AttachmentError, ImageKind, MAX_ATTACHMENT_BYTES};
 pub use dit_model::{
     Capture, Expect, ExpectRule, JsonCheck, MorseScenario, MorseStep, MorseValue, OperationRef,
     Selector, SpecField, SpecOperation, SpecParam, SpecServer, StepTarget,

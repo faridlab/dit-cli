@@ -13,6 +13,7 @@
 //! generation lives in `dit-store`. The same reasoning keeps `now()` out of
 //! this crate: adapters inject the clock.
 
+mod attachment;
 mod code;
 mod comment;
 mod config;
@@ -30,6 +31,10 @@ mod status;
 mod time;
 mod workflow;
 
+pub use attachment::{
+    attachment_file_name, check_attachment_bytes, doc_attachment_dir, AttachmentError,
+    AttachmentPath, ImageKind, MAX_ATTACHMENT_BYTES,
+};
 pub use code::{
     api_fit, api_segments, glob_match, path_shaped, ApiFit, ApiSegment, CodeCall, CodeConst,
     CodeImport, CodeLang, CodeMap, CodeRelation, CodeString, CodeSymbol, FileFacts, MapEntry,

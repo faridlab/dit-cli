@@ -264,6 +264,8 @@ struct Staged {
 #[derive(Debug)]
 enum StagedWrite {
     Write(String),
+    /// Content that is not text: an attachment (ADR 0026).
+    Bytes(Vec<u8>),
     Remove,
 }
 
@@ -295,11 +297,8 @@ impl Changeset {
         for a in self.applied.drain(..).rev() {
             match a.previous {
                 Some(bytes) => {
-                    // Lossy restore is still better than leaving the new
-                    // bytes in place; the odds of non-UTF-8 previous content
-                    // are nil for files DIT itself wrote.
-                    let text = String::from_utf8_lossy(&bytes).into_owned();
-                    let _ = atomic::write(&a.path, &text);
+                    // Byte for byte: the previous content may be a picture.
+                    let _ = atomic::write_bytes(&a.path, &bytes);
                 }
                 None => {
                     let _ = atomic::remove_file(&a.path);
@@ -538,6 +537,14 @@ impl Transaction {
         Ok(())
     }
 
+    /// Stage an attachment's bytes (ADR 0026). The path is a validated
+    /// `AttachmentPath` and the bytes were checked by the facade; this only
+    /// puts them where the layout says, through the same atomic write.
+    pub fn write_attachment(&mut self, path: &dit_model::AttachmentPath, bytes: Vec<u8>) {
+        let file = self.store.layout.attachment_file(path);
+        self.push_staged(file, StagedWrite::Bytes(bytes));
+    }
+
     /// Stage a page removal. The page must exist — on disk or as a write
     /// staged earlier in this transaction — so a delete-then-commit of
     /// nothing is an error, not a silent no-op.
@@ -597,6 +604,7 @@ impl Transaction {
             let previous = fs::read(&s.path).ok();
             let outcome = match &s.write {
                 StagedWrite::Write(contents) => atomic::write(&s.path, contents).map(|_| ()),
+                StagedWrite::Bytes(contents) => atomic::write_bytes(&s.path, contents),
                 StagedWrite::Remove => match &previous {
                     // Removing a file that is already gone leaves the
                     // transaction's end state true — record it as applied so

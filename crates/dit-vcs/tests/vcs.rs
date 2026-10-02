@@ -500,3 +500,33 @@ fn blobs_are_read_in_one_batch_in_the_order_asked() {
     );
     assert!(repo.read_blobs(&[]).unwrap().is_empty());
 }
+
+#[test]
+fn a_blob_id_is_git_s_own_hash_of_the_bytes_even_when_they_are_not_text() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = hermetic_repo(tmp.path());
+    // The well-known id of "hello\n" — the same one `git hash-object` prints.
+    assert_eq!(
+        repo.blob_id(b"hello\n").unwrap(),
+        "ce013625030ba8dba906f756967f9e9ca394464a"
+    );
+    // A picture is not UTF-8 and holds NULs; the id must be of every byte.
+    let bytes: &[u8] = b"\x89PNG\r\n\x1a\n\0\xff\xfe binary";
+    fs::write(tmp.path().join("x.png"), bytes).unwrap();
+    let on_disk = std::process::Command::new("git")
+        .args(["hash-object", "x.png"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert_eq!(
+        repo.blob_id(bytes).unwrap(),
+        String::from_utf8(on_disk.stdout).unwrap().trim()
+    );
+    // Hashing writes nothing into the object store.
+    let stored = std::process::Command::new("git")
+        .args(["cat-file", "-e", &repo.blob_id(bytes).unwrap()])
+        .current_dir(tmp.path())
+        .status()
+        .unwrap();
+    assert!(!stored.success(), "blob_id must not store the object");
+}

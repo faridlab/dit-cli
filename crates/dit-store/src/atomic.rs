@@ -17,13 +17,19 @@ use std::path::{Path, PathBuf};
 /// The temporary file is written next to the target (same filesystem, so the
 /// rename stays atomic), flushed, then renamed over the target.
 pub fn write(path: &Path, contents: &str) -> io::Result<()> {
+    write_bytes(path, contents.as_bytes())
+}
+
+/// `write` for content that is not text — an attachment, or a rollback
+/// restoring whatever bytes were there before.
+pub fn write_bytes(path: &Path, contents: &[u8]) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let tmp = sibling_temp_path(path);
     {
         let mut f = File::create(&tmp)?;
-        f.write_all(contents.as_bytes())?;
+        f.write_all(contents)?;
         f.sync_all()?;
     }
     fs::rename(&tmp, path)

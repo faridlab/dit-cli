@@ -60,6 +60,11 @@ pub enum DitError {
     /// delivery maps it to a 400 the editor can show inline.
     #[error(transparent)]
     DocPath(#[from] dit_model::DocPathError),
+    /// An attachment that is not a picture DIT stores, is over the 1 MB
+    /// cap, or names a path outside an `attachments/` folder (ADR 0026).
+    /// The input is wrong, not the workspace — delivery answers 400.
+    #[error(transparent)]
+    Attachment(dit_model::AttachmentError),
     #[error(transparent)]
     Schema(#[from] SchemaError),
     #[error(transparent)]
