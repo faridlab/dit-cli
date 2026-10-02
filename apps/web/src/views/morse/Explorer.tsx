@@ -4,7 +4,8 @@
 // here sends a request.
 
 import { useMemo, useState } from "react";
-import { ChevronRight, Clock, Folder, Globe, Layers, Link2, Search, ShieldCheck } from "lucide-react";
+import { ChevronRight, Clock, Folder, Globe, Layers, Link2, Plus, Search, ShieldCheck } from "lucide-react";
+import { MenuButton } from "../../components/chrome";
 import { cn } from "../../lib/cn";
 import { runKey } from "../../lib/morse";
 import type { MorseEnvsDto, MorseReportDto, MorseRunDto } from "../../lib/types";
@@ -26,6 +27,7 @@ export function Explorer({
   onOpen,
   onPin,
   onHistory,
+  onNewEnv,
 }: {
   report: MorseReportDto;
   envs: MorseEnvsDto | undefined;
@@ -39,6 +41,8 @@ export function Explorer({
   onPin: (ref: TabRef) => void;
   /** Open what a kept run was of, with that run shown in the tab. */
   onHistory: (ref: TabRef, run: MorseRunDto) => void;
+  /** Create an environment on this machine (ADR 0027). */
+  onNewEnv: (name: string) => void;
 }) {
   const [filter, setFilter] = useState("");
   const q = filter.trim().toLowerCase();
@@ -215,7 +219,25 @@ export function Explorer({
     const list = (envs?.envs ?? []).filter((e) => !q || e.name.toLowerCase().includes(q));
     body = (
       <>
-        <div className="mw-sec">On this machine</div>
+        <div className="mw-sec">
+          On this machine
+          <span className="mw-sp" />
+          <MenuButton
+            align="end"
+            items={[
+              {
+                kind: "input",
+                placeholder: "Name, like staging",
+                button: "Create",
+                run: (name) => name && onNewEnv(name),
+              },
+            ]}
+          >
+            <button type="button" className="mw-secbtn" aria-label="New environment" title="New environment">
+              <Plus className="i" aria-hidden />
+            </button>
+          </MenuButton>
+        </div>
         {list.map((e) => (
           <button
             key={e.name}
@@ -239,8 +261,8 @@ export function Explorer({
         </button>
         {list.length === 0 && !q ? (
           <div className="mw-note">
-            No environments yet. They live in <code>.dit/morse.local.yaml</code>, which is gitignored, under{" "}
-            <code>envs:</code>.
+            No environments yet — press <b>+</b> to make one. They live in <code>.dit/morse.local.yaml</code>, which
+            is gitignored.
           </div>
         ) : null}
         <div className="mw-note">

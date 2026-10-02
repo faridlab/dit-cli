@@ -16,6 +16,7 @@ import { POOL_LIMIT } from "./lists";
 import type {
   BoardDto,
   FieldPatch,
+  MorseEnvSetDto,
   MorseScenarioEditDto,
   MorseStepDto,
   NewIssueInput,
@@ -143,6 +144,29 @@ export function useSendMorse() {
 
 export function useMorseEnvs() {
   return useQuery({ queryKey: queryKeys.morseEnvs, queryFn: api.getMorseEnvs, staleTime: STALE_TIME_MS });
+}
+
+/** Change this machine's environments (ADR 0027). Each answers with the
+ *  environments as names, which replaces the cached list. */
+export function useEditMorseEnv() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (
+      change:
+        | { kind: "set"; name: string; input: MorseEnvSetDto }
+        | { kind: "rename"; name: string; to: string }
+        | { kind: "delete"; name: string },
+    ) =>
+      change.kind === "set"
+        ? api.setMorseEnv(change.name, change.input)
+        : change.kind === "rename"
+          ? api.renameMorseEnv(change.name, change.to)
+          : api.deleteMorseEnv(change.name),
+    onSuccess: (envs) => {
+      client.setQueryData(queryKeys.morseEnvs, envs);
+      void client.invalidateQueries({ queryKey: queryKeys.morse });
+    },
+  });
 }
 
 export function useMorseRuns() {

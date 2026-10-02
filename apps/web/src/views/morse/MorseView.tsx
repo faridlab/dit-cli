@@ -32,6 +32,7 @@ import {
 import {
   useCreateMorseScenario,
   useDeleteMorseScenario,
+  useEditMorseEnv,
   useEditMorseScenario,
   useMorse,
   useMorseEnvs,
@@ -86,6 +87,7 @@ export function MorseView() {
   const createScenario = useCreateMorseScenario();
   const editScenario = useEditMorseScenario();
   const deleteScenario = useDeleteMorseScenario();
+  const editEnv = useEditMorseEnv();
 
   const [seg, setSeg] = useState<Seg>(() => load("dit.morse.seg", "specs"));
   const [open, setOpen] = useState<Set<string>>(() => new Set(load<string[]>("dit.morse.open", [])));
@@ -500,6 +502,36 @@ export function MorseView() {
               setEnvName(r.env);
               toast.success(`Requests now use the ${r.env} environment`);
             }}
+            onSet={(input) =>
+              editEnv.mutate(
+                { kind: "set", name: r.env, input },
+                { onSuccess: () => toast.success("Saved on this machine"), onError: (error) => toast.error(message(error)) },
+              )
+            }
+            onRename={(to) =>
+              editEnv.mutate(
+                { kind: "rename", name: r.env, to },
+                {
+                  onSuccess: () => {
+                    rekey(key, { kind: "env", env: to });
+                    if (envName === r.env) setEnvName(to);
+                  },
+                  onError: (error) => toast.error(message(error)),
+                },
+              )
+            }
+            onDelete={() =>
+              editEnv.mutate(
+                { kind: "delete", name: r.env },
+                {
+                  onSuccess: () => {
+                    closeTab(key, true);
+                    if (envName === r.env) setEnvName(null);
+                  },
+                  onError: (error) => toast.error(message(error)),
+                },
+              )
+            }
           />
         );
       case "allow":
@@ -606,6 +638,15 @@ export function MorseView() {
         onOpen={(ref) => openTab(ref)}
         onPin={(ref) => openTab(ref, true)}
         onHistory={openFromHistory}
+        onNewEnv={(name) =>
+          editEnv.mutate(
+            { kind: "set", name, input: { vars: [] } },
+            {
+              onSuccess: () => openTab({ kind: "env", env: name }, true),
+              onError: (error) => toast.error(message(error)),
+            },
+          )
+        }
       />
       <section className="mw-main">
         <div className="mw-tabs">

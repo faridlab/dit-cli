@@ -2,10 +2,12 @@
 // environment, and the allowlist. None of them can change anything on this
 // machine — a host becomes trusted, and a value gets set, in a terminal.
 
-import { AlertTriangle, CircleCheck, Clock, Lock, ShieldAlert, ShieldCheck } from "lucide-react";
+import { useEffect, useState } from "react";
+import { AlertTriangle, CircleCheck, Clock, Lock, MoreHorizontal, Plus, ShieldAlert, ShieldCheck, X } from "lucide-react";
+import { MenuButton, type MenuItem } from "../../components/chrome";
 import { cn } from "../../lib/cn";
 import { hostOf, relativeOnly } from "../../lib/morse";
-import type { MorseEnvsDto, MorseReportDto } from "../../lib/types";
+import type { MorseEnvSetDto, MorseEnvsDto, MorseReportDto } from "../../lib/types";
 import { Banner, Coded, CopyCmd, HealthPill, type TabRef } from "./common";
 import type { Seg } from "./Explorer";
 
@@ -230,19 +232,44 @@ export function EnvTab({
   name,
   active,
   onUse,
+  onSet,
+  onRename,
+  onDelete,
 }: {
   envs: MorseEnvsDto | undefined;
   report: MorseReportDto;
   name: string;
   active: boolean;
   onUse: () => void;
+  /** Values go one way (ADR 0027): set or clear, never read back. */
+  onSet: (input: MorseEnvSetDto) => void;
+  onRename: (to: string) => void;
+  onDelete: () => void;
 }) {
   const e = envs?.envs.find((x) => x.name === name);
+  const [server, setServer] = useState(e?.server ?? "");
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [newName, setNewName] = useState("");
+  const [newValue, setNewValue] = useState("");
+  // Follow the file when it changes underneath (another tab, the terminal).
+  useEffect(() => setServer(e?.server ?? ""), [e?.server]);
   if (!e) return <div className="mw-page"><p>This environment is no longer in <code>.dit/morse.local.yaml</code>.</p></div>;
   const host = e.server ? hostOf(e.server) : null;
   const allowed = allows(envs?.allow_hosts ?? [], e.server);
   const needed = [...new Set(report.scenarios.flatMap((s) => s.requires))];
   const names = [...new Set([...e.vars, ...needed])];
+  const serverChanged = server.trim() !== (e.server ?? "");
+  const setValue = (variable: string) => {
+    const value = values[variable];
+    if (!value) return;
+    onSet({ vars: [{ name: variable, value }] });
+    setValues(({ [variable]: _sent, ...rest }) => rest);
+  };
+  const menu: MenuItem[] = [
+    { kind: "input", placeholder: "New name", value: e.name, button: "Rename", run: (to) => to && to !== e.name && onRename(to) },
+    { kind: "sep" },
+    { label: "Delete environment", danger: true, confirm: "Click again — its values are removed from this machine", run: onDelete },
+  ];
   return (
     <div className="mw-page">
       <div className="mw-hrow">
@@ -257,35 +284,54 @@ export function EnvTab({
             Use this environment
           </button>
         )}
+        <span className="mw-sp" />
+        <MenuButton items={menu} align="end">
+          <button type="button" className="mw-btn" aria-label="Rename or delete this environment">
+            <MoreHorizontal className="i" aria-hidden />
+          </button>
+        </MenuButton>
       </div>
       <p>
-        Read from <code>.dit/morse.local.yaml</code> on this machine. The file is gitignored, and <code>dit doctor</code>{" "}
-        reports an error if it is ever tracked.
+        Kept in <code>.dit/morse.local.yaml</code> on this machine — gitignored, and <code>dit doctor</code> reports an
+        error if it is ever tracked. Values you set here are written there and never shown again, not even to this page.
       </p>
       <h2>Server</h2>
-      <div className="mw-list">
-        <div className="mw-li">
-          <span className="mw-mono">{e.server ?? "— the spec's own servers:"}</span>
-          <span className="mw-sp" />
-          {e.server ? (
-            allowed ? (
-              <span className="mw-pill fresh">
-                <ShieldCheck className="i" aria-hidden />
-                allowed
-              </span>
-            ) : (
-              <span className="mw-pill broken">
-                <ShieldAlert className="i" aria-hidden />
-                not allowed
-              </span>
-            )
-          ) : null}
-        </div>
-      </div>
+      <form
+        className="mw-envserver"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSet({ server: server.trim() ? server.trim() : null, vars: [] });
+        }}
+      >
+        <input
+          aria-label="Server address"
+          value={server}
+          spellCheck={false}
+          placeholder="Empty: the spec's own servers: — or https://api.staging.example.com"
+          onChange={(event) => setServer(event.target.value)}
+        />
+        <button type="submit" className="mw-btn pri" disabled={!serverChanged}>
+          Save
+        </button>
+        {e.server ? (
+          allowed ? (
+            <span className="mw-pill fresh">
+              <ShieldCheck className="i" aria-hidden />
+              allowed
+            </span>
+          ) : (
+            <span className="mw-pill broken">
+              <ShieldAlert className="i" aria-hidden />
+              not allowed
+            </span>
+          )
+        ) : null}
+      </form>
       {e.server && !allowed && host ? (
         <Banner tone="crit" icon={<ShieldAlert className="i" aria-hidden />}>
           <b>{host}</b> is not on this machine's allowlist, so Send and Run are refused for this environment. The page
-          can't add a host — run this in your terminal if you trust it:
+          can point an environment anywhere, but only a person at this machine can trust a host — run this in your
+          terminal if you do:
           <br />
           <CopyCmd command={`dit morse allow ${host}`} />
         </Banner>
@@ -294,9 +340,11 @@ export function EnvTab({
       <table className="mw-kv">
         <thead>
           <tr>
-            <th>Name</th>
-            <th>State</th>
-            <th>Required by</th>
+            <th style={{ width: "22%" }}>Name</th>
+            <th style={{ width: "20%" }}>State</th>
+            <th>New value</th>
+            <th style={{ width: "18%" }}>Required by</th>
+            <th className="rm" />
           </tr>
         </thead>
         <tbody>
@@ -309,25 +357,78 @@ export function EnvTab({
                 <td className="note">
                   {set ? (
                     <>
-                      <Lock className="i" aria-hidden style={{ width: 12, height: 12, verticalAlign: -2 }} /> set · value
-                      stays on this machine
+                      <Lock className="i" aria-hidden style={{ width: 12, height: 12, verticalAlign: -2 }} /> set
                     </>
                   ) : (
                     <span style={{ color: "var(--crit)" }}>missing</span>
                   )}
                 </td>
+                <td>
+                  <form
+                    className="mw-envvalue"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      setValue(v);
+                    }}
+                  >
+                    <input
+                      type="password"
+                      autoComplete="off"
+                      aria-label={`New value for ${v}`}
+                      placeholder={set ? "replace the value" : "set a value"}
+                      value={values[v] ?? ""}
+                      onChange={(event) => setValues((all) => ({ ...all, [v]: event.target.value }))}
+                    />
+                    {values[v] ? (
+                      <button type="submit" className="mw-btn sm pri">
+                        Set
+                      </button>
+                    ) : null}
+                  </form>
+                </td>
                 <td className="note">{by.join(", ") || "—"}</td>
+                <td className="rm">
+                  {set ? (
+                    <button
+                      type="button"
+                      className="mw-ib"
+                      title="Remove the value"
+                      aria-label={`Remove the value of ${v}`}
+                      onClick={() => onSet({ vars: [{ name: v, value: null }] })}
+                    >
+                      <X className="i" aria-hidden />
+                    </button>
+                  ) : null}
+                </td>
               </tr>
             );
           })}
+          <tr>
+            <td colSpan={5}>
+              <form
+                className="mw-envadd"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  if (!newName.trim() || !newValue) return;
+                  onSet({ vars: [{ name: newName.trim(), value: newValue }] });
+                  setNewName("");
+                  setNewValue("");
+                }}
+              >
+                <input aria-label="New variable name" placeholder="name, like api_key" value={newName} spellCheck={false} onChange={(event) => setNewName(event.target.value)} />
+                <input type="password" autoComplete="off" aria-label="Its value" placeholder="value" value={newValue} onChange={(event) => setNewValue(event.target.value)} />
+                <button type="submit" className="mw-btn sm" disabled={!newName.trim() || !newValue}>
+                  <Plus className="i" aria-hidden />
+                  Add variable
+                </button>
+              </form>
+            </td>
+          </tr>
         </tbody>
       </table>
       <p className="mw-hint">
-        Values never reach this page. To set one, edit <code>.dit/morse.local.yaml</code> under{" "}
-        <code>
-          envs: {e.name}: vars:
-        </code>
-        , or pass <code>DIT_MORSE_VARS</code> in CI.
+        A scenario names variables as <code>{"{{name}}"}</code>; the value is filled in here, on this machine, when it
+        runs. In CI, pass <code>DIT_MORSE_VARS</code> instead.
       </p>
     </div>
   );

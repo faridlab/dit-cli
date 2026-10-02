@@ -116,6 +116,7 @@ vi.mock("../../lib/queries", () => ({
   useSaveMorseStep: () => mutation(() => undefined, DETAIL),
   useCreateMorseScenario: () => mutation(() => undefined, DETAIL),
   useEditMorseScenario: () => mutation(() => undefined, DETAIL),
+  useEditMorseEnv: () => mutation(() => undefined, undefined),
   useDeleteMorseScenario: () => mutation(() => undefined, undefined),
 }));
 

@@ -26,6 +26,7 @@ import type {
   MorseRunDto,
   MorseScenarioDetailDto,
   MorseScenarioEditDto,
+  MorseEnvSetDto,
   MorseSendDto,
   MorseStepDto,
   NewIssueInput,
@@ -187,6 +188,26 @@ export function sendMorse(input: MorseSendDto): Promise<MorseRunDto> {
  *  values never reach the page. */
 export function getMorseEnvs(): Promise<MorseEnvsDto> {
   return request<MorseEnvsDto>("/api/morse/envs");
+}
+
+/** Set an environment's server and values (ADR 0027). Values go one way:
+ *  the answer lists names, never a value. */
+export function setMorseEnv(name: string, input: MorseEnvSetDto): Promise<MorseEnvsDto> {
+  return request<MorseEnvsDto>(`/api/morse/envs/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+export function renameMorseEnv(name: string, to: string): Promise<MorseEnvsDto> {
+  return request<MorseEnvsDto>(`/api/morse/envs/${encodeURIComponent(name)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ op: "rename", to }),
+  });
+}
+
+export function deleteMorseEnv(name: string): Promise<MorseEnvsDto> {
+  return request<MorseEnvsDto>(`/api/morse/envs/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
 /** Runs and sends kept in the index since its last rebuild, newest first. */
