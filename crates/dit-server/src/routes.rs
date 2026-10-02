@@ -78,6 +78,16 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/api/flow", get(list_flows))
         .route("/api/flow/{name}", get(get_flow))
         .route("/api/settings", get(get_settings).put(put_settings))
+        // Pictures beside the page or issue that shows them (ADR 0026). An
+        // upload is one commit; the body limit sits just above the 1 MB
+        // cap so an oversize upload gets the facade's own sentence.
+        .route(
+            "/api/attachments",
+            post(post_attachment).layer(axum::extract::DefaultBodyLimit::max(
+                dit_core::MAX_ATTACHMENT_BYTES + 64 * 1024,
+            )),
+        )
+        .route("/api/attachments/{*path}", get(get_attachment))
         .route("/api/docs", get(list_docs))
         .route("/api/docs/move", post(move_doc))
         .route(
@@ -181,6 +191,18 @@ impl From<ServerError> for ApiError {
             // traversal shape, not `.md`) is a malformed request the
             // editor can show inline — same class as a DQL parse error.
             ServerError::Dit(err @ DitError::DocPath(_)) => ApiError {
+                status: StatusCode::BAD_REQUEST,
+                message: err.to_string(),
+            },
+            // A picture over the cap is too large, not malformed.
+            ServerError::Dit(
+                err @ DitError::Attachment(dit_core::AttachmentError::TooLarge(_)),
+            ) => ApiError {
+                status: StatusCode::PAYLOAD_TOO_LARGE,
+                message: err.to_string(),
+            },
+            // Not an image, or a path outside an `attachments/` folder.
+            ServerError::Dit(err @ DitError::Attachment(_)) => ApiError {
                 status: StatusCode::BAD_REQUEST,
                 message: err.to_string(),
             },
@@ -338,10 +360,7 @@ async fn get_issue(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<IssueDto>, ApiError> {
-    let issue = read_dit(&state, move |dit| {
-        Ok(dto::issue_dto(&resolve(dit, &id)?.issue))
-    })
-    .await?;
+    let issue = read_dit(&state, move |dit| Ok(dto::issue_dto(&resolve(dit, &id)?))).await?;
     Ok(Json(issue))
 }
 
@@ -397,7 +416,7 @@ async fn create_issue(
         tx.commit(&format!("create {short}: {title}"))
             .map_err(ServerError::Dit)?;
         let stored = resolve(dit, id.as_str())?;
-        Ok(dto::issue_dto(&stored.issue))
+        Ok(dto::issue_dto(&stored))
     })
     .await?;
     Ok((StatusCode::CREATED, Json(issue)))
@@ -422,7 +441,7 @@ async fn patch_issue(
         tx.commit(&format!("update {short}"))
             .map_err(ServerError::Dit)?;
         let stored = resolve(dit, id.as_str())?;
-        Ok(dto::issue_dto(&stored.issue))
+        Ok(dto::issue_dto(&stored))
     })
     .await?;
     Ok(Json(issue))
@@ -467,7 +486,7 @@ async fn put_body(
         tx.commit(&format!("update {short}: body"))
             .map_err(ServerError::Dit)?;
         let stored = resolve(dit, id.as_str())?;
-        Ok(dto::issue_dto(&stored.issue))
+        Ok(dto::issue_dto(&stored))
     })
     .await?;
     Ok(Json(issue))
@@ -481,6 +500,78 @@ async fn list_docs(State(state): State<Arc<AppState>>) -> Result<Json<Vec<DocEnt
     })
     .await?;
     Ok(Json(entries))
+}
+
+/// One picture's bytes, with the type its bytes say it is (never the type
+/// its name claims) and `nosniff` from the security layer.
+async fn get_attachment(
+    State(state): State<Arc<AppState>>,
+    Path(path): Path<String>,
+) -> Result<Response, ApiError> {
+    let found = read_dit(&state, move |dit| {
+        dit.read_attachment(&path).map_err(ServerError::Dit)
+    })
+    .await?;
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, found.kind.mime()),
+            (axum::http::header::CACHE_CONTROL, "private, max-age=3600"),
+            (axum::http::header::CONTENT_DISPOSITION, "inline"),
+        ],
+        found.bytes,
+    )
+        .into_response())
+}
+
+#[derive(Deserialize)]
+struct AttachParams {
+    /// The page the picture belongs to (`docs/guide.md`)…
+    doc: Option<String>,
+    /// …or the issue whose body shows it…
+    issue: Option<String>,
+    /// …or the issue one of whose comments shows it.
+    comment: Option<String>,
+    /// The uploaded file's own name; only its words are kept.
+    #[serde(default)]
+    name: String,
+}
+
+/// Commit a picture beside its page or issue (ADR 0026) and answer with the
+/// relative link to put in the markdown.
+async fn post_attachment(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<AttachParams>,
+    body: axum::body::Bytes,
+) -> Result<Json<dto::AttachedDto>, ApiError> {
+    let me = state.me();
+    let attached = write_dit(&state, move |dit| {
+        let target = match (params.doc, params.issue, params.comment) {
+            (Some(doc), None, None) => dit_core::AttachTarget::Doc(doc),
+            (None, Some(issue), None) => {
+                dit_core::AttachTarget::Issue(resolve(dit, &issue)?.issue.id)
+            }
+            (None, None, Some(issue)) => {
+                dit_core::AttachTarget::Comment(resolve(dit, &issue)?.issue.id)
+            }
+            _ => {
+                return Err(ServerError::BadRequest(
+                    "name exactly one of `doc`, `issue` or `comment`".into(),
+                ))
+            }
+        };
+        let mut tx = dit.transaction(&me).map_err(ServerError::Dit)?;
+        let attached = tx
+            .add_attachment(&target, &params.name, &body)
+            .map_err(ServerError::Dit)?;
+        tx.commit(&format!("dit attach: {}", attached.path))
+            .map_err(ServerError::Dit)?;
+        Ok(dto::AttachedDto {
+            path: attached.path,
+            link: attached.link,
+        })
+    })
+    .await?;
+    Ok(Json(attached))
 }
 
 async fn get_doc(

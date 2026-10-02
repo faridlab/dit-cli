@@ -256,3 +256,113 @@ async fn unauthenticated_responses_do_not_leak_the_reason_beyond_the_fact() {
         "the response must never echo the valid token: {text}"
     );
 }
+
+// ---- Attachments (ADR 0026) -------------------------------------------------
+
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR picture";
+
+/// Put a picture where the server will look, as a commit would have.
+fn with_picture(tmp: &tempfile::TempDir, rel: &str, bytes: &[u8]) {
+    let file = tmp.path().join(rel);
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(file, bytes).unwrap();
+}
+
+#[tokio::test]
+async fn an_attachment_is_served_to_an_img_tag_carrying_the_token_in_its_url() {
+    let (app, tmp) = test_app();
+    with_picture(&tmp, "docs/attachments/shot-0a1b2c3d.png", PNG);
+    let path = "/api/attachments/docs/attachments/shot-0a1b2c3d.png";
+    // An <img> cannot send Authorization, so the query token is accepted
+    // here — the one route besides /api/events that does.
+    let res = get(
+        &app,
+        &format!("{path}?token={TOKEN}"),
+        &[("host", "localhost:7700")],
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["content-type"], "image/png");
+    assert_eq!(res.headers()["x-content-type-options"], "nosniff");
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&bytes[..], PNG);
+    // The bearer header works too, like everywhere else.
+    let auth = format!("Bearer {TOKEN}");
+    let res = get(
+        &app,
+        path,
+        &[("host", "localhost:7700"), ("authorization", &auth)],
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn an_attachment_without_a_token_or_with_a_wrong_one_is_refused() {
+    let (app, tmp) = test_app();
+    with_picture(&tmp, "docs/attachments/shot-0a1b2c3d.png", PNG);
+    let path = "/api/attachments/docs/attachments/shot-0a1b2c3d.png";
+    for uri in [
+        path.to_owned(),
+        format!("{path}?token=wrong"),
+        format!("{path}?token="),
+    ] {
+        let res = get(&app, &uri, &[("host", "localhost:7700")]).await;
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn the_query_token_is_accepted_on_the_attachments_route_only() {
+    // Widening ?token= to the whole API would put the token in every URL a
+    // log or a referrer might keep. It stays limited to the two routes a
+    // browser cannot send a header on.
+    let (app, _tmp) = test_app();
+    for uri in [
+        format!("/api/status?token={TOKEN}"),
+        format!("/api/docs?token={TOKEN}"),
+        format!("/api/attachmentsx/docs/attachments/a-0a1b2c3d.png?token={TOKEN}"),
+    ] {
+        let res = get(&app, &uri, &[("host", "localhost:7700")]).await;
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn an_attachment_path_cannot_reach_outside_the_attachments_sandbox() {
+    let (app, tmp) = test_app();
+    with_picture(&tmp, "docs/attachments/shot-0a1b2c3d.png", PNG);
+    std::fs::write(
+        tmp.path().join("docs/attachments/fake-0a1b2c3d.png"),
+        "<script>alert(1)</script>",
+    )
+    .unwrap();
+    for (rel, status) in [
+        (
+            "docs/attachments/../../.git/config",
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "docs/attachments/%2e%2e/%2e%2e/.git/config",
+            StatusCode::BAD_REQUEST,
+        ),
+        (".dit/attachments/x-0a1b2c3d.png", StatusCode::BAD_REQUEST),
+        ("docs/guide.md", StatusCode::BAD_REQUEST),
+        (
+            "docs/attachments/fake-0a1b2c3d.png",
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "docs/attachments/missing-0a1b2c3d.png",
+            StatusCode::NOT_FOUND,
+        ),
+    ] {
+        let res = get(
+            &app,
+            &format!("/api/attachments/{rel}?token={TOKEN}"),
+            &[("host", "localhost:7700")],
+        )
+        .await;
+        assert_eq!(res.status(), status, "{rel}");
+    }
+}

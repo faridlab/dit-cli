@@ -49,4 +49,10 @@ claimed_by: string | null,
 /**
  * RFC3339, written by `claim` alongside `claimed_by`.
  */
-claimed_at: string | null, created: string, updated: string, body: string, body_html: string, };
+claimed_at: string | null, created: string, updated: string, body: string, body_html: string, 
+/**
+ * The issue's folder, relative to the content root
+ * (`issues/2026/10/<folder>`): what a relative link in its body or
+ * comments — an attachment (ADR 0026) — resolves against.
+ */
+dir: string, };

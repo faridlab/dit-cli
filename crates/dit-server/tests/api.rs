@@ -1112,3 +1112,99 @@ async fn a_repository_served_as_a_code_map_says_so_and_refuses_writes() {
     assert!(text.contains("not a DIT workspace"), "{text}");
     assert_eq!(files(tmp.path()), before, "nothing was written");
 }
+
+// ---- Attachments (ADR 0026) -------------------------------------------------
+
+async fn upload(app: &axum::Router, query: &str, bytes: Vec<u8>) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/attachments?{query}"))
+        .header("host", "localhost:7700")
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .header("content-type", "application/octet-stream")
+        .body(Body::from(bytes))
+        .unwrap();
+    let res = app.clone().oneshot(request).await.unwrap();
+    let status = res.status();
+    let raw = res.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&raw).unwrap_or(Value::Null))
+}
+
+const SHOT: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR screenshot";
+
+#[tokio::test]
+async fn a_picture_uploaded_for_a_page_or_an_issue_is_committed_and_served_back() {
+    let (app, _tmp) = test_app();
+    let (status, page) = upload(
+        &app,
+        "doc=docs/guide.md&name=Screen%20Shot.png",
+        SHOT.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let path = page["path"].as_str().unwrap();
+    assert!(
+        path.starts_with("docs/attachments/guide-screen-shot-"),
+        "{path}"
+    );
+    assert_eq!(page["link"], path.trim_start_matches("docs/"));
+    let (status, _, served) = req(&app, "GET", &format!("/api/attachments/{path}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    // `req` reads the body as (lossy) text; the picture's words survive it.
+    assert!(served.ends_with("IHDR screenshot"), "{served}");
+
+    let (_, created, _) = req(
+        &app,
+        "POST",
+        "/api/issues",
+        Some(json!({ "title": "Broken" })),
+    )
+    .await;
+    let short_ref = created["short_ref"].as_str().unwrap();
+    // The issue carries its folder, so a client can resolve the link.
+    let dir = created["dir"].as_str().unwrap();
+    assert!(dir.starts_with("issues/") && !dir.ends_with(".md"), "{dir}");
+    let (status, issue) = upload(
+        &app,
+        &format!("issue={short_ref}&name=err.png"),
+        SHOT.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{issue}");
+    assert!(issue["link"]
+        .as_str()
+        .unwrap()
+        .starts_with("attachments/err-"));
+    let (status, comment) = upload(
+        &app,
+        &format!("comment={short_ref}&name=err.png"),
+        SHOT.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{comment}");
+    assert_eq!(
+        comment["link"],
+        format!("../{}", issue["link"].as_str().unwrap())
+    );
+}
+
+#[tokio::test]
+async fn an_upload_that_is_too_big_not_a_picture_or_without_a_target_says_why() {
+    let (app, _tmp) = test_app();
+    let mut big = SHOT.to_vec();
+    big.resize(dit_core::MAX_ATTACHMENT_BYTES + 1, 0);
+    let (status, body) = upload(&app, "doc=docs/guide.md&name=big.png", big).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("1 MB"), "{body}");
+    let (status, body) = upload(
+        &app,
+        "doc=docs/guide.md&name=x.svg",
+        b"<svg onload=alert(1)/>".to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, _) = upload(&app, "name=x.png", SHOT.to_vec()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = upload(&app, "doc=docs/a.md&issue=X&name=x.png", SHOT.to_vec()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}

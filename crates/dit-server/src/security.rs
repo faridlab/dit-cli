@@ -93,6 +93,19 @@ pub async fn require_token(
             _ => unauthorized(),
         };
     }
+    // An <img> cannot send a header either (ADR 0026): reading an
+    // attachment also accepts the query token. Only reading, and only this
+    // route — a token in every URL is a token in every log.
+    if req.method() == axum::http::Method::GET && req.uri().path().starts_with("/api/attachments/")
+    {
+        if let Some(token) = query_token(req.uri().query()) {
+            return if token == state.token {
+                next.run(req).await
+            } else {
+                unauthorized()
+            };
+        }
+    }
     let provided = req
         .headers()
         .get(header::AUTHORIZATION)

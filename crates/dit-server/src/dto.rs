@@ -158,6 +158,10 @@ pub struct IssueDto {
     pub updated: String,
     pub body: String,
     pub body_html: String,
+    /// The issue's folder, relative to the content root
+    /// (`issues/2026/10/<folder>`): what a relative link in its body or
+    /// comments — an attachment (ADR 0026) — resolves against.
+    pub dir: String,
 }
 
 #[derive(Debug, Serialize, TS)]
@@ -1332,6 +1336,15 @@ pub struct DocEntryDto {
     pub bytes: u64,
 }
 
+/// Where an uploaded picture landed (ADR 0026), and the relative link to
+/// write into the markdown that shows it.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct AttachedDto {
+    pub path: String,
+    pub link: String,
+}
+
 /// A page's contents, addressed by its `docs/…` path. Saves return the
 /// formatted body that landed, so the editor can show the canonical form.
 #[derive(Debug, Serialize, TS)]
@@ -1469,7 +1482,8 @@ pub fn settings_dto(dit: &dit_core::Dit, me: &str) -> SettingsDto {
     }
 }
 
-pub fn issue_dto(issue: &Issue) -> IssueDto {
+pub fn issue_dto(hit: &IndexedIssue) -> IssueDto {
+    let issue = &hit.issue;
     IssueDto {
         id: issue.id.as_str().to_owned(),
         short_ref: issue.id.short_ref().as_str().to_owned(),
@@ -1503,11 +1517,20 @@ pub fn issue_dto(issue: &Issue) -> IssueDto {
         updated: issue.updated.clone(),
         body: issue.body.clone(),
         body_html: render_markdown(&issue.body),
+        dir: issue_dir(&hit.path),
     }
 }
 
 pub fn indexed_dto(hit: &IndexedIssue) -> IssueDto {
-    issue_dto(&hit.issue)
+    issue_dto(hit)
+}
+
+/// The folder of an issue body's repo path, relative to the content root.
+/// Only the `.dit/` layout puts content below a prefix (ADR 0005), and in the
+/// root layout no issue path starts with `.dit/`.
+fn issue_dir(path: &str) -> String {
+    let below = path.strip_prefix(".dit/").unwrap_or(path);
+    below.rsplit_once('/').map_or("", |(dir, _)| dir).to_owned()
 }
 
 pub fn doc_entry_dto(entry: &DocEntry) -> DocEntryDto {
