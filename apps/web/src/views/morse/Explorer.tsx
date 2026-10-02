@@ -30,6 +30,7 @@ export function Explorer({
   onNewEnv,
   onNewRequest,
   onImport,
+  onRegisterSpec,
 }: {
   report: MorseReportDto;
   envs: MorseEnvsDto | undefined;
@@ -49,6 +50,8 @@ export function Explorer({
   onNewRequest: () => void;
   /** Bring in a curl line, a Postman collection or environment (ADR 0027). */
   onImport: () => void;
+  /** Register an OpenAPI document as a spec (ADR 0027). */
+  onRegisterSpec: () => void;
 }) {
   const [filter, setFilter] = useState("");
   const q = filter.trim().toLowerCase();
@@ -135,53 +138,66 @@ export function Explorer({
     );
   } else if (seg === "specs") {
     body = report.specs.length ? (
-      report.specs.map((s) => {
-        const key = `s:${s.id}`;
-        const isOpen = open.has(key);
-        const tags = new Map<string, typeof s.operations>();
-        if (isOpen) for (const o of s.operations) tags.set(o.tag ?? "untagged", [...(tags.get(o.tag ?? "untagged") ?? []), o]);
-        const n = scenarioCount(s.id);
-        return (
-          <div key={s.id}>
-            <button
-              type="button"
-              className={cn("mw-tr", selected === `spec:${s.id}` && "sel")}
-              aria-expanded={isOpen}
-              onClick={() => {
-                onToggle(key);
-                if (!isOpen) onOpen({ kind: "spec", spec: s.id });
-              }}
-            >
-              <ChevronRight className="i chev" aria-hidden />
-              <Layers className="i" aria-hidden />
-              <span className="lbl">{s.id}</span>
-              <span className="cnt">
-                {n ? `${n} ◆ ` : ""}
-                {s.problem ? "!" : s.operations.length}
-              </span>
-            </button>
-            {[...tags.entries()].map(([tag, ops]) => {
-              const tk = `${key}/${tag}`;
-              const tagOpen = open.has(tk);
-              return (
-                <div key={tk}>
-                  <button type="button" className="mw-tr d1" aria-expanded={tagOpen} onClick={() => onToggle(tk)}>
-                    <ChevronRight className="i chev" aria-hidden />
-                    <Folder className="i" aria-hidden />
-                    <span className="lbl">{tag}</span>
-                    <span className="cnt">{ops.length}</span>
-                  </button>
-                  {tagOpen ? ops.map((o) => opRow(s.id, o, "d2")) : null}
-                </div>
-              );
-            })}
-          </div>
-        );
-      })
+      <>
+        <div className="mw-sec">
+          Specs
+          <span className="mw-sp" />
+          <button type="button" className="mw-secbtn" aria-label="Register a spec" title="Register an OpenAPI spec" onClick={onRegisterSpec}>
+            <Plus className="i" aria-hidden />
+          </button>
+        </div>
+        {report.specs.map((s) => {
+          const key = `s:${s.id}`;
+          const isOpen = open.has(key);
+          const tags = new Map<string, typeof s.operations>();
+          if (isOpen) for (const o of s.operations) tags.set(o.tag ?? "untagged", [...(tags.get(o.tag ?? "untagged") ?? []), o]);
+          const n = scenarioCount(s.id);
+          return (
+            <div key={s.id}>
+              <button
+                type="button"
+                className={cn("mw-tr", selected === `spec:${s.id}` && "sel")}
+                aria-expanded={isOpen}
+                onClick={() => {
+                  onToggle(key);
+                  if (!isOpen) onOpen({ kind: "spec", spec: s.id });
+                }}
+              >
+                <ChevronRight className="i chev" aria-hidden />
+                <Layers className="i" aria-hidden />
+                <span className="lbl">{s.id}</span>
+                <span className="cnt">
+                  {n ? `${n} ◆ ` : ""}
+                  {s.problem ? "!" : s.operations.length}
+                </span>
+              </button>
+              {[...tags.entries()].map(([tag, ops]) => {
+                const tk = `${key}/${tag}`;
+                const tagOpen = open.has(tk);
+                return (
+                  <div key={tk}>
+                    <button type="button" className="mw-tr d1" aria-expanded={tagOpen} onClick={() => onToggle(tk)}>
+                      <ChevronRight className="i chev" aria-hidden />
+                      <Folder className="i" aria-hidden />
+                      <span className="lbl">{tag}</span>
+                      <span className="cnt">{ops.length}</span>
+                    </button>
+                    {tagOpen ? ops.map((o) => opRow(s.id, o, "d2")) : null}
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+      </>
     ) : (
       <div className="mw-note">
-        No specs registered yet. Add one under <code>specs:</code> in <code>.dit/config.yaml</code>, for example{" "}
-        <code>{"- { id: auth, path: api/openapi.yaml }"}</code>. The path is a path in a repository, never a URL.
+        No specs registered yet. Register the OpenAPI document your API publishes — committed to this repository — and
+        its operations appear here.
+        <button type="button" className="mw-btn sm" style={{ marginTop: 8 }} onClick={onRegisterSpec}>
+          <Plus className="i" aria-hidden />
+          Register a spec
+        </button>
       </div>
     );
   } else if (seg === "scenarios") {

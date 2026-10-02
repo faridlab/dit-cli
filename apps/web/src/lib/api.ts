@@ -26,6 +26,7 @@ import type {
   MorseRunDto,
   MorseScenarioDetailDto,
   MorseScenarioEditDto,
+  MorseRegisterSpecDto,
   MorseImportDto,
   MorseImportPreviewDto,
   MorseImportedDto,
@@ -213,6 +214,20 @@ export function renameMorseEnv(name: string, to: string): Promise<MorseEnvsDto> 
 
 export function deleteMorseEnv(name: string): Promise<MorseEnvsDto> {
   return request<MorseEnvsDto>(`/api/morse/envs/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
+/** Committed files that read as OpenAPI and are not registered yet. */
+export function getSpecCandidates(): Promise<string[]> {
+  return request<string[]>("/api/morse/specs/candidates");
+}
+
+/** Register a spec — one config commit (ADR 0027). */
+export function registerMorseSpec(input: MorseRegisterSpecDto): Promise<MorseReportDto> {
+  return request<MorseReportDto>("/api/morse/specs", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function unregisterMorseSpec(id: string): Promise<MorseReportDto> {
+  return request<MorseReportDto>(`/api/morse/specs/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 /** What an import would write (ADR 0027) — nothing is written. */

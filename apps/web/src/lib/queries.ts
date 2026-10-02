@@ -18,6 +18,7 @@ import type {
   FieldPatch,
   MorseEnvSetDto,
   MorseInlineRequestDto,
+  MorseRegisterSpecDto,
   MorseScenarioEditDto,
   MorseStepDto,
   NewIssueInput,
@@ -184,6 +185,20 @@ export function useMorseImportEnv() {
   return useMutation({
     mutationFn: (text: string) => api.morseImportEnv(text),
     onSuccess: (done) => client.setQueryData(queryKeys.morseEnvs, done.envs),
+  });
+}
+
+/** Register or unregister a spec; the answer is the catalogue as it now is. */
+export function useMorseSpecs() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (
+      change: { kind: "register"; input: MorseRegisterSpecDto } | { kind: "unregister"; id: string },
+    ) => (change.kind === "register" ? api.registerMorseSpec(change.input) : api.unregisterMorseSpec(change.id)),
+    onSuccess: (report) => {
+      client.setQueryData(queryKeys.morse, report);
+      void client.invalidateQueries({ queryKey: queryKeys.morse });
+    },
   });
 }
 

@@ -10,7 +10,8 @@
 // body and the captured values stay with the server (§20.7), and the panel
 // hands over the terminal command that prints them.
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
 import {
   AlertTriangle,
   ChevronRight,
@@ -37,6 +38,7 @@ import {
   pathSegments,
   RAW_TYPES,
   requestProblem,
+  syncPathParams,
   secretHeaders,
   stepPreview,
   type InlineDef,
@@ -50,7 +52,7 @@ import type {
   MorseSpecDto,
   MorseStepDto,
 } from "../../lib/types";
-import { allowCommand, Banner, Coded, copyText, CopyCmd } from "./common";
+import { allowCommand, Banner, Coded, copyText, CopyCmd, Verb } from "./common";
 
 export type RunState =
   | { state: "pending" }
@@ -173,6 +175,20 @@ export function RequestTab({
           <span>{op.tag ?? "untagged"}</span>
           <ChevronRight className="i" aria-hidden />
           <b>{op.summary ?? op.operation_id}</b>
+          {kind === "step" && editable && draft.operation ? (
+            <OperationPicker
+              spec={spec}
+              current={op.operation_id}
+              onPick={(picked) =>
+                onChange(
+                  syncPathParams(
+                    { ...draft, operation: `${spec.id}/${picked.operation_id}`, request: null },
+                    picked.path,
+                  ),
+                )
+              }
+            />
+          ) : null}
           {scenario ? (
             <span className="mw-chip">
               step&nbsp;<b>{draft.id}</b>&nbsp;of {scenario.name}
@@ -1280,4 +1296,73 @@ function ResponsePanel({
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   return `${(n / 1024).toFixed(1)} KB`;
+}
+
+/** Point a step at another operation of its spec: a search over the
+ *  catalogue instead of editing `operation:` in the fence by hand. */
+function OperationPicker({
+  spec,
+  current,
+  onPick,
+}: {
+  spec: MorseSpecDto;
+  current: string;
+  onPick: (op: MorseOperationDto) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const needle = q.trim().toLowerCase();
+  const shown = spec.operations
+    .filter(
+      (o) =>
+        !needle ||
+        o.operation_id.toLowerCase().includes(needle) ||
+        o.path.toLowerCase().includes(needle) ||
+        (o.summary ?? "").toLowerCase().includes(needle),
+    )
+    .slice(0, 200);
+  return (
+    <Dialog.Root open={open} onOpenChange={setOpen}>
+      <Dialog.Trigger asChild>
+        <button type="button" className="mw-btn sm" title="Point this step at another operation of the spec">
+          Change operation
+        </button>
+      </Dialog.Trigger>
+      <Dialog.Portal>
+        <Dialog.Overlay className="mw-scrim" />
+        <Dialog.Content className="mw-dlg" aria-describedby={undefined}>
+          <Dialog.Title className="mw-dlg-h">Which operation does this step call?</Dialog.Title>
+          <div className="mw-dlg-b">
+            <div className="mw-fld">
+              <input
+                autoFocus
+                aria-label="Search operations"
+                placeholder={`Search ${spec.operations.length} operations of ${spec.id} — id, path or summary`}
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+              />
+            </div>
+            <div className="mw-oppick">
+              {shown.map((o) => (
+                <button
+                  key={o.operation_id}
+                  type="button"
+                  className={cn("mw-oprow", o.operation_id === current && "on")}
+                  onClick={() => {
+                    onPick(o);
+                    setOpen(false);
+                  }}
+                >
+                  <Verb method={o.method} wide />
+                  <span className="mw-mono">{o.path}</span>
+                  <span className="sum">{o.summary ?? o.operation_id}</span>
+                </button>
+              ))}
+              {shown.length === 0 ? <p className="mw-hint">No operation matches.</p> : null}
+            </div>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
 }

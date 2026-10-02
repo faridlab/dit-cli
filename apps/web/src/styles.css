@@ -1748,3 +1748,10 @@ button.mw-li:hover{background:var(--hover)}
 .mw-inline{color:var(--muted)}
 .mw-import-notes{display:flex;gap:8px;color:var(--muted);font-size:12px}
 .mw-import-notes ul{margin:0;padding-left:16px}
+
+/* The step's operation picker. */
+.mw-oppick{max-height:50vh;overflow:auto;display:flex;flex-direction:column;border:1px solid var(--edge);border-radius:8px}
+.mw-oprow{display:flex;align-items:center;gap:8px;padding:6px 10px;text-align:left;font-size:12.5px;border-bottom:1px solid var(--dit-rowline)}
+.mw-oprow:hover{background:var(--hover)}
+.mw-oprow.on{background:var(--active)}
+.mw-oprow .sum{margin-left:auto;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:45%}

@@ -56,6 +56,7 @@ import { AllowTab, EnvTab, Overview, SpecTab } from "./InfoTabs";
 import { RequestTab, type RunState, type SaveState } from "./RequestTab";
 import { ConfirmDialog, SaveDialog, type SaveTarget } from "./SaveDialog";
 import { ImportDialog } from "./ImportDialog";
+import { RegisterSpecDialog } from "./RegisterSpecDialog";
 import { ScenarioTab } from "./ScenarioTab";
 
 type Sub = Parameters<typeof RequestTab>[0]["sub"];
@@ -120,6 +121,7 @@ export function MorseView() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [confirmClose, setConfirmClose] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
+  const [registering, setRegistering] = useState(false);
   const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   useEffect(() => keep("dit.morse.seg", seg), [seg]);
@@ -733,6 +735,7 @@ export function MorseView() {
         onHistory={openFromHistory}
         onNewRequest={newRequest}
         onImport={() => setImporting(true)}
+        onRegisterSpec={() => setRegistering(true)}
         onNewEnv={(name) =>
           editEnv.mutate(
             { kind: "set", name, input: { vars: [] } },
@@ -853,6 +856,16 @@ export function MorseView() {
           pending={saveStep.isPending || createScenario.isPending}
           serverError={saveError}
           onSave={doSave}
+        />
+      ) : null}
+      {registering ? (
+        <RegisterSpecDialog
+          open
+          onOpenChange={setRegistering}
+          onRegistered={(id) => {
+            toast.success(`Registered ${id} — its operations are in the catalogue`);
+            openTab({ kind: "spec", spec: id }, true);
+          }}
         />
       ) : null}
       {importing ? (
