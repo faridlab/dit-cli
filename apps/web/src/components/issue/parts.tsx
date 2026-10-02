@@ -8,7 +8,7 @@
 // `.desc` / `.md`, `.act-h` / `.seg` / `.tl` / `.ev` / `.composer`. Each
 // property change is one PATCH — one commit — and says so in a toast.
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Calendar,
@@ -48,6 +48,10 @@ import { navigate, routeToHash, withPeek, type PeekHost, type Route } from "../.
 import { isStarred, toggleStar } from "../../lib/starred";
 import type { FieldEventDto, FieldPatch, IssueDto, Priority, StatusDto } from "../../lib/types";
 import { cn } from "../../lib/cn";
+
+// The comment box is the same editor as the description (a lazy chunk), so
+// a comment can hold lines, lists, to-dos and code without knowing markdown.
+const RichEditor = lazy(() => import("../../editor/RichEditor"));
 
 // ---------------------------------------------------------------------------
 // Small shared helpers
@@ -786,8 +790,18 @@ export function IssueActivity({
   // A comment is a discrete message in git history, so the composer sends
   // when the writer says so — the button or ⌘↵ — never on a typing pause.
   // A reply rides `reply_to` (§4.4) and lands in the same thread.
-  const send = () => {
-    const body = draft.trim();
+  // Serializes what the comment editor shows right now; the Comment button
+  // must not send a draft that is missing the last few keystrokes.
+  const flushDraft = useRef<(() => Promise<string | null>) | null>(null);
+  const sendLatest = () => {
+    void (async () => {
+      const latest = (await flushDraft.current?.()) ?? null;
+      send(latest ?? undefined);
+    })();
+  };
+
+  const send = (markdown?: string) => {
+    const body = (markdown ?? draft).trim();
     if (body.length === 0) {
       toast("Write something first");
       return;
@@ -902,23 +916,21 @@ export function IssueActivity({
       </div>
       <div className="composer">
         <MessageSquare className="i" aria-hidden />
-        <input
-          className="cmIn"
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-              event.preventDefault();
-              send();
+        <Suspense fallback={<div className="cmIn cmWait">Loading editor…</div>}>
+          <RichEditor
+            compact
+            value={draft}
+            onChange={setDraft}
+            onSave={(markdown) => send(markdown)}
+            placeholder={
+              replyingTo
+                ? `Reply to ${replyingTo.author}… type '/' for lists, to-dos, code`
+                : "Write a comment… type '/' for lists, to-dos, code"
             }
-          }}
-          placeholder={
-            replyingTo
-              ? `Reply to ${replyingTo.author}… Markdown`
-              : "Write a comment… Markdown"
-          }
-          aria-label={replyingTo ? "Reply" : "Comment"}
-        />
+            flushRef={flushDraft}
+            className="cmIn"
+          />
+        </Suspense>
         <div className="bar2">
           {replyingTo ? (
             <span className="chip ctx" style={{ alignItems: "center", display: "inline-flex", gap: 6 }}>
@@ -938,7 +950,7 @@ export function IssueActivity({
             </span>
           )}
           <Sp />
-          <Btn primary className="cmSend" onClick={send} disabled={add.isPending}>
+          <Btn primary className="cmSend" onClick={sendLatest} disabled={add.isPending}>
             {replyingTo ? "Reply" : "Comment"}
             <kbd>⌘↵</kbd>
           </Btn>

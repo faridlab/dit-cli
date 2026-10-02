@@ -775,6 +775,10 @@ mark{background:var(--mark);color:inherit;border-radius:2px;padding:0 1px}
 .composer{border:1px solid var(--edge);border-radius:var(--r-lg);padding:10px 12px;display:flex;flex-direction:column;gap:8px;background:var(--surface)}
 .composer:focus-within{border-color:var(--accent)}
 .composer input{border:0;outline:0;background:transparent;font-size:13px}
+/* The comment editor: grows with its text, scrolls past a screenful. */
+.composer .cmIn{max-height:40vh;overflow:auto}
+.composer .cmIn .dit-rich{font-size:13.5px;min-height:3.2em;padding:0}
+.composer .cmWait{color:var(--faint);font-size:13px;min-height:3.2em}
 .composer .bar2{display:flex;align-items:center;gap:6px}
 .composer .bar2 .sp{flex:1}
 .peek-f{height:34px;border-top:1px solid var(--edge);display:flex;align-items:center;gap:14px;padding:0 16px;font:11px var(--mono);color:var(--faint);flex:none}
