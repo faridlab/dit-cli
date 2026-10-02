@@ -744,6 +744,38 @@ pub struct MorsePairDto {
     pub value: String,
 }
 
+/// A step's body in one of its four shapes (ADR 0027). `json` carries the
+/// JSON as text, the way the Body tab edits it.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+#[ts(export)]
+pub enum MorseBodyDto {
+    Json {
+        text: String,
+    },
+    Form {
+        fields: Vec<MorsePairDto>,
+    },
+    Raw {
+        media_type: String,
+        text: Option<String>,
+        file: Option<String>,
+    },
+    Multipart {
+        parts: Vec<MorsePartDto>,
+    },
+}
+
+/// One `multipart/form-data` part: a value or a repository file.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MorsePartDto {
+    pub name: String,
+    pub value: Option<String>,
+    pub file: Option<String>,
+    pub media_type: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct MorseCheckDto {
@@ -774,8 +806,8 @@ pub struct MorseStepDto {
     pub params: Vec<MorsePairDto>,
     pub query: Vec<MorsePairDto>,
     pub headers: Vec<MorsePairDto>,
-    /// JSON text, or absent for no body.
-    pub body: Option<String>,
+    /// Absent for no body.
+    pub body: Option<MorseBodyDto>,
     pub status: Option<u16>,
     pub checks: Vec<MorseCheckDto>,
     pub capture: Vec<MorseCaptureDto>,
@@ -910,6 +942,135 @@ fn pairs_from(pairs: &[MorsePairDto]) -> Vec<(String, dit_core::MorseValue)> {
         .collect()
 }
 
+fn body_dto(body: &dit_core::RequestBody) -> MorseBodyDto {
+    use dit_core::{PartContent, RawContent, RequestBody};
+    match body {
+        RequestBody::Json(value) => MorseBodyDto::Json {
+            text: dit_core::morse_value_to_json(value),
+        },
+        RequestBody::Form(pairs) => MorseBodyDto::Form {
+            fields: pairs_dto(pairs),
+        },
+        RequestBody::Raw {
+            media_type,
+            content,
+        } => MorseBodyDto::Raw {
+            media_type: media_type.clone(),
+            text: match content {
+                RawContent::Text(t) => Some(t.clone()),
+                RawContent::File(_) => None,
+            },
+            file: match content {
+                RawContent::File(f) => Some(f.clone()),
+                RawContent::Text(_) => None,
+            },
+        },
+        RequestBody::Multipart(parts) => MorseBodyDto::Multipart {
+            parts: parts
+                .iter()
+                .map(|p| MorsePartDto {
+                    name: p.name.clone(),
+                    value: match &p.content {
+                        PartContent::Value(v) => Some(pair_value(v)),
+                        PartContent::File(_) => None,
+                    },
+                    file: match &p.content {
+                        PartContent::File(f) => Some(f.clone()),
+                        PartContent::Value(_) => None,
+                    },
+                    media_type: p.media_type.clone(),
+                })
+                .collect(),
+        },
+    }
+}
+
+/// A body from the page, checked as the fence reader checks one. An empty
+/// JSON text means no body, as before there were shapes.
+fn body_from(dto: &MorseBodyDto) -> Result<Option<dit_core::RequestBody>, String> {
+    use dit_core::{PartContent, RawContent, RequestBody};
+    let file = |path: &str| -> Result<String, String> {
+        let path = path.trim();
+        match dit_core::morse_file_path_problem(path) {
+            None => Ok(path.to_owned()),
+            Some(problem) => Err(format!("`{path}`: {problem}")),
+        }
+    };
+    let media_type = |raw: &str| -> Result<String, String> {
+        let raw = raw.trim();
+        if dit_core::is_media_type(raw) {
+            Ok(raw.to_owned())
+        } else {
+            Err(format!(
+                "`{raw}` is not a media type — like `application/xml`"
+            ))
+        }
+    };
+    Ok(match dto {
+        MorseBodyDto::Json { text } if text.trim().is_empty() => None,
+        MorseBodyDto::Json { text } => Some(RequestBody::Json(
+            dit_core::morse_value_from_json(text.trim()).map_err(|e| e.to_string())?,
+        )),
+        MorseBodyDto::Form { fields } => Some(RequestBody::Form(pairs_from(fields))),
+        MorseBodyDto::Raw {
+            media_type: kind,
+            text,
+            file: path,
+        } => {
+            let content = match (
+                text,
+                path.as_deref().map(str::trim).filter(|p| !p.is_empty()),
+            ) {
+                (_, Some(path)) => RawContent::File(file(path)?),
+                (Some(text), None) => RawContent::Text(text.clone()),
+                (None, None) => RawContent::Text(String::new()),
+            };
+            Some(RequestBody::Raw {
+                media_type: media_type(kind)?,
+                content,
+            })
+        }
+        MorseBodyDto::Multipart { parts } => {
+            let mut out = Vec::new();
+            for part in parts {
+                let name = part.name.trim();
+                if name.is_empty() {
+                    continue;
+                }
+                if name.contains(['"', '\r', '\n']) {
+                    return Err(format!(
+                        "part `{name}`: a name may not hold quotes or line breaks"
+                    ));
+                }
+                let content = match part
+                    .file
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                {
+                    Some(path) => PartContent::File(file(path)?),
+                    None => PartContent::Value(pair_from(part.value.as_deref().unwrap_or(""))),
+                };
+                let kind = match part
+                    .media_type
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                {
+                    Some(t) => Some(media_type(t)?),
+                    None => None,
+                };
+                out.push(dit_core::MultipartPart {
+                    name: name.to_owned(),
+                    content,
+                    media_type: kind,
+                });
+            }
+            Some(RequestBody::Multipart(out))
+        }
+    })
+}
+
 pub fn morse_step_dto(step: &dit_core::MorseStep) -> MorseStepDto {
     let (operation, request) = match &step.operation {
         dit_core::StepTarget::Operation(op) => (Some(op.qualified()), None),
@@ -922,7 +1083,7 @@ pub fn morse_step_dto(step: &dit_core::MorseStep) -> MorseStepDto {
         params: pairs_dto(&step.params),
         query: pairs_dto(&step.query),
         headers: pairs_dto(&step.headers),
-        body: step.body.as_ref().map(dit_core::morse_value_to_json),
+        body: step.body.as_ref().map(body_dto),
         status: step.expect.status,
         checks: step
             .expect
@@ -971,9 +1132,9 @@ pub fn morse_step_from(dto: &MorseStepDto) -> Result<dit_core::MorseStep, String
         (None, Some(request)) => dit_core::StepTarget::Inline(request.trim().to_owned()),
         _ => return Err("a step calls exactly one operation or one request".into()),
     };
-    let body = match dto.body.as_deref().map(str::trim) {
-        None | Some("") => None,
-        Some(text) => Some(dit_core::morse_value_from_json(text).map_err(|e| e.to_string())?),
+    let body = match &dto.body {
+        None => None,
+        Some(shape) => body_from(shape)?,
     };
     let mut json = Vec::new();
     for check in &dto.checks {
@@ -1816,6 +1977,112 @@ pub fn to_field_patch(dto: FieldPatchDto) -> Result<FieldPatch, String> {
 #[allow(clippy::unwrap_used)]
 mod morse_boundary_tests {
     use super::*;
+
+    fn step_with(body: MorseBodyDto) -> MorseStepDto {
+        MorseStepDto {
+            id: "one".into(),
+            operation: Some("auth/x".into()),
+            request: None,
+            params: vec![],
+            query: vec![],
+            headers: vec![],
+            body: Some(body),
+            status: None,
+            checks: vec![],
+            capture: vec![],
+        }
+    }
+
+    #[test]
+    fn every_body_shape_survives_the_wire_both_ways() {
+        let shapes = [
+            // JSON comes back pretty-printed, the way the Body tab shows it.
+            MorseBodyDto::Json {
+                text: "{\n  \"a\": \"{{b}}\"\n}".into(),
+            },
+            MorseBodyDto::Form {
+                fields: vec![MorsePairDto {
+                    key: "grant_type".into(),
+                    value: "password".into(),
+                }],
+            },
+            MorseBodyDto::Raw {
+                media_type: "application/xml".into(),
+                text: Some("<a/>".into()),
+                file: None,
+            },
+            MorseBodyDto::Raw {
+                media_type: "image/png".into(),
+                text: None,
+                file: Some("fixtures/a.png".into()),
+            },
+            MorseBodyDto::Multipart {
+                parts: vec![
+                    MorsePartDto {
+                        name: "t".into(),
+                        value: Some("x".into()),
+                        file: None,
+                        media_type: None,
+                    },
+                    MorsePartDto {
+                        name: "f".into(),
+                        value: None,
+                        file: Some("fixtures/a.png".into()),
+                        media_type: Some("image/png".into()),
+                    },
+                ],
+            },
+        ];
+        for shape in shapes {
+            let step = morse_step_from(&step_with(shape.clone())).unwrap();
+            let back = morse_step_dto(&step).body.unwrap();
+            assert_eq!(
+                serde_json::to_value(&back).unwrap(),
+                serde_json::to_value(&shape).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn a_body_from_the_page_is_checked_like_a_fence() {
+        let bad = [
+            MorseBodyDto::Raw {
+                media_type: "text/plain\r\nX-Evil: 1".into(),
+                text: Some("a".into()),
+                file: None,
+            },
+            MorseBodyDto::Raw {
+                media_type: "application/octet-stream".into(),
+                text: None,
+                file: Some("../../.ssh/id_rsa".into()),
+            },
+            MorseBodyDto::Multipart {
+                parts: vec![MorsePartDto {
+                    name: "f".into(),
+                    value: None,
+                    file: Some(".dit/morse.local.yaml".into()),
+                    media_type: None,
+                }],
+            },
+            MorseBodyDto::Multipart {
+                parts: vec![MorsePartDto {
+                    name: "a\"b".into(),
+                    value: Some("x".into()),
+                    file: None,
+                    media_type: None,
+                }],
+            },
+        ];
+        for shape in bad {
+            assert!(
+                morse_step_from(&step_with(shape.clone())).is_err(),
+                "{shape:?}"
+            );
+        }
+        // An empty JSON text is no body, as it was before shapes.
+        let none = morse_step_from(&step_with(MorseBodyDto::Json { text: "  ".into() })).unwrap();
+        assert!(none.body.is_none());
+    }
 
     #[test]
     fn a_response_body_and_a_captured_value_never_reach_the_page() {

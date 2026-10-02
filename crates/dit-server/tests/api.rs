@@ -1084,7 +1084,7 @@ async fn a_send_the_server_cannot_make_says_why_and_a_malformed_one_is_a_400() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 
     let mut bad_body = step("auth/getUser");
-    bad_body["step"]["body"] = json!("{ not json");
+    bad_body["step"]["body"] = json!({ "kind": "json", "text": "{ not json" });
     let (status, body, _) = req(&app, "POST", "/api/morse/send", Some(bad_body)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }
