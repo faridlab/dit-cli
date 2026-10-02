@@ -639,7 +639,7 @@ As soon as there is more than one code repo, three things become ambiguous and n
 
 | | What it selects | Where |
 |---|---|---|
-| **Workspace switcher** | Which DIT repo (work / personal project) | Top-level chrome. The server serves several workspaces under the path `/w/<name>/`, read from `~/.config/dit/links.toml`. Each workspace has its own index. |
+| **Workspace switcher** | Which DIT repo (work / personal project) | Top-level chrome. The server serves several workspaces under the path `/w/<name>/`, read from the per-machine registry `~/.config/dit/workspaces.yaml` (ADR 0028). Each workspace has its own index. `dit --workspace <name>` / `DIT_WORKSPACE` name one for any command. |
 | **Code repo scope** | Which code repo is the current context | A filter in the board header, and `repo:` as a DQL field — `repo = api AND status = todo` |
 
 Code repo scope should be **sticky per-view**, not global: the API team's sprint board and the mobile team's board are two saved views with different scopes, not one board whose filter keeps getting swapped.
