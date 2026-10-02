@@ -85,13 +85,12 @@ function cliFor(route: Route): string {
     case "board":
       return "dit board";
     case "issues":
-      return route.q ? `dit ls "${route.q}"` : "dit ls";
+      return route.q ? `dit list "${route.q}"` : "dit list";
     case "search":
-      return route.q ? `dit ls "${route.q}"` : "dit ls";
+      return route.q ? `dit list "${route.q}"` : "dit list";
     case "issue":
-      return `dit show ${route.id}`;
-    case "docs":
-      return route.p ? `dit doc show ${route.p}` : "dit doc ls";
+      return `dit issue show ${route.id}`;
+    // Docs have no CLI of their own — they are plain files in the repo.
     case "morse":
       return "dit morse check";
     case "code":
