@@ -268,6 +268,183 @@ impl Dit {
         Ok(MorseReport { specs, scenarios })
     }
 
+    /// Committed files that look like OpenAPI documents and are not
+    /// registered yet — what the "Register a spec" form offers, so nobody
+    /// types a path. Read from HEAD; vendored trees are skipped.
+    pub fn morse_spec_candidates(&self) -> Result<Vec<String>, DitError> {
+        const SKIP: &[&str] = &[
+            "node_modules/",
+            "vendor/",
+            "target/",
+            "dist/",
+            "build/",
+            ".dit/",
+            ".git/",
+        ];
+        let registered: Vec<&str> = self
+            .config
+            .specs
+            .iter()
+            .filter(|e| e.repo.is_none())
+            .map(|e| e.path.as_str())
+            .collect();
+        let files: Vec<(String, String)> = self
+            .repo
+            .ls_tree(".")?
+            .into_iter()
+            .filter(|(path, _)| {
+                let lower = path.to_ascii_lowercase();
+                (lower.ends_with(".yaml") || lower.ends_with(".yml") || lower.ends_with(".json"))
+                    && !SKIP
+                        .iter()
+                        .any(|skip| lower.starts_with(skip) || lower.contains(&format!("/{skip}")))
+                    && !lower.ends_with("package-lock.json")
+                    && !registered.contains(&path.as_str())
+            })
+            .take(2000)
+            .collect();
+        let shas: Vec<String> = files.iter().map(|(_, sha)| sha.clone()).collect();
+        let texts = self.repo.read_blobs(&shas)?;
+        let mut found = Vec::new();
+        for ((path, _), text) in files.into_iter().zip(texts) {
+            let Some(text) = text else { continue };
+            let head: String = text.chars().take(4000).collect();
+            // YAML says it at the start of a line; JSON, often all on one
+            // line, says it as a key anywhere in the opening.
+            let declares = if path.to_ascii_lowercase().ends_with(".json") {
+                head.contains("\"openapi\"") || head.contains("\"swagger\"")
+            } else {
+                head.lines().any(|line| {
+                    let t = line.trim_start().trim_start_matches(['"', '\'']);
+                    t.starts_with("openapi:")
+                        || t.starts_with("swagger:")
+                        || t.starts_with("openapi\"")
+                        || t.starts_with("swagger\"")
+                })
+            };
+            if declares {
+                found.push(path);
+            }
+            if found.len() >= 100 {
+                break;
+            }
+        }
+        Ok(found)
+    }
+
+    /// Register an OpenAPI document as a spec (ADR 0027): the form's twin of
+    /// adding a `specs:` entry by hand. The file must be committed and must
+    /// read as OpenAPI; one commit, and the catalogue is rebuilt at once.
+    pub fn morse_register_spec(
+        &mut self,
+        id: &str,
+        path: &str,
+        repo: Option<&str>,
+        author: &str,
+    ) -> Result<(), DitError> {
+        let mut chars = id.chars();
+        let id_ok = chars.next().is_some_and(|c| c.is_ascii_lowercase())
+            && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
+        if !id_ok {
+            return Err(DitError::Refuse(format!(
+                "`{id}` is not a spec id — a lowercase word, like `billing`; a step calls `<id>/<operationId>`"
+            )));
+        }
+        if self.config.specs.iter().any(|e| e.id == id) {
+            return Err(DitError::Refuse(format!(
+                "a spec called `{id}` is already registered"
+            )));
+        }
+        let path = path.trim();
+        if path.contains("://") || dit_model::morse_file_path_problem(path).is_some() {
+            return Err(DitError::Refuse(format!(
+                "`{path}` must be a path in the repository — a spec is read from git, never fetched from an address"
+            )));
+        }
+        let entry = SpecEntry {
+            id: id.to_owned(),
+            repo: repo.map(str::to_owned).filter(|r| !r.trim().is_empty()),
+            path: path.to_owned(),
+        };
+        let spec_repo = self.spec_repo(&entry).map_err(DitError::Refuse)?;
+        let text = spec_repo
+            .get()
+            .show_text(&format!("HEAD:{path}"))
+            .ok_or_else(|| {
+                DitError::Refuse(format!(
+                    "`{path}` is not in the repository at HEAD — commit it first"
+                ))
+            })?;
+        dit_parse::parse_openapi(&text)
+            .map_err(|e| DitError::Refuse(format!("`{path}` is not an OpenAPI document: {e}")))?;
+        let mut config = self.config.clone();
+        config.specs.push(entry);
+        self.write_config_commit(config, &format!("dit morse: register spec {id}"), author)?;
+        self.refresh_morse_specs()?;
+        self.judge_morse_scenarios()?;
+        Ok(())
+    }
+
+    /// Take a spec off the list — unless a scenario stands on it.
+    pub fn morse_unregister_spec(&mut self, id: &str, author: &str) -> Result<(), DitError> {
+        if !self.config.specs.iter().any(|e| e.id == id) {
+            return Err(DitError::NotFound(format!("spec `{id}`")));
+        }
+        let using: Vec<String> = self
+            .index
+            .morse_scenarios()?
+            .into_iter()
+            .filter(|s| dit_parse::parse_morse_scenario(&s.body).is_ok_and(|p| p.spec.id == id))
+            .map(|s| s.scenario)
+            .collect();
+        if !using.is_empty() {
+            return Err(DitError::Refuse(format!(
+                "`{id}` cannot be unregistered: scenario{} {} stand{} on it",
+                if using.len() == 1 { "" } else { "s" },
+                using
+                    .iter()
+                    .map(|u| format!("`{u}`"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                if using.len() == 1 { "s" } else { "" }
+            )));
+        }
+        let mut config = self.config.clone();
+        config.specs.retain(|e| e.id != id);
+        self.write_config_commit(config, &format!("dit morse: unregister spec {id}"), author)?;
+        self.refresh_morse_specs()?;
+        self.judge_morse_scenarios()?;
+        Ok(())
+    }
+
+    /// Rewrite `.dit/config.yaml` and commit only that file, under the
+    /// single-writer lock — the way `set_numbering` changes the config.
+    fn write_config_commit(
+        &mut self,
+        config: dit_model::Config,
+        message: &str,
+        author: &str,
+    ) -> Result<(), DitError> {
+        let lock_path = self.store.layout().write_lock();
+        let lock = crate::acquire_lock_or_busy(&lock_path, author)?;
+        let result = (|| {
+            let file = self.store.layout().config_yaml();
+            dit_store::atomic::write(&file, &dit_parse::write_config(&config))?;
+            let rel = crate::rel_to_root(self.repo.root(), &file);
+            self.repo.add(&rel)?;
+            let message = if author.is_empty() {
+                message.to_owned()
+            } else {
+                format!("{message}\n\nDit-Author: {author}")
+            };
+            self.repo.commit(&message)?;
+            self.config = config;
+            Ok(())
+        })();
+        drop(lock);
+        result
+    }
+
     /// Rebuild the catalogue from every registered spec. Called at reindex,
     /// before the fences are read, because a scenario is judged against it.
     pub(crate) fn refresh_morse_specs(&mut self) -> Result<(), DitError> {

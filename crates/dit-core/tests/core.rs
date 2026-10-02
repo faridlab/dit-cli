@@ -5813,3 +5813,66 @@ fn a_postman_environment_import_lands_in_the_local_file_only() {
     assert_eq!(env.vars, ["token"]);
     assert_eq!(repo.head().unwrap(), head, "nothing committed");
 }
+
+// ---- Registering a spec from the screen (ADR 0027) --------------------------
+
+#[test]
+fn a_committed_openapi_file_is_registered_as_one_commit_and_its_operations_appear() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, _) = morse_workspace(tmp.path());
+    std::fs::write(
+        tmp.path().join("api/billing.yaml"),
+        "openapi: 3.0.3\ninfo:\n  title: Billing\n  version: \"1\"\nservers:\n  - url: \"http://localhost:4000\"\npaths:\n  /invoices:\n    get:\n      operationId: listInvoices\n",
+    )
+    .unwrap();
+    std::fs::write(tmp.path().join("api/notes.yaml"), "just: a yaml file\n").unwrap();
+    let repo = Repo::open(tmp.path()).unwrap();
+    repo.add("api").unwrap();
+    repo.commit("two more files").unwrap();
+
+    let found = dit.morse_spec_candidates().unwrap();
+    assert!(found.iter().any(|c| c == "api/billing.yaml"), "{found:?}");
+    assert!(
+        found.iter().all(|c| c != "api/openapi.yaml"),
+        "a registered file is not offered again: {found:?}"
+    );
+
+    dit.morse_register_spec("billing", "api/billing.yaml", None, "farid")
+        .unwrap();
+    let report = dit.morse_report().unwrap();
+    let billing = report
+        .specs
+        .iter()
+        .find(|s| s.id == "billing")
+        .expect("registered");
+    assert_eq!(billing.operations[0].operation_id, "listInvoices");
+    assert!(
+        repo.show_text("HEAD:.dit/config.yaml")
+            .unwrap()
+            .contains("billing"),
+        "committed"
+    );
+
+    for (id, path, why) in [
+        ("billing", "api/billing.yaml", "already"),
+        ("notes", "api/notes.yaml", "OpenAPI"),
+        ("ghost", "api/missing.yaml", "HEAD"),
+        ("Bad Id", "api/billing.yaml", "id"),
+        ("far", "../outside.yaml", "repository"),
+        ("web", "https://x.test/openapi.json", "repository"),
+    ] {
+        let err = dit
+            .morse_register_spec(id, path, None, "farid")
+            .unwrap_err();
+        assert!(err.to_string().contains(why), "{id} {path}: {err}");
+    }
+
+    // A spec a scenario stands on is not taken away from under it.
+    write_doc(
+        &mut dit,
+        "docs/api/inv.md",
+        "```dit-morse\nscenario: inv\nspec: { id: billing, commit: abc }\nsteps:\n  - id: a\n    operation: billing/listInvoices\n```\n",
+    );
+    let err = dit.morse_unregister_spec("billing", "farid").unwrap_err();
+    assert!(err.to_string().contains("inv"), "{err}");
+}
