@@ -766,6 +766,43 @@ pub enum MorseBodyDto {
     },
 }
 
+/// One change to a scenario from the screen (ADR 0027).
+#[derive(Debug, Clone, Deserialize, TS)]
+#[serde(tag = "op", rename_all = "snake_case")]
+#[ts(export)]
+pub enum MorseScenarioEditDto {
+    Rename { to: String },
+    SetEnv { env: Option<String> },
+    SetRequires { names: Vec<String> },
+    DeleteStep { step: String },
+    MoveStep { step: String, to: usize },
+    DuplicateStep { step: String, as_id: String },
+    RenameStep { step: String, to: String },
+}
+
+impl From<MorseScenarioEditDto> for dit_core::ScenarioEdit {
+    fn from(dto: MorseScenarioEditDto) -> Self {
+        use dit_core::ScenarioEdit as E;
+        match dto {
+            MorseScenarioEditDto::Rename { to } => E::Rename {
+                to: to.trim().to_owned(),
+            },
+            MorseScenarioEditDto::SetEnv { env } => E::SetEnv(env),
+            MorseScenarioEditDto::SetRequires { names } => E::SetRequires(names),
+            MorseScenarioEditDto::DeleteStep { step } => E::DeleteStep { step },
+            MorseScenarioEditDto::MoveStep { step, to } => E::MoveStep { step, to },
+            MorseScenarioEditDto::DuplicateStep { step, as_id } => E::DuplicateStep {
+                step,
+                as_id: as_id.trim().to_owned(),
+            },
+            MorseScenarioEditDto::RenameStep { step, to } => E::RenameStep {
+                step,
+                to: to.trim().to_owned(),
+            },
+        }
+    }
+}
+
 /// One `multipart/form-data` part: a value or a repository file.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]

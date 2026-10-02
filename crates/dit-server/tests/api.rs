@@ -1264,3 +1264,101 @@ async fn an_upload_that_is_too_big_not_a_picture_or_without_a_target_says_why() 
     let (status, _) = upload(&app, "doc=docs/a.md&issue=X&name=x.png", SHOT.to_vec()).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+// ---- Managing scenarios from the screen (ADR 0027) --------------------------
+
+/// A workspace with one spec registered and committed — what a scenario pins
+/// to. Built before the server opens it, so the config is the one in force.
+fn morse_app() -> (axum::Router, tempfile::TempDir) {
+    let tmp = tempfile::tempdir().unwrap();
+    dit_core::Dit::init(tmp.path(), &std::env::current_exe().unwrap()).unwrap();
+    std::fs::create_dir_all(tmp.path().join("api")).unwrap();
+    std::fs::write(
+        tmp.path().join("api/openapi.yaml"),
+        "openapi: 3.0.3\ninfo:\n  title: T\n  version: \"1\"\nservers:\n  - url: \"http://127.0.0.1:1\"\npaths:\n  /a:\n    post:\n      operationId: a\n  /b:\n    get:\n      operationId: b\n",
+    )
+    .unwrap();
+    let config = tmp.path().join(".dit/config.yaml");
+    let mut text = std::fs::read_to_string(&config).unwrap();
+    text.push_str("specs:\n  - { id: t, path: api/openapi.yaml }\n");
+    std::fs::write(&config, text).unwrap();
+    for args in [vec!["add", "."], vec!["commit", "-qm", "spec"]] {
+        let ok = std::process::Command::new("git")
+            .args(&args)
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+        assert!(ok.success());
+    }
+    let mut dit = dit_core::Dit::open(tmp.path()).unwrap();
+    dit.reindex(dit_core::ReindexMode::All).unwrap();
+    let state = dit_server::AppState::new(dit, "tester", TOKEN);
+    (dit_server::app(state), tmp)
+}
+
+#[tokio::test]
+async fn a_scenario_is_renamed_reordered_copied_and_deleted_over_the_api() {
+    let (app, _tmp) = morse_app();
+    let step = |id: &str, op: &str| {
+        json!({ "id": id, "operation": op, "request": null, "params": [], "query": [], "headers": [],
+                "body": null, "status": null, "checks": [], "capture": [] })
+    };
+    let (status, _, text) = req(&app, "POST", "/api/morse/scenarios",
+        Some(json!({ "doc": "docs/api/t.md", "name": "first", "spec_id": "t", "env": null, "step": step("one", "t/a") }))).await;
+    assert_eq!(status, StatusCode::CREATED, "{text}");
+    let (status, _, text) = req(
+        &app,
+        "PUT",
+        "/api/morse/scenarios/first/steps",
+        Some(step("two", "t/b")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+
+    let patch = |body: Value| req(&app, "PATCH", "/api/morse/scenarios/first", Some(body));
+    let ids = |detail: &Value| -> Vec<String> {
+        detail["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let (status, detail, text) = patch(json!({ "op": "move_step", "step": "two", "to": 0 })).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(ids(&detail), ["two", "one"]);
+    let (_, detail, _) =
+        patch(json!({ "op": "duplicate_step", "step": "one", "as_id": "one-again" })).await;
+    assert_eq!(ids(&detail), ["two", "one", "one-again"]);
+    let (_, detail, _) = patch(json!({ "op": "delete_step", "step": "two" })).await;
+    assert_eq!(ids(&detail), ["one", "one-again"]);
+    let (status, _, _) =
+        patch(json!({ "op": "rename_step", "step": "one", "to": "one-again" })).await;
+    assert!(status.is_client_error(), "a taken id is refused");
+
+    let (status, detail, text) = req(
+        &app,
+        "PATCH",
+        "/api/morse/scenarios/first",
+        Some(json!({ "op": "rename", "to": "renamed" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(detail["scenario"], "renamed");
+    let (status, _, _) = req(&app, "GET", "/api/morse/scenarios/first", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, _, _) = req(
+        &app,
+        "PATCH",
+        "/api/morse/scenarios/renamed",
+        Some(json!({ "op": "not-an-edit" })),
+    )
+    .await;
+    assert!(status.is_client_error());
+
+    let (status, _, _) = req(&app, "DELETE", "/api/morse/scenarios/renamed", None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, _) = req(&app, "GET", "/api/morse/scenarios/renamed", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

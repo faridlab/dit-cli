@@ -66,7 +66,14 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/api/morse/envs", get(get_morse_envs))
         .route("/api/morse/runs", get(get_morse_runs))
         .route("/api/morse/scenarios", post(create_morse_scenario))
-        .route("/api/morse/scenarios/{scenario}", get(get_morse_scenario))
+        // Rename, reorder, copy and delete from the screen (ADR 0027) —
+        // each one commit through the fence writer.
+        .route(
+            "/api/morse/scenarios/{scenario}",
+            get(get_morse_scenario)
+                .patch(edit_morse_scenario)
+                .delete(delete_morse_scenario),
+        )
         .route(
             "/api/morse/scenarios/{scenario}/steps",
             put(save_morse_step),
@@ -847,6 +854,36 @@ async fn save_morse_step(
     })
     .await?;
     Ok(Json(detail))
+}
+
+async fn edit_morse_scenario(
+    State(state): State<Arc<AppState>>,
+    Path(scenario): Path<String>,
+    Json(input): Json<dto::MorseScenarioEditDto>,
+) -> Result<Json<dto::MorseScenarioDetailDto>, ApiError> {
+    let me = state.me();
+    let detail = write_dit(&state, move |dit| {
+        let name = dit
+            .morse_edit_scenario(&scenario, input.into(), &me)
+            .map_err(ServerError::Dit)?;
+        let detail = dit.morse_scenario(&name).map_err(ServerError::Dit)?;
+        Ok(dto::morse_scenario_detail_dto(&detail))
+    })
+    .await?;
+    Ok(Json(detail))
+}
+
+async fn delete_morse_scenario(
+    State(state): State<Arc<AppState>>,
+    Path(scenario): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let me = state.me();
+    write_dit(&state, move |dit| {
+        dit.morse_delete_scenario(&scenario, &me)
+            .map_err(ServerError::Dit)
+    })
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn create_morse_scenario(
