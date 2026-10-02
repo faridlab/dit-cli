@@ -442,6 +442,26 @@
   border-radius: 6px;
   max-width: 100%;
 }
+/* Callouts (DESIGN §12.5): a `dit-note` / `dit-warning` fence reads as a
+   callout here and as a plain code block everywhere else. */
+.dit-md pre:has(> code.language-dit-note),
+.dit-md pre:has(> code.language-dit-warning) {
+  background: var(--color-accent-soft);
+  border: 0;
+  border-left: 3px solid var(--color-accent);
+  border-radius: 6px;
+  font-family: inherit;
+  white-space: pre-wrap;
+}
+.dit-md pre:has(> code.language-dit-warning) {
+  background: color-mix(in srgb, var(--color-p1) 12%, transparent);
+  border-left-color: var(--color-p1);
+}
+.dit-md pre > code.language-dit-note,
+.dit-md pre > code.language-dit-warning {
+  font: inherit;
+}
+
 /* Task lists: the checkbox takes the bullet's place, the text lines up with
    it, and a done item reads as done. */
 .dit-md ul.contains-task-list {

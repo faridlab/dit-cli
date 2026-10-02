@@ -16,6 +16,9 @@ import { toast } from "sonner";
 import { docToMarkdown, markdownToDoc, type PmDoc } from "./bridge";
 import { uploadAttachment } from "../lib/api";
 import { altFrom, imageFiles, resolveAttachmentSrc, type AttachContext } from "../lib/attachments";
+import { useDocs, useIssues } from "../lib/queries";
+import { navigate } from "../lib/router";
+import { resolveWikiTarget, wikiItemsFrom, type WikiItem } from "../lib/wikilinks";
 import { ditExtensions } from "./extensions";
 import { BubbleToolbar } from "./BubbleToolbar";
 import { BlockHandle } from "./BlockHandle";
@@ -83,6 +86,21 @@ export default function RichEditor({
 }) {
   const attachRef = useRef(attach);
   attachRef.current = attach;
+
+  // What "[[" offers, and where a followed link goes. Read through refs: the
+  // lists arrive after the editor is built, and rebuilding it would lose
+  // the caret.
+  const docs = useDocs();
+  const issues = useIssues({ limit: 500 });
+  const wikiItems = useRef<readonly WikiItem[]>([]);
+  wikiItems.current = wikiItemsFrom(docs.data ?? [], issues.data?.items ?? []);
+  const docList = useRef(docs.data ?? []);
+  docList.current = docs.data ?? [];
+  const openWikiLink = (target: string) => {
+    const route = resolveWikiTarget(target, docList.current);
+    if (route) navigate(route);
+    else toast(`No single page or issue is called “${target}”`);
+  };
   const takePictures = (files: File[], at?: number): boolean => {
     if (files.length === 0) return false;
     const context = attachRef.current;
@@ -162,6 +180,8 @@ export default function RichEditor({
       extensions: ditExtensions({
         placeholder,
         resolveImageSrc: attach ? (src) => resolveAttachmentSrc(src, attach.baseDir) : undefined,
+        wikiItems: () => wikiItems.current,
+        openWikiLink,
       }),
       editorProps: {
         attributes: { class: "dit-rich", spellcheck: "true" },

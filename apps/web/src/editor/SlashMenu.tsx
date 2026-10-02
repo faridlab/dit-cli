@@ -15,6 +15,8 @@ import {
   Heading1,
   Heading2,
   Heading3,
+  Info,
+  TriangleAlert,
   Image as ImageIcon,
   Link2,
   List,
@@ -34,7 +36,7 @@ type SlashItem = {
   command: (args: { editor: Editor; range: Range }) => void;
 };
 
-const ITEMS: SlashItem[] = [
+export const SLASH_ITEMS: SlashItem[] = [
   {
     label: "Text",
     keywords: "paragraph plain body text",
@@ -111,16 +113,7 @@ const ITEMS: SlashItem[] = [
     command: ({ editor, range }) =>
       // A diagram is a fence whose bytes are SVG — paste or generate them,
       // and the block renders the drawing (ADR 0012).
-      editor
-        .chain()
-        .focus()
-        .deleteRange(range)
-        .insertContent({
-          type: "codeBlock",
-          attrs: { language: "dit-diagram" },
-          content: [],
-        })
-        .run(),
+      insertFence(editor, range, "dit-diagram"),
   },
   {
     label: "Mermaid",
@@ -129,16 +122,23 @@ const ITEMS: SlashItem[] = [
     command: ({ editor, range }) =>
       // A mermaid fence holds diagram text, rendered in the editor by a
       // lazily loaded renderer (ADR 0013) and natively by GitHub.
-      editor
-        .chain()
-        .focus()
-        .deleteRange(range)
-        .insertContent({
-          type: "codeBlock",
-          attrs: { language: "mermaid" },
-          content: [],
-        })
-        .run(),
+      insertFence(editor, range, "mermaid"),
+  },
+  {
+    label: "Note",
+    keywords: "callout note info tip aside",
+    icon: Info,
+    command: ({ editor, range }) =>
+      // A callout is a `dit-note` fence (DESIGN §12.5): a plain code block
+      // anywhere DIT is not drawing it.
+      insertFence(editor, range, "dit-note"),
+  },
+  {
+    label: "Warning",
+    keywords: "callout warning caution danger important",
+    icon: TriangleAlert,
+    command: ({ editor, range }) =>
+      insertFence(editor, range, "dit-warning"),
   },
   {
     label: "Table",
@@ -177,12 +177,30 @@ const ITEMS: SlashItem[] = [
 
 function matching(query: string): SlashItem[] {
   const q = query.toLowerCase().trim();
-  if (!q) return ITEMS;
-  return ITEMS.filter(
+  if (!q) return SLASH_ITEMS;
+  return SLASH_ITEMS.filter(
     (item) =>
       item.label.toLowerCase().includes(q) ||
       item.keywords.split(" ").some((k) => k.startsWith(q)),
   );
+}
+
+/** Put a fenced block (a diagram, mermaid, a callout) where "/" was typed,
+ *  with the caret inside it. An empty line becomes the block; a line with
+ *  words on it keeps them, and the block goes below. */
+export function insertFence(editor: Editor, range: Range, language: string): void {
+  editor.chain().focus().deleteRange(range).run();
+  const { $from } = editor.state.selection;
+  if ($from.parent.type.name === "paragraph" && $from.parent.content.size === 0) {
+    editor.chain().setCodeBlock({ language }).run();
+    return;
+  }
+  const at = $from.after($from.depth);
+  editor
+    .chain()
+    .insertContentAt(at, { type: "codeBlock", attrs: { language } })
+    .setTextSelection(at + 1)
+    .run();
 }
 
 export type SlashListHandle = { onKeyDown: (event: KeyboardEvent) => boolean };

@@ -78,3 +78,47 @@ describe("insert dialogs", () => {
     expect(image).toEqual({ src: "docs/assets/flow.png", alt: "the flow" });
   });
 });
+
+describe("callouts", () => {
+  // DESIGN §12.5: callouts are `dit-note` / `dit-warning` fences — plain
+  // code blocks to GitHub and `cat`, a callout in the editor.
+  it.each([
+    ["dit-note", "Note"],
+    ["dit-warning", "Warning"],
+  ])("renders a %s fence as an editable callout", (language, label) => {
+    const { editor, element } = mount([
+      { type: "codeBlock", attrs: { language }, content: [{ type: "text", text: "Read this first." }] },
+    ]);
+    const callout = element.querySelector(".dit-callout");
+    expect(callout?.getAttribute("data-kind")).toBe(language.slice(4));
+    expect(callout?.querySelector(".dit-callout-label")?.textContent).toBe(label);
+    expect(callout?.querySelector("code")?.textContent).toBe("Read this first.");
+    // Still the same fence underneath: nothing about the bytes changed.
+    expect(editor.state.doc.child(0).attrs.language).toBe(language);
+  });
+});
+
+describe("wiki links", () => {
+  // A link was editable inside: End on a line ending in a link left the
+  // caret in its label, and the next words went into the label.
+  it("are one unit: the caret cannot land inside the label, and the label stays in the document", () => {
+    const { editor, element } = mount([
+      {
+        type: "paragraph",
+        content: [
+          { type: "text", text: "see " },
+          { type: "wikiLink", attrs: { target: "17BXVEN" }, content: [{ type: "text", text: "Third pass" }] },
+        ],
+      },
+    ]);
+    const link = element.querySelector(".dit-wikilink");
+    expect(link?.textContent).toBe("Third pass");
+    expect(link?.getAttribute("contenteditable")).toBe("false");
+    // The end of the paragraph is after the link, not inside it.
+    editor.commands.setTextSelection(editor.state.doc.child(0).nodeSize - 1);
+    editor.commands.insertContent("!");
+    const para = editor.state.doc.child(0);
+    expect(para.lastChild?.text).toBe("!");
+    expect(para.child(1).textContent).toBe("Third pass");
+  });
+});

@@ -37,6 +37,8 @@ import type { NodeView } from "@tiptap/pm/view";
 import { Plugin } from "@tiptap/pm/state";
 
 import { SlashMenu } from "./SlashMenu";
+import { WikiMenu } from "./WikiMenu";
+import type { WikiItem } from "../lib/wikilinks";
 import { MermaidView } from "./mermaidView";
 import { sanitizeSvg } from "./sanitizeSvg";
 
@@ -317,10 +319,36 @@ const DitCodeBlock = CodeBlock.extend({
       if (node.attrs.language === "mermaid") {
         return MermaidView(this.name, editor, node, getPos);
       }
+      if (node.attrs.language === "dit-note" || node.attrs.language === "dit-warning") {
+        return CalloutView(this.name, node);
+      }
       return CodeView(this.name, editor, node, getPos);
     };
   },
 });
+
+/** A `dit-note` / `dit-warning` fence (DESIGN §12.5) drawn as a callout.
+ *  The text is the fence's own and stays plain — elsewhere (GitHub, `cat`)
+ *  it reads as an ordinary code block, so nothing richer may live in it. */
+function CalloutView(name: string, node: PmNode): NodeView {
+  const kind = node.attrs.language === "dit-warning" ? "warning" : "note";
+  const wrap = document.createElement("div");
+  wrap.className = "dit-callout";
+  wrap.dataset.kind = kind;
+  const label = document.createElement("span");
+  label.className = "dit-callout-label";
+  label.contentEditable = "false";
+  label.textContent = kind === "warning" ? "Warning" : "Note";
+  const code = document.createElement("code");
+  code.className = `language-${node.attrs.language}`;
+  wrap.append(label, code);
+  return {
+    dom: wrap,
+    contentDOM: code,
+    update: (updated) => updated.type.name === name && updated.attrs.language === node.attrs.language,
+    ignoreMutation: (mutation) => !code.contains(mutation.target),
+  };
+}
 
 /** Info strings people reach for most; any other is typed freely. */
 const COMMON_LANGUAGES = [
@@ -531,9 +559,60 @@ const HtmlInline = Node.create({
   },
 });
 
-/** `[[target|label]]` — the label is inline content, like comrak has it. */
-const WikiLink = Node.create({
+/** `[[target|label]]` — the label is inline content, like comrak has it.
+ *  Cmd/Ctrl-click opens the target; a plain click places the caret, as in
+ *  any editor. */
+const WikiLink = Node.create<{ open: ((target: string) => void) | null }>({
   name: "wikiLink",
+  // One unit, like a chip: the caret goes before or after it, never into
+  // the label — End on a line ending in a link used to type into the label.
+  // The label still rides in the document (and the bytes) as its content.
+  atom: true,
+  selectable: true,
+  addOptions() {
+    return { open: null };
+  },
+  addNodeView() {
+    return ({ node }) => {
+      const dom = document.createElement("span");
+      dom.className = "dit-wikilink";
+      dom.setAttribute("contenteditable", "false");
+      const sync = (current: PmNode) => {
+        dom.dataset.wikilink = current.attrs.target;
+        dom.textContent = current.textContent || current.attrs.target;
+        dom.title = `${current.attrs.target} — ⌘-click to open`;
+      };
+      sync(node);
+      // No contentDOM on purpose, as with an image's alt text: the label
+      // is kept, not edited in place.
+      return {
+        dom,
+        update: (updated) => {
+          if (updated.type.name !== this.name) return false;
+          sync(updated);
+          return true;
+        },
+      };
+    };
+  },
+  addProseMirrorPlugins() {
+    const open = this.options.open;
+    if (!open) return [];
+    return [
+      new Plugin({
+        props: {
+          handleClick: (_view, _pos, event) => {
+            if (!(event.metaKey || event.ctrlKey)) return false;
+            const link = event.target instanceof Element ? event.target.closest<HTMLElement>(".dit-wikilink") : null;
+            const target = link?.dataset.wikilink;
+            if (!target) return false;
+            open(target);
+            return true;
+          },
+        },
+      }),
+    ];
+  },
   group: "inline",
   inline: true,
   content: "inline*",
@@ -544,7 +623,15 @@ const WikiLink = Node.create({
     return [{ tag: "span[data-wikilink]" }];
   },
   renderHTML({ HTMLAttributes, node }) {
-    return ["span", mergeAttributes(HTMLAttributes, { "data-wikilink": node.attrs.target, class: "dit-wikilink" }), 0];
+    return [
+      "span",
+      mergeAttributes(HTMLAttributes, {
+        "data-wikilink": node.attrs.target,
+        class: "dit-wikilink",
+        title: `${node.attrs.target} — ⌘-click to open`,
+      }),
+      0,
+    ];
   },
   addInputRules() {
     // Typing the closing `]]` of `[[target]]` or `[[target|label]]` turns
@@ -709,7 +796,16 @@ const DitShape = Extension.create({
   },
 });
 
-export function ditExtensions(options: { placeholder?: string; resolveImageSrc?: (src: string) => string } = {}) {
+export function ditExtensions(
+  options: {
+    placeholder?: string;
+    resolveImageSrc?: (src: string) => string;
+    /** What "[[" offers; read per keystroke. */
+    wikiItems?: () => readonly WikiItem[];
+    /** Follow a wiki link (Cmd/Ctrl-click). */
+    openWikiLink?: (target: string) => void;
+  } = {},
+) {
   return [
     DitShape,
     StarterKit.configure({
@@ -738,7 +834,8 @@ export function ditExtensions(options: { placeholder?: string; resolveImageSrc?:
     DitTableHeader,
     HtmlBlock,
     HtmlInline,
-    WikiLink,
+    options.openWikiLink ? WikiLink.configure({ open: options.openWikiLink }) : WikiLink,
+    ...(options.wikiItems ? [WikiMenu.configure({ getItems: options.wikiItems })] : []),
     options.resolveImageSrc ? DitImage.configure({ resolveSrc: options.resolveImageSrc }) : DitImage,
     SlashMenu,
     Placeholder.configure({

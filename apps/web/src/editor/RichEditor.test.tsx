@@ -10,6 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { BridgeResult, PmDoc } from "./bridge";
 
 // The throw lands as an unhandled rejection, which only the test runner's
@@ -58,6 +59,9 @@ afterEach(() => {
 
 describe("RichEditor", () => {
   it("ignores a parse that lands after the editor is gone", async () => {
+    // The editor reads the docs and issues "[[" offers; nothing is fetched
+    // here because the queries never resolve before unmount.
+    const queries = new QueryClient({ defaultOptions: { queries: { retry: false, enabled: false } } });
     const failures: unknown[] = [];
     const onRejection = (reason: unknown) => failures.push(reason);
     process.on("unhandledRejection", onRejection);
@@ -67,7 +71,9 @@ describe("RichEditor", () => {
 
     await act(async () => {
       root.render(
-        <RichEditor value="# first" onChange={() => undefined} onSave={() => undefined} />,
+        <QueryClientProvider client={queries}>
+          <RichEditor value="# first" onChange={() => undefined} onSave={() => undefined} />
+        </QueryClientProvider>,
       );
     });
     // The initial parse resolves: the editor mounts with a document.
@@ -78,7 +84,9 @@ describe("RichEditor", () => {
     // A new value starts a second parse…
     await act(async () => {
       root.render(
-        <RichEditor value="# second" onChange={() => undefined} onSave={() => undefined} />,
+        <QueryClientProvider client={queries}>
+          <RichEditor value="# second" onChange={() => undefined} onSave={() => undefined} />
+        </QueryClientProvider>,
       );
     });
     const pending = resolveParse;

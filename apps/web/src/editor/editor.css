@@ -515,3 +515,51 @@
   border-color: var(--color-edge);
   color: var(--color-ink-2);
 }
+
+/* The "[[" menu rows: title, then the ref or "page" in the margin. */
+.dit-wiki-item {
+  text-align: left;
+  width: 100%;
+}
+.dit-wiki-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dit-wiki-detail {
+  color: var(--color-muted);
+  flex: none;
+  font: 11px var(--font-mono);
+}
+
+/* Callouts: `dit-note` / `dit-warning` fences (DESIGN §12.5). */
+.dit-callout {
+  border-left: 3px solid var(--color-accent);
+  background: var(--color-accent-soft);
+  border-radius: 6px;
+  margin: 0.6em 0;
+  padding: 8px 12px;
+}
+.dit-callout[data-kind="warning"] {
+  background: color-mix(in srgb, var(--color-p1, #d97706) 12%, transparent);
+  border-left-color: var(--color-p1, #d97706);
+}
+.dit-callout-label {
+  color: var(--color-ink-2);
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
+  text-transform: uppercase;
+  user-select: none;
+}
+.dit-callout code {
+  background: none;
+  display: block;
+  font: inherit;
+  padding: 0;
+  white-space: pre-wrap;
+}
