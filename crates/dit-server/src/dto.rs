@@ -913,6 +913,43 @@ pub struct MorseEnvsDto {
     pub allow_hosts: Vec<String>,
 }
 
+/// Set an environment's server and values from the page (ADR 0027). Values
+/// travel one way: the answer to this is `MorseEnvsDto`, which holds names.
+#[derive(Debug, Clone, Deserialize, TS)]
+#[ts(export)]
+pub struct MorseEnvSetDto {
+    /// Absent keeps the server; `null` clears it.
+    #[serde(default, deserialize_with = "present")]
+    #[ts(optional)]
+    pub server: Option<Option<String>>,
+    #[serde(default)]
+    pub vars: Vec<MorseEnvVarSetDto>,
+}
+
+/// One variable: a value to set, or `null` to remove it.
+#[derive(Debug, Clone, Deserialize, TS)]
+#[ts(export)]
+pub struct MorseEnvVarSetDto {
+    pub name: String,
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, TS)]
+#[serde(tag = "op", rename_all = "snake_case")]
+#[ts(export)]
+pub enum MorseEnvEditDto {
+    Rename { to: String },
+}
+
+/// A field that was sent at all, even as `null` — so "clear it" and "leave
+/// it" are different requests.
+fn present<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(Option::deserialize(deserializer)?))
+}
+
 pub fn morse_envs_dto(view: &dit_core::MorseEnvsView) -> MorseEnvsDto {
     MorseEnvsDto {
         envs: view

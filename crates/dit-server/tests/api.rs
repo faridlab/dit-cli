@@ -1362,3 +1362,80 @@ async fn a_scenario_is_renamed_reordered_copied_and_deleted_over_the_api() {
     let (status, _, _) = req(&app, "GET", "/api/morse/scenarios/renamed", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn an_environment_set_from_the_page_never_answers_with_a_value_or_a_new_host() {
+    let (app, tmp) = morse_app();
+    std::fs::write(
+        tmp.path().join(".dit/morse.local.yaml"),
+        "allow_hosts:\n  - 127.0.0.1\n",
+    )
+    .unwrap();
+    let (status, envs, text) = req(
+        &app,
+        "PUT",
+        "/api/morse/envs/staging",
+        Some(json!({
+            "server": "https://api.staging.acme.test",
+            "vars": [{ "name": "token", "value": "s3cr3t-value-that-must-not-echo" }],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert!(
+        !text.contains("s3cr3t-value-that-must-not-echo"),
+        "values go one way: {text}"
+    );
+    assert_eq!(envs["envs"][0]["vars"], json!(["token"]));
+    assert_eq!(
+        envs["allow_hosts"],
+        json!(["127.0.0.1"]),
+        "the page cannot trust a host"
+    );
+    let (_, _, listed) = req(&app, "GET", "/api/morse/envs", None).await;
+    assert!(!listed.contains("s3cr3t-value-that-must-not-echo"));
+
+    // Absent keeps the server; null clears it; a null value removes it.
+    let (_, envs, _) = req(
+        &app,
+        "PUT",
+        "/api/morse/envs/staging",
+        Some(json!({ "vars": [] })),
+    )
+    .await;
+    assert_eq!(envs["envs"][0]["server"], "https://api.staging.acme.test");
+    let (_, envs, _) = req(
+        &app,
+        "PUT",
+        "/api/morse/envs/staging",
+        Some(json!({ "server": null, "vars": [{ "name": "token", "value": null }] })),
+    )
+    .await;
+    assert_eq!(envs["envs"][0]["server"], Value::Null);
+    assert_eq!(envs["envs"][0]["vars"], json!([]));
+
+    let (status, envs, _) = req(
+        &app,
+        "PATCH",
+        "/api/morse/envs/staging",
+        Some(json!({ "op": "rename", "to": "stage" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(envs["envs"][0]["name"], "stage");
+    let (status, _, _) = req(
+        &app,
+        "PUT",
+        "/api/morse/envs/stage",
+        Some(json!({ "server": "https://u:p@x.test", "vars": [] })),
+    )
+    .await;
+    assert!(
+        status.is_client_error(),
+        "credentials in a server are refused"
+    );
+    let (status, envs, _) = req(&app, "DELETE", "/api/morse/envs/stage", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(envs["envs"], json!([]));
+    assert_eq!(envs["allow_hosts"], json!(["127.0.0.1"]));
+}

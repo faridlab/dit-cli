@@ -64,6 +64,14 @@ pub fn app(state: Arc<AppState>) -> Router {
         // same gates, and the page still cannot name a host or trust one.
         .route("/api/morse/send", post(send_morse))
         .route("/api/morse/envs", get(get_morse_envs))
+        // Environments are edited here and trusted nowhere here (ADR 0027):
+        // values go in and never come back, and the allowlist is not a field.
+        .route(
+            "/api/morse/envs/{name}",
+            put(set_morse_env)
+                .patch(edit_morse_env)
+                .delete(delete_morse_env),
+        )
         .route("/api/morse/runs", get(get_morse_runs))
         .route("/api/morse/scenarios", post(create_morse_scenario))
         // Rename, reorder, copy and delete from the screen (ADR 0027) —
@@ -810,6 +818,70 @@ async fn get_morse_envs(
     let envs = read_dit(&state, move |dit| {
         let view = dit.morse_envs().map_err(ServerError::Dit)?;
         Ok(dto::morse_envs_dto(&view))
+    })
+    .await?;
+    Ok(Json(envs))
+}
+
+async fn set_morse_env(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(input): Json<dto::MorseEnvSetDto>,
+) -> Result<Json<dto::MorseEnvsDto>, ApiError> {
+    let envs = write_dit(&state, move |dit| {
+        let set = input
+            .vars
+            .into_iter()
+            .map(|v| (v.name.trim().to_owned(), v.value))
+            .collect();
+        dit.morse_edit_env(
+            &name,
+            dit_core::EnvEdit::Upsert {
+                server: input.server,
+                set,
+            },
+        )
+        .map_err(ServerError::Dit)?;
+        Ok(dto::morse_envs_dto(
+            &dit.morse_envs().map_err(ServerError::Dit)?,
+        ))
+    })
+    .await?;
+    Ok(Json(envs))
+}
+
+async fn edit_morse_env(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(input): Json<dto::MorseEnvEditDto>,
+) -> Result<Json<dto::MorseEnvsDto>, ApiError> {
+    let envs = write_dit(&state, move |dit| {
+        let dto::MorseEnvEditDto::Rename { to } = input;
+        dit.morse_edit_env(
+            &name,
+            dit_core::EnvEdit::Rename {
+                to: to.trim().to_owned(),
+            },
+        )
+        .map_err(ServerError::Dit)?;
+        Ok(dto::morse_envs_dto(
+            &dit.morse_envs().map_err(ServerError::Dit)?,
+        ))
+    })
+    .await?;
+    Ok(Json(envs))
+}
+
+async fn delete_morse_env(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<Json<dto::MorseEnvsDto>, ApiError> {
+    let envs = write_dit(&state, move |dit| {
+        dit.morse_edit_env(&name, dit_core::EnvEdit::Delete)
+            .map_err(ServerError::Dit)?;
+        Ok(dto::morse_envs_dto(
+            &dit.morse_envs().map_err(ServerError::Dit)?,
+        ))
     })
     .await?;
     Ok(Json(envs))
