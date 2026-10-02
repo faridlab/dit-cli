@@ -80,21 +80,35 @@
   margin-top: 0.15em;
 }
 
-/* Task items: the NodeView's checkbox replaces the bullet. */
+/* The NodeView wraps editable content in a div; `contents` keeps paragraphs
+   behaving as direct children of the li for spacing and list markers. */
+.dit-li-content {
+  display: contents;
+}
+
+/* Task items: the NodeView's checkbox replaces the bullet and sits on the
+   first line of the text. The content is a block (a paragraph, maybe a
+   nested list), so the row is a flex box — inline, the checkbox would get a
+   line of its own above the text. */
 .dit-rich li.dit-task {
+  align-items: baseline;
+  display: flex;
+  gap: 0.5em;
   list-style: none;
   margin-left: -1.4em;
   padding-left: 0;
 }
 .dit-rich li.dit-task > input[type="checkbox"] {
-  margin-right: 0.4em;
-  accent-color: var(--color-accent-hi);
-  vertical-align: middle;
+  cursor: pointer;
 }
-/* The NodeView wraps editable content in a div; `contents` keeps paragraphs
-   behaving as direct children of the li for spacing and list markers. */
-.dit-li-content {
-  display: contents;
+.dit-rich li.dit-task > .dit-li-content {
+  display: block;
+  flex: 1;
+  min-width: 0;
+}
+.dit-rich li.dit-task[data-checked] > .dit-li-content > p:first-child {
+  color: var(--color-muted);
+  text-decoration: line-through;
 }
 
 .dit-rich a {
@@ -169,15 +183,6 @@
 .dit-rich img {
   border-radius: 6px;
   max-width: 100%;
-}
-
-/* A soft line break renders as nothing (like the preview) — but the byte
-   must stay visible while editing, so it gets a faint marker. */
-.dit-softbreak::after {
-  color: var(--color-dim);
-  content: "⏎";
-  font-size: 0.75em;
-  vertical-align: 0.35em;
 }
 
 /* The placeholder (empty document, empty heading). */

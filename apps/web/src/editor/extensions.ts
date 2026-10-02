@@ -114,6 +114,7 @@ const DitListItem = ListItem.extend({
 
       const sync = () => {
         item.className = current.attrs.task === null ? "" : "dit-task";
+        item.toggleAttribute("data-checked", checked());
         mountCheckbox();
         if (checkbox !== null) checkbox.checked = checked();
         if (current.attrs.task === null && checkbox !== null) {
@@ -135,19 +136,32 @@ const DitListItem = ListItem.extend({
       };
     };
   },
+  addKeyboardShortcuts() {
+    return {
+      ...this.parent?.(),
+      // Enter in a to-do starts another to-do, and an open one even after a
+      // done item — the way a checklist is written. A plain item stays plain.
+      Enter: () => {
+        const item = this.editor.state.selection.$from.node(-1);
+        const task = item?.type.name === this.name ? item.attrs.task : null;
+        return this.editor.commands.splitListItem(this.name, task === null ? {} : { task: false });
+      },
+    };
+  },
   addInputRules() {
     return [
-      // Typing `[ ] ` or `[x] ` at the start of a list item's paragraph
-      // turns the item into a task item.
+      // Typing `[] `, `[ ] ` or `[x] ` at the start of a paragraph makes a
+      // to-do: inside a list item it converts the item, on a plain line it
+      // starts a list.
       new InputRule({
-        find: /\[([ xX])\] $/,
+        find: /\[([ xX]?)\] $/,
         handler: ({ state, range, match, chain }) => {
           const $from = state.selection.$from;
           if (range.from !== $from.start()) return; // only at paragraph start
+          const task = match[1] === "x" || match[1] === "X" ? "x" : false;
           for (let depth = $from.depth; depth > 0; depth -= 1) {
             const ancestor = $from.node(depth);
             if (ancestor.type.name !== "listItem") continue;
-            const task = match[1] === " " ? false : "x";
             chain()
               .command(({ tr }) => {
                 tr.setNodeMarkup($from.before(depth), undefined, { ...ancestor.attrs, task });
@@ -157,6 +171,21 @@ const DitListItem = ListItem.extend({
               .run();
             return;
           }
+          if ($from.parent.type.name !== "paragraph") return;
+          chain()
+            .deleteRange({ from: range.from, to: range.to })
+            .toggleBulletList()
+            .command(({ tr }) => {
+              const $item = tr.selection.$from;
+              for (let depth = $item.depth; depth > 0; depth -= 1) {
+                const ancestor = $item.node(depth);
+                if (ancestor.type.name !== this.name) continue;
+                tr.setNodeMarkup($item.before(depth), undefined, { ...ancestor.attrs, task });
+                return true;
+              }
+              return false;
+            })
+            .run();
         },
       }),
     ];
@@ -307,12 +336,19 @@ const DitCodeBlock = CodeBlock.extend({
 /** One node, two comrak states: `soft` is a single newline inside a paragraph. */
 const DitHardBreak = HardBreak.extend({
   addAttributes() {
-    return { soft: { default: false, keepOnSplit: false } };
+    return {
+      soft: {
+        default: false,
+        keepOnSplit: false,
+        parseHTML: (element) => element.classList.contains("dit-softbreak"),
+      },
+    };
   },
   renderHTML({ node }) {
-    // Rendered like DIT's server-side preview renders it — no line break —
-    // with a faint marker so the byte is visible while editing.
-    return node.attrs.soft ? ["span", { class: "dit-softbreak" }] : ["br"];
+    // Both kinds show as a line break — what people mean when they press
+    // Enter, and how comments render it too. The class keeps the two apart
+    // so the bytes round-trip unchanged.
+    return node.attrs.soft ? ["br", { class: "dit-softbreak" }] : ["br"];
   },
 });
 
