@@ -530,3 +530,31 @@ fn a_blob_id_is_git_s_own_hash_of_the_bytes_even_when_they_are_not_text() {
         .unwrap();
     assert!(!stored.success(), "blob_id must not store the object");
 }
+
+#[test]
+fn a_committed_file_reads_back_byte_for_byte_and_an_uncommitted_one_does_not() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = hermetic_repo(tmp.path());
+    let bytes: &[u8] = b"\x89PNG\r\n\x1a\n\0\xff binary";
+    fs::create_dir_all(tmp.path().join("fixtures")).unwrap();
+    fs::write(tmp.path().join("fixtures/a.png"), bytes).unwrap();
+    repo.add(".").unwrap();
+    repo.commit("fixture").unwrap();
+    assert_eq!(
+        repo.blob_bytes("HEAD:fixtures/a.png").as_deref(),
+        Some(bytes)
+    );
+    // The working tree moves on; HEAD is what is read.
+    fs::write(tmp.path().join("fixtures/a.png"), b"changed").unwrap();
+    fs::write(tmp.path().join("fixtures/new.bin"), b"never committed").unwrap();
+    assert_eq!(
+        repo.blob_bytes("HEAD:fixtures/a.png").as_deref(),
+        Some(bytes)
+    );
+    assert_eq!(repo.blob_bytes("HEAD:fixtures/new.bin"), None);
+    assert_eq!(
+        repo.blob_bytes("HEAD:fixtures"),
+        None,
+        "a tree is not a file"
+    );
+}

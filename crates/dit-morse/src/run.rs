@@ -14,7 +14,9 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use dit_model::{Capture, Expect, ExpectRule, MorseValue, Selector};
+use dit_model::{
+    Capture, Expect, ExpectRule, MorseValue, PartContent, RawContent, RequestBody, Selector,
+};
 
 use crate::jsonpath;
 use crate::local::LocalConfig;
@@ -36,7 +38,7 @@ pub struct PlannedStep {
     pub params: Vec<(String, MorseValue)>,
     pub headers: Vec<(String, MorseValue)>,
     pub query: Vec<(String, MorseValue)>,
-    pub body: Option<MorseValue>,
+    pub body: Option<RequestBody>,
     pub expect: Expect,
     pub capture: Vec<Capture>,
 }
@@ -48,6 +50,9 @@ pub struct RunPlan {
     /// Where the API says it lives — from the spec's `servers:`, or the local
     /// override. Never from a committed DIT file.
     pub base_url: String,
+    /// The bytes of every file a body sends, keyed by repository path, read
+    /// from HEAD by the caller (ADR 0027). The sender reads nothing itself.
+    pub files: BTreeMap<String, Vec<u8>>,
     pub vars: Vars,
     pub steps: Vec<PlannedStep>,
 }
@@ -246,27 +251,40 @@ fn send(
 
     let body = match &step.body {
         None => None,
-        Some(value) => match template::to_json(value, vars) {
-            Ok(json) => Some(json),
-            Err(err) => {
-                outcome.error = Some(err.to_string());
+        Some(shape) => match encode_body(shape, vars, &plan.files) {
+            Ok(encoded) => Some(encoded),
+            Err(message) => {
+                outcome.error = Some(message);
                 return Err(Box::new(outcome).into());
             }
         },
     };
-    if body.is_some()
-        && !step
-            .headers
-            .iter()
-            .any(|(n, _)| n.eq_ignore_ascii_case("content-type"))
-    {
-        request = request.header("content-type", "application/json");
-    }
-
-    let built = match body {
-        Some(json) => request.body(json),
-        None => request.body(String::new()),
+    let user_type = step
+        .headers
+        .iter()
+        .any(|(n, _)| n.eq_ignore_ascii_case("content-type"));
+    let bytes = match body {
+        Some(Encoded {
+            bytes,
+            content_type,
+            owns_type,
+        }) => {
+            // A header the author wrote wins — except over a multipart
+            // boundary, without which the server cannot split the parts.
+            if owns_type || !user_type {
+                if owns_type && user_type {
+                    if let Some(headers) = request.headers_mut() {
+                        headers.remove("content-type");
+                    }
+                }
+                request = request.header("content-type", content_type);
+            }
+            bytes
+        }
+        None => Vec::new(),
     };
+
+    let built = request.body(bytes);
     let built = match built {
         Ok(built) => built,
         Err(err) => {
@@ -404,6 +422,157 @@ fn describe(selector: &Selector) -> String {
         Selector::Header(name) => format!("header `{name}`"),
         Selector::JsonPath(path) => format!("`{path}`"),
     }
+}
+
+/// One multipart part, rendered, before the boundary is chosen.
+struct RenderedPart {
+    name: String,
+    file_name: Option<String>,
+    kind: Option<String>,
+    bytes: Vec<u8>,
+}
+
+/// A body ready to send, with the type it is sent as.
+struct Encoded {
+    bytes: Vec<u8>,
+    content_type: String,
+    /// The type carries something the bytes depend on (a multipart
+    /// boundary), so no header may replace it.
+    owns_type: bool,
+}
+
+/// Turn a step's body into bytes (ADR 0027).
+fn encode_body(
+    body: &RequestBody,
+    vars: &Vars,
+    files: &BTreeMap<String, Vec<u8>>,
+) -> Result<Encoded, String> {
+    let file = |path: &str| -> Result<&Vec<u8>, String> {
+        files.get(path).ok_or_else(|| {
+            format!("`{path}` was not read for this run — a file part is read from the repository at HEAD")
+        })
+    };
+    let plain = |bytes: Vec<u8>, content_type: &str| Encoded {
+        bytes,
+        content_type: content_type.to_owned(),
+        owns_type: false,
+    };
+    match body {
+        RequestBody::Json(value) => {
+            let json = template::to_json(value, vars).map_err(|e| e.to_string())?;
+            Ok(plain(json.into_bytes(), "application/json"))
+        }
+        RequestBody::Form(pairs) => {
+            let mut out = Vec::new();
+            for (name, value) in pairs {
+                let rendered = render(value, vars)?;
+                out.push(format!("{}={}", form_encode(name), form_encode(&rendered)));
+            }
+            Ok(plain(
+                out.join("&").into_bytes(),
+                "application/x-www-form-urlencoded",
+            ))
+        }
+        RequestBody::Raw {
+            media_type,
+            content: RawContent::Text(text),
+        } => {
+            let rendered = render(&MorseValue::Str(text.clone()), vars)?;
+            Ok(plain(rendered.into_bytes(), media_type))
+        }
+        RequestBody::Raw {
+            media_type,
+            content: RawContent::File(path),
+        } => Ok(plain(file(path)?.clone(), media_type)),
+        RequestBody::Multipart(parts) => {
+            // Each part's bytes, rendered, before a boundary is chosen.
+            let mut rendered: Vec<RenderedPart> = Vec::new();
+            for part in parts {
+                let name = render(&MorseValue::Str(part.name.clone()), vars)?;
+                match &part.content {
+                    PartContent::Value(value) => {
+                        rendered.push(RenderedPart {
+                            name,
+                            file_name: None,
+                            kind: part.media_type.clone(),
+                            bytes: render(value, vars)?.into_bytes(),
+                        });
+                    }
+                    PartContent::File(path) => {
+                        let file_name = path.rsplit('/').next().unwrap_or(path).to_owned();
+                        let kind = part
+                            .media_type
+                            .clone()
+                            .unwrap_or_else(|| "application/octet-stream".to_owned());
+                        rendered.push(RenderedPart {
+                            name,
+                            file_name: Some(file_name),
+                            kind: Some(kind),
+                            bytes: file(path)?.clone(),
+                        });
+                    }
+                }
+            }
+            // A boundary must occur in no part: count up until one doesn't.
+            let mut n = 0u32;
+            let boundary = loop {
+                let candidate = format!("dit-morse-boundary-{n}");
+                let needle = candidate.as_bytes();
+                if !rendered
+                    .iter()
+                    .any(|p| p.bytes.windows(needle.len()).any(|w| w == needle))
+                {
+                    break candidate;
+                }
+                n += 1;
+            };
+            let mut out = Vec::new();
+            for RenderedPart {
+                name,
+                file_name,
+                kind,
+                bytes,
+            } in rendered
+            {
+                out.extend_from_slice(
+                    format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"")
+                        .as_bytes(),
+                );
+                if let Some(file_name) = file_name {
+                    out.extend_from_slice(format!("; filename=\"{file_name}\"").as_bytes());
+                }
+                out.extend_from_slice(b"\r\n");
+                if let Some(kind) = kind {
+                    out.extend_from_slice(format!("Content-Type: {kind}\r\n").as_bytes());
+                }
+                out.extend_from_slice(b"\r\n");
+                out.extend_from_slice(&bytes);
+                out.extend_from_slice(b"\r\n");
+            }
+            out.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+            Ok(Encoded {
+                bytes: out,
+                content_type: format!("multipart/form-data; boundary={boundary}"),
+                owns_type: true,
+            })
+        }
+    }
+}
+
+/// `application/x-www-form-urlencoded`: letters, digits and `-._*` as
+/// they are, a space as `+`, every other byte as `%XX`.
+fn form_encode(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'*' => {
+                out.push(byte as char)
+            }
+            b' ' => out.push('+'),
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
 }
 
 fn render(value: &MorseValue, vars: &Vars) -> Result<String, String> {

@@ -61,6 +61,9 @@ pub use dit_model::{
     Readiness, Release, ReleasePatch, ReleaseStatus, StatusCategory, StoredFieldEvent, Workflow,
     WorkflowStatus, CONTENT_ROOTS, DOC_ROOTS, GENERATED_INDEX_MARKER,
 };
+pub use dit_model::{
+    is_media_type, morse_file_path_problem, MultipartPart, PartContent, RawContent, RequestBody,
+};
 pub use dit_model::{AttachmentError, ImageKind, MAX_ATTACHMENT_BYTES};
 pub use dit_model::{
     Capture, Expect, ExpectRule, JsonCheck, MorseScenario, MorseStep, MorseValue, OperationRef,

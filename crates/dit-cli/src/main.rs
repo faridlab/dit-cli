@@ -1206,7 +1206,8 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
                     body: body
                         .as_deref()
                         .map(dit_core::morse_value_from_json)
-                        .transpose()?,
+                        .transpose()?
+                        .map(dit_core::RequestBody::Json),
                     expect: dit_core::Expect {
                         status,
                         json: Vec::new(),

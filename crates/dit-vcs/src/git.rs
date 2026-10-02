@@ -334,6 +334,22 @@ impl Repo {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
     }
 
+    /// The bytes of a file at a revision (`HEAD:fixtures/a.png`), exactly —
+    /// `None` when the path is not a file there. What a Morse file part sends
+    /// (ADR 0027): the committed blob, never the working tree.
+    pub fn blob_bytes(&self, revspec: &str) -> Option<Vec<u8>> {
+        let kind = self.run(&["cat-file", "-t", revspec]).ok()?;
+        if kind != "blob" {
+            return None;
+        }
+        let out = Command::new("git")
+            .args(["cat-file", "blob", revspec])
+            .current_dir(&self.root)
+            .output()
+            .ok()?;
+        out.status.success().then_some(out.stdout)
+    }
+
     /// The text of a blob addressed the way `git show` addresses them, e.g.
     /// `:1:.dit/schema/workflow.yaml` for stage 1 (the common ancestor) of a
     /// file during a merge.

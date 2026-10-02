@@ -5073,3 +5073,109 @@ fn reading_an_attachment_stays_inside_the_sandbox_and_trusts_bytes_not_names() {
         Err(dit_core::DitError::NotFound(_))
     ));
 }
+
+// ---- Body shapes: files come from HEAD (ADR 0027) --------------------------
+
+/// Like `serve`, and hands back each request's raw body.
+fn serve_recording(
+    responses: Vec<(u16, &'static str)>,
+) -> (u16, std::sync::mpsc::Receiver<Vec<u8>>) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for (index, stream) in listener.incoming().enumerate() {
+            let Ok(mut stream) = stream else { break };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let mut len = 0usize;
+            loop {
+                let mut header = String::new();
+                reader.read_line(&mut header).unwrap();
+                let header = header.trim_end();
+                if header.is_empty() {
+                    break;
+                }
+                if let Some(v) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut body = vec![0u8; len];
+            reader.read_exact(&mut body).unwrap();
+            let (status, text) = responses.get(index).copied().unwrap_or((500, "{}"));
+            let _ = stream.write_all(
+                format!("HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}", text.len()).as_bytes(),
+            );
+            let _ = tx.send(body);
+            if index + 1 >= responses.len() {
+                break;
+            }
+        }
+    });
+    (port, rx)
+}
+
+fn upload_scenario(pin: &str, file: &str) -> String {
+    format!(
+        "```dit-morse\nscenario: upload\nspec: {{ id: auth, commit: {pin} }}\nenv: local\nsteps:\n  - id: send\n    operation: auth/createUser\n    raw: {{ type: application/octet-stream, file: {file} }}\n```\n"
+    )
+}
+
+#[test]
+fn a_file_a_body_sends_is_read_from_head_not_the_working_tree() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, pin) = morse_workspace(tmp.path());
+    std::fs::create_dir_all(tmp.path().join("fixtures")).unwrap();
+    std::fs::write(
+        tmp.path().join("fixtures/payload.bin"),
+        b"committed\x00bytes",
+    )
+    .unwrap();
+    let repo = Repo::open(tmp.path()).unwrap();
+    repo.add("fixtures").unwrap();
+    repo.commit("a fixture").unwrap();
+    write_doc(
+        &mut dit,
+        "docs/api/upload.md",
+        &upload_scenario(&pin, "fixtures/payload.bin"),
+    );
+    // An edit nobody committed is not what a scenario sends.
+    std::fs::write(tmp.path().join("fixtures/payload.bin"), b"uncommitted edit").unwrap();
+    let (port, seen) = serve_recording(vec![(201, "{}")]);
+    point_at(tmp.path(), port);
+    let outcome = dit.morse_run("upload", None).unwrap();
+    assert!(outcome.steps[0].error.is_none(), "{outcome:#?}");
+    assert_eq!(seen.recv().unwrap(), b"committed\x00bytes");
+}
+
+#[test]
+fn an_ignored_or_uncommitted_file_is_never_sent() {
+    // The case ADR 0027 exists for: a fence in a pull request naming a
+    // git-ignored file full of secrets. It is not in HEAD, so nothing goes.
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, pin) = morse_workspace(tmp.path());
+    std::fs::write(tmp.path().join(".gitignore"), ".dit-cache/\nsecrets.env\n").unwrap();
+    std::fs::write(tmp.path().join("secrets.env"), "API_KEY=hunter2").unwrap();
+    let repo = Repo::open(tmp.path()).unwrap();
+    repo.add(".gitignore").unwrap();
+    repo.commit("ignore secrets").unwrap();
+    write_doc(
+        &mut dit,
+        "docs/api/upload.md",
+        &upload_scenario(&pin, "secrets.env"),
+    );
+    let (port, seen) = serve_recording(vec![(201, "{}")]);
+    point_at(tmp.path(), port);
+    let err = dit.morse_run("upload", None).unwrap_err();
+    assert!(
+        err.to_string().contains("secrets.env") && err.to_string().contains("HEAD"),
+        "{err}"
+    );
+    assert!(
+        seen.recv_timeout(std::time::Duration::from_millis(300))
+            .is_err(),
+        "nothing reached the server"
+    );
+}

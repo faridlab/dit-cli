@@ -12,7 +12,10 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{channel, Receiver};
 use std::thread;
 
-use dit_model::{Capture, Expect, ExpectRule, JsonCheck, MorseValue, Selector};
+use dit_model::{
+    Capture, Expect, ExpectRule, JsonCheck, MorseValue, MultipartPart, PartContent, RawContent,
+    RequestBody, Selector,
+};
 use dit_morse::{run, LocalConfig, PlannedStep, Policy, RunPlan};
 
 /// What the server saw.
@@ -121,15 +124,16 @@ fn a_chain_carries_a_value_from_one_response_into_the_next_request() {
     let plan = RunPlan {
         scenario: "register".into(),
         base_url: format!("http://127.0.0.1:{port}"),
+        files: BTreeMap::new(),
         vars: [("email".to_owned(), "dev@acme.test".to_owned())]
             .into_iter()
             .collect(),
         steps: vec![
             PlannedStep {
-                body: Some(MorseValue::Map(vec![(
+                body: Some(RequestBody::Json(MorseValue::Map(vec![(
                     "email".into(),
                     MorseValue::Str("{{email}}".into()),
-                )])),
+                )]))),
                 expect: Expect {
                     status: Some(201),
                     json: vec![],
@@ -213,6 +217,7 @@ fn a_failed_expectation_stops_the_chain_and_says_what_it_wanted() {
     let plan = RunPlan {
         scenario: "register".into(),
         base_url: format!("http://127.0.0.1:{port}"),
+        files: BTreeMap::new(),
         vars: BTreeMap::new(),
         steps: vec![
             PlannedStep {
@@ -244,6 +249,7 @@ fn an_unallowed_host_stops_the_run_before_anything_is_sent() {
     let plan = RunPlan {
         scenario: "register".into(),
         base_url: format!("http://127.0.0.1:{port}"),
+        files: BTreeMap::new(),
         vars: BTreeMap::new(),
         steps: vec![step("one", "GET", "/a")],
     };
@@ -267,6 +273,7 @@ fn a_redirect_is_reported_rather_than_followed() {
     let plan = RunPlan {
         scenario: "redirected".into(),
         base_url: format!("http://127.0.0.1:{port}"),
+        files: BTreeMap::new(),
         vars: BTreeMap::new(),
         steps: vec![PlannedStep {
             expect: Expect {
@@ -290,6 +297,7 @@ fn a_value_nothing_bound_is_reported_before_the_request_is_made() {
     let plan = RunPlan {
         scenario: "unbound".into(),
         base_url: format!("http://127.0.0.1:{port}"),
+        files: BTreeMap::new(),
         vars: BTreeMap::new(),
         steps: vec![step("one", "GET", "/users/{{missing}}")],
     };
@@ -306,6 +314,7 @@ fn a_capture_that_reaches_nothing_fails_the_step_rather_than_binding_empty() {
     let plan = RunPlan {
         scenario: "nocapture".into(),
         base_url: format!("http://127.0.0.1:{port}"),
+        files: BTreeMap::new(),
         vars: BTreeMap::new(),
         steps: vec![PlannedStep {
             capture: vec![Capture {
@@ -330,6 +339,7 @@ fn a_path_parameter_is_filled_from_params_and_stays_one_segment() {
     let plan = RunPlan {
         scenario: "fetch".into(),
         base_url: format!("http://127.0.0.1:{port}"),
+        files: BTreeMap::new(),
         vars: [("party_id".to_owned(), "p/1?x".to_owned())]
             .into_iter()
             .collect(),
@@ -353,6 +363,7 @@ fn a_path_parameter_with_no_value_is_refused_before_anything_is_sent() {
     let plan = RunPlan {
         scenario: "fetch".into(),
         base_url: format!("http://127.0.0.1:{port}"),
+        files: BTreeMap::new(),
         vars: BTreeMap::new(),
         steps: vec![step("fetch", "GET", "/parties/{id}/contacts/{contact_id}")],
     };
@@ -364,4 +375,161 @@ fn a_path_parameter_with_no_value_is_refused_before_anything_is_sent() {
         "the message names the parameter and where it goes: {error}"
     );
     assert_eq!(outcome.steps[0].status, None, "nothing was sent");
+}
+
+// ---- Body shapes (ADR 0027) -------------------------------------------------
+
+fn one_step_plan(port: u16, body: RequestBody, files: BTreeMap<String, Vec<u8>>) -> RunPlan {
+    let mut vars = BTreeMap::new();
+    vars.insert("email".to_owned(), "dev@acme.test".to_owned());
+    RunPlan {
+        scenario: "shapes".into(),
+        base_url: format!("http://127.0.0.1:{port}"),
+        files,
+        vars: vars.into_iter().collect(),
+        steps: vec![PlannedStep {
+            body: Some(body),
+            ..step("one", "POST", "/in")
+        }],
+    }
+}
+
+fn str_value(s: &str) -> MorseValue {
+    MorseValue::Str(s.to_owned())
+}
+
+#[test]
+fn a_form_body_is_url_encoded_with_its_content_type() {
+    let (port, seen) = serve(vec![(200, "{}")]);
+    let body = RequestBody::Form(vec![
+        ("grant_type".into(), str_value("password")),
+        ("user".into(), str_value("{{email}}")),
+        ("note".into(), str_value("a b&c=d")),
+    ]);
+    let outcome = run(
+        &one_step_plan(port, body, BTreeMap::new()),
+        &allowing_localhost(),
+    );
+    assert!(outcome.passed(), "{outcome:#?}");
+    let seen = seen.recv().unwrap();
+    assert_eq!(
+        seen.headers["content-type"],
+        "application/x-www-form-urlencoded"
+    );
+    assert_eq!(
+        seen.body,
+        "grant_type=password&user=dev%40acme.test&note=a+b%26c%3Dd"
+    );
+}
+
+#[test]
+fn raw_text_goes_out_as_written_under_its_own_type() {
+    let (port, seen) = serve(vec![(200, "{}")]);
+    let body = RequestBody::Raw {
+        media_type: "application/xml".into(),
+        content: RawContent::Text("<u>{{email}}</u>".into()),
+    };
+    let outcome = run(
+        &one_step_plan(port, body, BTreeMap::new()),
+        &allowing_localhost(),
+    );
+    assert!(outcome.passed(), "{outcome:#?}");
+    let seen = seen.recv().unwrap();
+    assert_eq!(seen.headers["content-type"], "application/xml");
+    assert_eq!(seen.body, "<u>dev@acme.test</u>");
+}
+
+#[test]
+fn a_raw_file_sends_the_bytes_the_plan_carries() {
+    let (port, seen) = serve(vec![(200, "{}")]);
+    let body = RequestBody::Raw {
+        media_type: "application/octet-stream".into(),
+        content: RawContent::File("fixtures/blob.bin".into()),
+    };
+    let mut files = BTreeMap::new();
+    files.insert("fixtures/blob.bin".to_owned(), b"committed bytes".to_vec());
+    let outcome = run(&one_step_plan(port, body, files), &allowing_localhost());
+    assert!(outcome.passed(), "{outcome:#?}");
+    let seen = seen.recv().unwrap();
+    assert_eq!(seen.headers["content-type"], "application/octet-stream");
+    assert_eq!(seen.body, "committed bytes");
+}
+
+#[test]
+fn a_multipart_body_carries_fields_and_files_between_boundaries() {
+    let (port, seen) = serve(vec![(200, "{}")]);
+    let body = RequestBody::Multipart(vec![
+        MultipartPart {
+            name: "title".into(),
+            content: PartContent::Value(str_value("Hi {{email}}")),
+            media_type: None,
+        },
+        MultipartPart {
+            name: "avatar".into(),
+            content: PartContent::File("fixtures/avatar.png".into()),
+            media_type: Some("image/png".into()),
+        },
+    ]);
+    let mut files = BTreeMap::new();
+    files.insert("fixtures/avatar.png".to_owned(), b"PNGDATA".to_vec());
+    let outcome = run(&one_step_plan(port, body, files), &allowing_localhost());
+    assert!(outcome.passed(), "{outcome:#?}");
+    let seen = seen.recv().unwrap();
+    let kind = &seen.headers["content-type"];
+    let boundary = kind
+        .strip_prefix("multipart/form-data; boundary=")
+        .unwrap_or_else(|| panic!("{kind}"));
+    assert_eq!(
+        seen.body,
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\nHi dev@acme.test\r\n\
+             --{boundary}\r\nContent-Disposition: form-data; name=\"avatar\"; filename=\"avatar.png\"\r\n\
+             Content-Type: image/png\r\n\r\nPNGDATA\r\n--{boundary}--\r\n"
+        )
+    );
+    assert!(
+        !"Hi dev@acme.testPNGDATA".contains(boundary),
+        "the boundary occurs in no part"
+    );
+}
+
+#[test]
+fn a_header_content_type_wins_except_for_multipart_whose_boundary_it_would_lose() {
+    let (port, seen) = serve(vec![(200, "{}"), (200, "{}")]);
+    let mut plan = one_step_plan(
+        port,
+        RequestBody::Raw {
+            media_type: "text/plain".into(),
+            content: RawContent::Text("x".into()),
+        },
+        BTreeMap::new(),
+    );
+    plan.steps[0].headers = vec![("Content-Type".into(), str_value("text/csv"))];
+    assert!(run(&plan, &allowing_localhost()).passed());
+    assert_eq!(seen.recv().unwrap().headers["content-type"], "text/csv");
+    plan.steps[0].body = Some(RequestBody::Multipart(vec![MultipartPart {
+        name: "a".into(),
+        content: PartContent::Value(str_value("b")),
+        media_type: None,
+    }]));
+    assert!(run(&plan, &allowing_localhost()).passed());
+    assert!(
+        seen.recv().unwrap().headers["content-type"].starts_with("multipart/form-data; boundary=")
+    );
+}
+
+#[test]
+fn a_file_the_plan_does_not_carry_refuses_the_step_before_sending() {
+    let body = RequestBody::Raw {
+        media_type: "application/octet-stream".into(),
+        content: RawContent::File("fixtures/missing.bin".into()),
+    };
+    // Nothing listens on this port: a request sent would fail differently.
+    let outcome = run(
+        &one_step_plan(9, body, BTreeMap::new()),
+        &allowing_localhost(),
+    );
+    let error = outcome.steps[0].error.clone().unwrap_or_default();
+    assert!(error.contains("fixtures/missing.bin"), "{error}");
+    assert_eq!(outcome.steps[0].status, None);
 }

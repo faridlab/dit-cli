@@ -11,6 +11,7 @@
 //! still comes only from the index (I2). Firing a scenario is Morse 2 and
 //! lives in `dit-morse`; nothing in this module can reach the network (I11).
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use dit_index::{StoredMorseProof, StoredMorseScenario, StoredMorseSpec};
@@ -834,6 +835,7 @@ impl Dit {
         Ok(RunPlan {
             scenario: parsed.scenario.clone(),
             base_url,
+            files: self.files_sent_by(&steps)?,
             vars,
             steps,
         })
@@ -916,7 +918,7 @@ pub struct SendDraft {
     pub params: Vec<(String, MorseValue)>,
     pub query: Vec<(String, MorseValue)>,
     pub headers: Vec<(String, MorseValue)>,
-    pub body: Option<MorseValue>,
+    pub body: Option<dit_model::RequestBody>,
     pub expect: Expect,
     pub capture: Vec<Capture>,
 }
@@ -947,6 +949,9 @@ pub struct MorseRunRecord {
 /// The prefix a single operation's run is kept under, so it can never be
 /// mistaken for a scenario's.
 pub const SEND_KEY_PREFIX: &str = "send:";
+
+/// The largest file a body may send (ADR 0027).
+pub const MORSE_FILE_MAX_BYTES: usize = 10 * 1024 * 1024;
 
 impl Dit {
     /// One scenario, parsed, from the index — the body the indexer stored.
@@ -1084,9 +1089,10 @@ impl Dit {
             ))
         })?;
         let key = format!("{SEND_KEY_PREFIX}{}", draft.operation.qualified());
-        let plan = RunPlan {
+        let mut plan = RunPlan {
             scenario: key,
             base_url,
+            files: BTreeMap::new(),
             vars,
             steps: vec![PlannedStep {
                 id: draft.operation.operation.clone(),
@@ -1101,6 +1107,7 @@ impl Dit {
                 capture: draft.capture.clone(),
             }],
         };
+        plan.files = self.files_sent_by(&plan.steps)?;
         let policy = Policy {
             allow: self.morse_local(env.unwrap_or("default"))?,
             timeout_secs: 30,
@@ -1108,6 +1115,45 @@ impl Dit {
         let outcome = dit_morse::run(&plan, &policy);
         self.record_run(&outcome)?;
         Ok(outcome)
+    }
+
+    /// The bytes of every file the steps' bodies send, read from the
+    /// workspace's HEAD (ADR 0027). Never the working tree: an edit nobody
+    /// committed is not what the scenario says, and a git-ignored file — the
+    /// local secrets, a `.env` — is not in HEAD at all, so a fence arriving
+    /// by pull request cannot name one and have it sent.
+    fn files_sent_by(&self, steps: &[PlannedStep]) -> Result<BTreeMap<String, Vec<u8>>, DitError> {
+        let mut files = BTreeMap::new();
+        for step in steps {
+            let Some(body) = &step.body else { continue };
+            for path in body.files() {
+                if files.contains_key(path) {
+                    continue;
+                }
+                if let Some(problem) = dit_model::morse_file_path_problem(path) {
+                    return Err(DitError::Refuse(format!(
+                        "step `{}`, `{path}`: {problem}",
+                        step.id
+                    )));
+                }
+                let bytes = self.repo.blob_bytes(&format!("HEAD:{path}")).ok_or_else(|| {
+                    DitError::Refuse(format!(
+                        "step `{}` sends `{path}`, which is not in the repository at HEAD — a file part \
+                         is read from the last commit, never from the working tree, so commit it first",
+                        step.id
+                    ))
+                })?;
+                if bytes.len() > MORSE_FILE_MAX_BYTES {
+                    return Err(DitError::Refuse(format!(
+                        "step `{}` sends `{path}`, which is {} bytes — a file part is at most 10 MB",
+                        step.id,
+                        bytes.len()
+                    )));
+                }
+                files.insert(path.to_owned(), bytes);
+            }
+        }
+        Ok(files)
     }
 
     /// This machine's environments, by name, and the hosts it allows.
