@@ -15,7 +15,9 @@ export type TabRef =
   | { kind: "scn"; scenario: string }
   | { kind: "spec"; spec: string }
   | { kind: "env"; env: string }
-  | { kind: "allow" };
+  | { kind: "allow" }
+  /** A request typed in the page, not saved into a scenario yet. */
+  | { kind: "req"; id: string };
 
 export interface Tab {
   key: string;
@@ -32,6 +34,8 @@ export function tabKey(ref: TabRef): string {
       return `op:${ref.spec}/${ref.op}`;
     case "step":
       return `step:${ref.scenario}/${ref.step}`;
+    case "req":
+      return `req:${ref.id}`;
     case "scn":
       return `scn:${ref.scenario}`;
     case "spec":

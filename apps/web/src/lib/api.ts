@@ -26,6 +26,7 @@ import type {
   MorseRunDto,
   MorseScenarioDetailDto,
   MorseScenarioEditDto,
+  MorseInlineRequestDto,
   MorseEnvSetDto,
   MorseSendDto,
   MorseStepDto,
@@ -220,10 +221,16 @@ export function getMorseScenario(name: string): Promise<MorseScenarioDetailDto> 
 }
 
 /** Save one step into its fence — replaced by id, or appended. One commit. */
-export function saveMorseStep(scenario: string, step: MorseStepDto): Promise<MorseScenarioDetailDto> {
+/** Save one step; a request it calls that the page typed travels with it,
+ *  so both land in one commit (ADR 0027). */
+export function saveMorseStep(
+  scenario: string,
+  step: MorseStepDto,
+  defineRequest?: MorseInlineRequestDto,
+): Promise<MorseScenarioDetailDto> {
   return request<MorseScenarioDetailDto>(
     `/api/morse/scenarios/${encodeURIComponent(scenario)}/steps`,
-    { method: "PUT", body: JSON.stringify(step) },
+    { method: "PUT", body: JSON.stringify(defineRequest ? { ...step, define_request: defineRequest } : step) },
   );
 }
 

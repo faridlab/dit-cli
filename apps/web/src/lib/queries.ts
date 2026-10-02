@@ -17,6 +17,7 @@ import type {
   BoardDto,
   FieldPatch,
   MorseEnvSetDto,
+  MorseInlineRequestDto,
   MorseScenarioEditDto,
   MorseStepDto,
   NewIssueInput,
@@ -187,8 +188,8 @@ export function useMorseScenario(name: string | null) {
 export function useSaveMorseStep() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: ({ scenario, step }: { scenario: string; step: MorseStepDto }) =>
-      api.saveMorseStep(scenario, step),
+    mutationFn: ({ scenario, step, define }: { scenario: string; step: MorseStepDto; define?: MorseInlineRequestDto }) =>
+      api.saveMorseStep(scenario, step, define),
     onSuccess: (detail) => {
       client.setQueryData(queryKeys.morseScenario(detail.scenario), detail);
       void client.invalidateQueries({ queryKey: queryKeys.morse });

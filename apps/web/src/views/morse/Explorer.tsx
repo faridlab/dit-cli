@@ -28,6 +28,7 @@ export function Explorer({
   onPin,
   onHistory,
   onNewEnv,
+  onNewRequest,
 }: {
   report: MorseReportDto;
   envs: MorseEnvsDto | undefined;
@@ -43,6 +44,8 @@ export function Explorer({
   onHistory: (ref: TabRef, run: MorseRunDto) => void;
   /** Create an environment on this machine (ADR 0027). */
   onNewEnv: (name: string) => void;
+  /** A request no spec describes: a method and a path (ADR 0027). */
+  onNewRequest: () => void;
 }) {
   const [filter, setFilter] = useState("");
   const q = filter.trim().toLowerCase();
@@ -348,6 +351,12 @@ export function Explorer({
         />
         {hits ? <span className="n">{hits.total.toLocaleString()}</span> : null}
       </label>
+      <div className="mw-newrow">
+        <button type="button" className="mw-btn sm" onClick={onNewRequest} title="A method and a path on one of your specs' servers">
+          <Plus className="i" aria-hidden />
+          New request
+        </button>
+      </div>
       <div className="mw-tree">{body}</div>
     </aside>
   );

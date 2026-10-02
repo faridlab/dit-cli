@@ -5,7 +5,12 @@ import {
   emptyBody,
   filePathProblem,
   isMediaType,
+  draftForRequest,
+  inlineOp,
+  requestIdFor,
+  requestProblem,
   stepPreview,
+  syncPathParams,
   tabVerb,
   hostOf,
   isSelector,
@@ -183,5 +188,28 @@ describe("tab verbs", () => {
     // A step tab restored after a reload has no draft: it showed GET for a POST.
     expect(tabVerb(undefined)).toBeNull();
     expect(tabVerb({ method: "post" })).toBe("POST");
+  });
+});
+
+describe("new requests", () => {
+  it("are a method and a path, never an address", () => {
+    expect(requestProblem("post", "/users/{id}")).toBeNull();
+    expect(requestProblem("FETCH", "/a")).toMatch(/method/);
+    for (const path of ["https://evil.test/a", "//evil.test/a", "a", ""]) expect(requestProblem("GET", path)).not.toBeNull();
+  });
+
+  it("keep their path parameters in step with the path being typed", () => {
+    let d = draftForRequest("r");
+    d = syncPathParams(d, "/users/{id}/orders/{order}");
+    d.params[0] = { key: "id", value: "{{user_id}}" };
+    d = syncPathParams(d, "/users/{id}");
+    expect(d.params).toEqual([{ key: "id", value: "{{user_id}}" }]);
+  });
+
+  it("get an id from their words, unique in the scenario", () => {
+    expect(requestIdFor("GET", "/internal/ping", [])).toBe("get-internal-ping");
+    expect(requestIdFor("GET", "/internal/ping", ["get-internal-ping"])).toBe("get-internal-ping-2");
+    expect(requestIdFor("POST", "/users/{id}/avatar", [])).toBe("post-users-avatar");
+    expect(inlineOp("ping", { spec: "t", method: "post", path: "/p", summary: null }).method).toBe("POST");
   });
 });

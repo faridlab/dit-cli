@@ -1726,3 +1726,11 @@ button.mw-li:hover{background:var(--hover)}
 .mw-envvalue input{flex:1}
 .mw-envadd{padding:6px}
 .mw-envadd input{border:1px solid var(--edge-2)!important;border-radius:6px;max-width:220px}
+
+/* New requests (ADR 0027): the method and the path are typed in the bar. */
+.mw-newrow{padding:0 10px 6px;display:flex}
+.mw-newrow .mw-btn{flex:1;justify-content:center}
+.mw-msel{border:0;background:transparent;font:inherit;font-weight:600;cursor:pointer;outline:0;padding:0 2px}
+.mw-specsel{border:0;border-right:1px solid var(--edge);background:transparent;color:var(--muted);font:12px var(--mono);padding:0 6px;outline:0;cursor:pointer}
+.mw-pathin{flex:1;min-width:0;border:0;background:transparent;color:var(--ink);font:inherit;outline:0}
+.mw-pathin:focus{background:var(--active)}

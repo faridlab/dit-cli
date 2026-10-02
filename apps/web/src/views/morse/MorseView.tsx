@@ -16,18 +16,24 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { ChevronDown, Globe, Layers, Link2, PanelLeft, Radio, ShieldCheck, X } from "lucide-react";
+import { ChevronDown, Globe, Layers, Link2, PanelLeft, Plus, Radio, ShieldCheck, X } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "../../lib/cn";
 import {
   bodyError,
   cloneStep,
   draftForOperation,
+  draftForRequest,
+  inlineOp,
   isSelector,
+  requestProblem,
   sameStep,
   secretHeaders,
   suggestStepId,
+  requestIdFor,
+  syncPathParams,
   tabVerb,
+  type InlineDef,
 } from "../../lib/morse";
 import {
   useCreateMorseScenario,
@@ -105,6 +111,9 @@ export function MorseView() {
   const [dirty, setDirty] = useState<Set<string>>(new Set());
   const [subs, setSubs] = useState<Record<string, Sub>>({});
   const [results, setResults] = useState<Record<string, RunState>>({});
+  /** Requests the page typed, per tab: a new request, or an inline step's
+   *  own `requests:` entry (ADR 0027). */
+  const [inlines, setInlines] = useState<Record<string, InlineDef>>({});
   const [saves, setSaves] = useState<Record<string, SaveState>>({});
   const [saveFor, setSaveFor] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -149,6 +158,11 @@ export function MorseView() {
     if (!step) return;
     setBaseline((b) => (b[key] ? b : { ...b, [key]: cloneStep(step) }));
     setDrafts((d) => (d[key] ? d : { ...d, [key]: cloneStep(step) }));
+    const def = step.request ? detailQ.data.requests.find((r) => r.id === step.request) : undefined;
+    if (def) {
+      const spec = detailQ.data.spec_id;
+      setInlines((m) => (m[key] ? m : { ...m, [key]: { spec, method: def.method, path: def.path, summary: def.summary } }));
+    }
   }, [activeTab, detailQ.data]);
 
   // A tab restored from the last visit comes back without its draft — drafts
@@ -159,6 +173,32 @@ export function MorseView() {
     const found = report?.specs.find((s) => s.id === spec)?.operations.find((o) => o.operation_id === op);
     if (found) setDrafts((d) => (d[activeTab.key] ? d : { ...d, [activeTab.key]: draftForOperation(spec, found) }));
   }, [activeTab, drafts, report]);
+
+  /** The operation a tab shows: from the catalogue, or — for a request the
+   *  page typed — dressed up from its method and path. */
+  const opForTab = (key: string) => {
+    const draft = drafts[key];
+    const def = inlines[key];
+    if (draft?.request && def) {
+      return { spec: report?.specs.find((s) => s.id === def.spec), op: inlineOp(draft.request, def) };
+    }
+    return findOp(draft?.operation ?? null);
+  };
+
+  /** A new request: a method and a path on a registered spec's server. */
+  const newRequest = () => {
+    const spec = report?.specs[0]?.id;
+    if (!spec) {
+      toast("Register an OpenAPI spec first — a request's host comes from its spec or an environment");
+      return;
+    }
+    const id = `request-${Date.now().toString(36)}`;
+    const key = tabKey({ kind: "req", id });
+    setDrafts((d) => ({ ...d, [key]: draftForRequest(id) }));
+    setInlines((m) => ({ ...m, [key]: { spec, method: "GET", path: "/", summary: null } }));
+    setSubs((m) => ({ ...m, [key]: "params" }));
+    openTab({ kind: "req", id }, true);
+  };
 
   const openTab = useCallback(
     (ref: TabRef, pin = false) => {
@@ -228,6 +268,7 @@ export function MorseView() {
     setBaseline(move);
     setSubs(move);
     setResults(move);
+    setInlines(move);
     setDirty((d) => {
       if (!d.has(from)) return d;
       const n = new Set(d);
@@ -281,17 +322,21 @@ export function MorseView() {
 
   // ---- editing ------------------------------------------------------------
 
-  const scheduleSave = (key: string, scenario: string, draft: MorseStepDto) => {
+  const scheduleSave = (key: string, scenario: string, draft: MorseStepDto, def: InlineDef | undefined = inlines[key]) => {
     clearTimeout(timers.current[key]);
     setSaves((s) => ({ ...s, [key]: { state: "editing" } }));
     timers.current[key] = setTimeout(() => {
       const refuse = (why: string) => setSaves((s) => ({ ...s, [key]: { state: "error", message: why } }));
       if (secretHeaders(draft).length) return refuse("a header holds a credential literal — use {{token}}");
-      if (bodyError(draft.body)) return refuse("the body is not valid JSON yet");
+      const bodyProblem = bodyError(draft.body);
+      if (bodyProblem) return refuse(bodyProblem);
+      if (def && requestProblem(def.method, def.path)) return refuse(requestProblem(def.method, def.path) ?? "");
       if (draft.capture.some((c) => c.name && !isSelector(c.from))) return refuse("a capture is not a selector");
       setSaves((s) => ({ ...s, [key]: { state: "saving" } }));
+      const define =
+        def && draft.request ? { id: draft.request, method: def.method, path: def.path, summary: def.summary } : undefined;
       saveStep.mutate(
-        { scenario, step: draft },
+        { scenario, step: draft, define },
         {
           onSuccess: (detail) => {
             const saved = detail.steps.find((s) => s.id === draft.id);
@@ -307,7 +352,7 @@ export function MorseView() {
   const onDraftChange = (tab: Tab, next: MorseStepDto) => {
     setDrafts((d) => ({ ...d, [tab.key]: next }));
     if (!tab.pinned) pin(tab.key);
-    if (tab.ref.kind === "op") {
+    if (tab.ref.kind === "op" || tab.ref.kind === "req") {
       setDirty((d) => new Set(d).add(tab.key));
     } else if (tab.ref.kind === "step" && detailQ.data?.editable !== false) {
       const base = baseline[tab.key];
@@ -320,21 +365,44 @@ export function MorseView() {
     }
   };
 
+  /** The method, path or spec of a typed request changed: the path's
+   *  `{name}` segments become params, and an inline step saves as usual. */
+  const onInlineChange = (tab: Tab, def: InlineDef) => {
+    setInlines((m) => ({ ...m, [tab.key]: def }));
+    const draft = drafts[tab.key];
+    if (!draft) return;
+    const next = syncPathParams(draft, def.path);
+    setDrafts((d) => ({ ...d, [tab.key]: next }));
+    if (!tab.pinned) pin(tab.key);
+    if (tab.ref.kind === "req") setDirty((d) => new Set(d).add(tab.key));
+    else if (tab.ref.kind === "step" && detailQ.data?.editable !== false) scheduleSave(tab.key, tab.ref.scenario, next, def);
+  };
+
   // ---- firing -------------------------------------------------------------
 
   const doSend = (tab: Tab) => {
     const draft = drafts[tab.key];
     if (!draft) return;
-    if (!draft.operation) {
+    const def = inlines[tab.key];
+    if (!draft.operation && !def) {
       setResults((r) => ({
         ...r,
-        [tab.key]: { state: "error", message: "An inline request is sent from its scenario — use Run on the scenario." },
+        [tab.key]: { state: "error", message: "This request's method and path are not known — open it from its scenario." },
       }));
+      return;
+    }
+    const problem = def ? requestProblem(def.method, def.path) : null;
+    if (problem) {
+      setResults((r) => ({ ...r, [tab.key]: { state: "error", message: problem } }));
       return;
     }
     setResults((r) => ({ ...r, [tab.key]: { state: "pending" } }));
     send.mutate(
-      { env: effectiveEnv, step: draft },
+      {
+        env: effectiveEnv,
+        step: draft,
+        request: !draft.operation && def ? { spec: def.spec, method: def.method, path: def.path } : undefined,
+      },
       {
         onSuccess: (out) => setResults((r) => ({ ...r, [tab.key]: { state: "done", run: out } })),
         onError: (e) => setResults((r) => ({ ...r, [tab.key]: { state: "error", message: message(e) } })),
@@ -363,7 +431,10 @@ export function MorseView() {
     if (!key) return;
     const draft = drafts[key];
     if (!draft) return;
-    const step = { ...draft, id: target.stepId };
+    const def = inlines[key];
+    // A typed request is saved under the step's id, with its definition.
+    const step = def ? { ...draft, id: target.stepId, request: target.stepId } : { ...draft, id: target.stepId };
+    const define = def ? { id: target.stepId, method: def.method, path: def.path, summary: def.summary } : undefined;
     const land = (scenario: string, detailSteps: MorseStepDto[], doc: string) => {
       const stepKey = tabKey({ kind: "step", scenario, step: step.id });
       const saved = detailSteps.find((s) => s.id === step.id) ?? step;
@@ -375,6 +446,7 @@ export function MorseView() {
       setBaseline((b) => ({ ...b, [stepKey]: cloneStep(saved) }));
       setSubs((s) => ({ ...s, [stepKey]: s[key] ?? "params" }));
       setResults(({ [key]: moved, ...rest }) => (moved ? { ...rest, [stepKey]: moved } : rest));
+      setInlines(({ [key]: moved, ...rest }) => (moved ? { ...rest, [stepKey]: moved } : rest));
       setSaves((s) => ({ ...s, [stepKey]: { state: "saved" } }));
       setDirty((d) => {
         const n = new Set(d);
@@ -388,16 +460,16 @@ export function MorseView() {
     };
     if (target.mode === "add") {
       saveStep.mutate(
-        { scenario: target.scenario, step },
+        { scenario: target.scenario, step, define },
         {
           onSuccess: (detail) => land(detail.scenario, detail.steps, detail.path),
           onError: (e) => setSaveError(message(e)),
         },
       );
     } else {
-      const specId = step.operation?.split("/")[0] ?? "";
+      const specId = def?.spec ?? step.operation?.split("/")[0] ?? "";
       createScenario.mutate(
-        { doc: target.doc, name: target.name, spec_id: specId, env: effectiveEnv, step },
+        { doc: target.doc, name: target.name, spec_id: specId, env: effectiveEnv, step, requests: define ? [define] : undefined },
         {
           onSuccess: (detail) => land(detail.scenario, detail.steps, detail.path),
           onError: (e) => setSaveError(message(e)),
@@ -447,10 +519,15 @@ export function MorseView() {
         const verb = tabVerb(op);
         return { label: op?.summary ?? r.op, lead: verb ? <Verb method={verb} wide /> : <Layers className="i" aria-hidden /> };
       }
+      case "req": {
+        const def = inlines[t.key];
+        const label = def ? def.summary ?? `${def.path}` : "New request";
+        return { label, lead: def ? <Verb method={def.method.toUpperCase()} wide /> : <Plus className="i" aria-hidden /> };
+      }
       case "step": {
         // A step tab not opened since the page loaded has no draft yet, so
         // its method is unknown — say nothing rather than guess "GET".
-        const { op } = findOp(drafts[t.key]?.operation ?? null);
+        const { op } = opForTab(t.key);
         const verb = tabVerb(op);
         return { label: `${r.scenario} › ${r.step}`, lead: verb ? <Verb method={verb} wide /> : <Link2 className="i" aria-hidden /> };
       }
@@ -554,8 +631,20 @@ export function MorseView() {
           />
         );
       case "op":
-      case "step": {
+      case "step":
+      case "req": {
         const draft = drafts[key];
+        if (!draft && r.kind === "req") {
+          return (
+            <div className="mw-page">
+              <p>This request was never saved, and drafts are not kept when the page reloads.</p>
+              <button type="button" className="mw-btn" onClick={newRequest}>
+                <Plus className="i" aria-hidden />
+                Start a new request
+              </button>
+            </div>
+          );
+        }
         if (!draft) {
           if (r.kind === "step" && detailQ.isError) return <ErrorBox error={detailQ.error} />;
           if (r.kind === "step" && detailQ.data && !detailQ.data.steps.some((s) => s.id === r.step)) {
@@ -581,8 +670,9 @@ export function MorseView() {
           }
           return <Loading label="Reading the fence…" />;
         }
-        const { spec, op } = findOp(draft.operation);
+        const { spec, op } = opForTab(key);
         const view = r.kind === "step" ? report.scenarios.find((s) => s.scenario === r.scenario) : undefined;
+        const def = inlines[key];
         return (
           <RequestTab
             key={key}
@@ -598,7 +688,7 @@ export function MorseView() {
             result={results[key]}
             onSend={() => doSend(activeTab)}
             onSave={
-              r.kind === "op"
+              r.kind === "op" || r.kind === "req"
                 ? () => {
                     if (secretHeaders(draft).length) {
                       toast.error("Save is blocked: a header holds a credential literal");
@@ -612,7 +702,8 @@ export function MorseView() {
             save={saves[key]}
             scenario={r.kind === "step" ? { name: r.scenario, doc: view?.path ?? detailQ.data?.path ?? "" } : undefined}
             capturedEarlier={capturedEarlier}
-            editable={r.kind === "op" || detailQ.data?.editable !== false}
+            editable={r.kind !== "step" || detailQ.data?.editable !== false}
+            inline={def ? { def, specs: report.specs, onChange: (next) => onInlineChange(activeTab, next) } : undefined}
             fence={detailQ.data?.fence ?? ""}
             showFence={showFence}
             onToggleFence={() => setShowFence((v) => !v)}
@@ -638,6 +729,7 @@ export function MorseView() {
         onOpen={(ref) => openTab(ref)}
         onPin={(ref) => openTab(ref, true)}
         onHistory={openFromHistory}
+        onNewRequest={newRequest}
         onNewEnv={(name) =>
           editEnv.mutate(
             { kind: "set", name, input: { vars: [] } },
@@ -749,8 +841,12 @@ export function MorseView() {
             if (!o) setSaveFor(null);
           }}
           report={report}
-          specId={saveDraft.operation?.split("/")[0] ?? ""}
-          suggestedId={suggestStepId(saveDraft.operation?.split("/")[1] ?? saveDraft.id)}
+          specId={saveFor && inlines[saveFor] ? inlines[saveFor].spec : (saveDraft.operation?.split("/")[0] ?? "")}
+          suggestedId={
+            saveFor && inlines[saveFor]
+              ? requestIdFor(inlines[saveFor].method, inlines[saveFor].path, [])
+              : suggestStepId(saveDraft.operation?.split("/")[1] ?? saveDraft.id)
+          }
           pending={saveStep.isPending || createScenario.isPending}
           serverError={saveError}
           onSave={doSave}

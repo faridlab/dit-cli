@@ -88,6 +88,79 @@ export function draftForOperation(specId: string, op: MorseOperationDto): MorseS
   };
 }
 
+// ---- New requests: a method and a path (ADR 0027) ---------------------------
+
+/** A request the page typed: the spec whose server it goes to, and the
+ *  method and path. There is no field for a host. */
+export type InlineDef = { spec: string; method: string; path: string; summary: string | null };
+
+export const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE"];
+
+/** Why a method and a path cannot be a request, or null — the server's rule. */
+export function requestProblem(method: string, path: string): string | null {
+  if (!METHODS.includes(method.trim().toUpperCase())) return `\`${method}\` is not an HTTP method`;
+  const p = path.trim();
+  if (!p.startsWith("/") || p.startsWith("//") || p.includes("://")) {
+    return "a path beginning with / — the host comes from the spec or the environment, never from here";
+  }
+  return null;
+}
+
+/** An inline request dressed as a catalogue operation, so the request tab
+ *  shows and edits it like any other. Nothing about it is in a spec. */
+export function inlineOp(id: string, def: InlineDef): MorseOperationDto {
+  return {
+    operation_id: id,
+    method: def.method.toUpperCase(),
+    path: def.path,
+    summary: def.summary,
+    tag: null,
+    params: [],
+    body: [],
+    responses: [],
+  };
+}
+
+/** A fresh draft for a request no spec describes. */
+export function draftForRequest(id: string): MorseStepDto {
+  return {
+    id,
+    operation: null,
+    request: id,
+    params: [],
+    query: [],
+    headers: [],
+    body: null,
+    status: null,
+    checks: [],
+    capture: [],
+  };
+}
+
+/** Keep a draft's `params` in step with the `{name}` segments of a path the
+ *  page is typing: new names appear, gone ones leave, values are kept. */
+export function syncPathParams(draft: MorseStepDto, path: string): MorseStepDto {
+  const names = pathParams(path);
+  const kept = new Map(draft.params.map((p) => [p.key, p.value]));
+  return { ...draft, params: names.map((key) => ({ key, value: kept.get(key) ?? "" })) };
+}
+
+/** A request id from what was typed: words of the path, unique among `taken`. */
+export function requestIdFor(method: string, path: string, taken: readonly string[]): string {
+  const words = path
+    .replace(/\{[^}]*\}/g, "")
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean)
+    .slice(-2)
+    .join("-")
+    .toLowerCase();
+  const stem = `${method.toLowerCase()}${words ? `-${words}` : ""}`;
+  if (!taken.includes(stem)) return stem;
+  let n = 2;
+  while (taken.includes(`${stem}-${n}`)) n += 1;
+  return `${stem}-${n}`;
+}
+
 /** The verb a tab shows, or null when the operation is not known — a tab
  *  must not claim GET for an operation it has not looked up. */
 export function tabVerb(op: { method: string } | undefined | null): string | null {

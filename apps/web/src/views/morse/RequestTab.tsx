@@ -29,14 +29,17 @@ import {
 } from "lucide-react";
 import { cn } from "../../lib/cn";
 import {
+  METHODS,
   bodyError,
   bodyKind,
   emptyBody,
   isSelector,
   pathSegments,
   RAW_TYPES,
+  requestProblem,
   secretHeaders,
   stepPreview,
+  type InlineDef,
 } from "../../lib/morse";
 import type {
   MorseEnvDto,
@@ -87,8 +90,9 @@ export function RequestTab({
   fence,
   showFence,
   onToggleFence,
+  inline,
 }: {
-  kind: "op" | "step";
+  kind: "op" | "step" | "req";
   draft: MorseStepDto;
   onChange: (next: MorseStepDto) => void;
   sub: Sub;
@@ -109,6 +113,13 @@ export function RequestTab({
   fence: string;
   showFence: boolean;
   onToggleFence: () => void;
+  /** A request no spec describes (ADR 0027): its method, path and the spec
+   *  whose server it goes to are edited in the address bar. */
+  inline?: {
+    def: InlineDef;
+    specs: MorseSpecDto[];
+    onChange: (def: InlineDef) => void;
+  };
 }) {
   const secret = secretHeaders(draft);
   const sendRef = useRef(onSend);
@@ -170,7 +181,7 @@ export function RequestTab({
         </div>
         <span className="mw-sp" />
         {kind === "step" ? <SavedNote save={save} editable={editable} doc={scenario?.doc ?? ""} /> : null}
-        {kind === "op" ? (
+        {kind === "op" || kind === "req" ? (
           <button
             type="button"
             className="mw-btn"
@@ -196,7 +207,39 @@ export function RequestTab({
 
       <div className="mw-urlrow">
         <div className="mw-url">
-          <span className={cn("m", `mw-v-${op.method}`)}>{op.method}</span>
+          {inline ? (
+            <select
+              className={cn("m mw-msel", `mw-v-${op.method}`)}
+              aria-label="Method"
+              value={inline.def.method.toUpperCase()}
+              disabled={!editable}
+              onChange={(e) => inline.onChange({ ...inline.def, method: e.target.value })}
+            >
+              {METHODS.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <span className={cn("m", `mw-v-${op.method}`)}>{op.method}</span>
+          )}
+          {inline && inline.specs.length > 1 ? (
+            <select
+              className="mw-specsel"
+              aria-label="Spec whose server this goes to"
+              title="The host comes from this spec's servers: or the environment"
+              value={inline.def.spec}
+              disabled={!editable || kind === "step"}
+              onChange={(e) => inline.onChange({ ...inline.def, spec: e.target.value })}
+            >
+              {inline.specs.map((sp) => (
+                <option key={sp.id} value={sp.id}>
+                  {sp.id}
+                </option>
+              ))}
+            </select>
+          ) : null}
           <span
             className={cn("base", !base && "bad")}
             title={
@@ -209,7 +252,18 @@ export function RequestTab({
           >
             {base ?? "no server"}
           </span>
-          <span className="path">
+          {inline ? (
+            <input
+              className="path mw-pathin"
+              aria-label="Path"
+              value={inline.def.path}
+              spellCheck={false}
+              disabled={!editable}
+              placeholder="/path/{id}"
+              onChange={(e) => inline.onChange({ ...inline.def, path: e.target.value })}
+            />
+          ) : null}
+          <span className="path" hidden={!!inline}>
             {pathSegments(op.path, draft.params).map((seg, i) => (
               <span key={i} className={seg.kind === "param" ? "mw-pp" : seg.kind === "filled" ? "mw-vv" : undefined}>
                 {seg.text}
@@ -241,6 +295,13 @@ export function RequestTab({
           Send
         </button>
       </div>
+
+      {inline && requestProblem(inline.def.method, inline.def.path) ? (
+        <div className="mw-errline" style={{ margin: "0 16px 8px" }}>
+          <AlertTriangle className="i" aria-hidden />
+          <span>{requestProblem(inline.def.method, inline.def.path)}</span>
+        </div>
+      ) : null}
 
       <div className="mw-subtabs" role="tablist">
         {SUBS.map((s) => (
