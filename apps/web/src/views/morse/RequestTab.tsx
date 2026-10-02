@@ -30,12 +30,23 @@ import {
 import { cn } from "../../lib/cn";
 import {
   bodyError,
+  bodyKind,
+  emptyBody,
   isSelector,
   pathSegments,
+  RAW_TYPES,
   secretHeaders,
   stepPreview,
 } from "../../lib/morse";
-import type { MorseEnvDto, MorseOperationDto, MorsePairDto, MorseRunDto, MorseSpecDto, MorseStepDto } from "../../lib/types";
+import type {
+  MorseEnvDto,
+  MorseOperationDto,
+  MorsePairDto,
+  MorsePartDto,
+  MorseRunDto,
+  MorseSpecDto,
+  MorseStepDto,
+} from "../../lib/types";
 import { allowCommand, Banner, Coded, copyText, CopyCmd } from "./common";
 
 export type RunState =
@@ -243,7 +254,7 @@ export function RequestTab({
           >
             {s.label}
             {counts[s.id] ? <span className="c">{counts[s.id]}</span> : null}
-            {s.id === "body" && draft.body?.trim() ? <span className="g" /> : null}
+            {s.id === "body" && bodyKind(draft.body) !== "none" ? <span className="g" /> : null}
           </button>
         ))}
       </div>
@@ -304,7 +315,9 @@ function cliFor(d: MorseStepDto, envName: string | null): string {
   for (const p of d.params.filter((p) => p.key && p.value)) parts.push(`--param ${quote(`${p.key}=${p.value}`)}`);
   for (const p of d.query.filter((p) => p.key && p.value)) parts.push(`--query ${quote(`${p.key}=${p.value}`)}`);
   for (const h of d.headers.filter((h) => h.key)) parts.push(`--header ${quote(`${h.key}: ${h.value}`)}`);
-  if (d.body?.trim()) parts.push(`--body ${quote(d.body.replace(/\s*\n\s*/g, " "))}`);
+  // `dit morse send --body` takes JSON; another shape is sent from its saved
+  // step with `dit morse run`.
+  if (d.body?.kind === "json" && d.body.text.trim()) parts.push(`--body ${quote(d.body.text.replace(/\s*\n\s*/g, " "))}`);
   return parts.join(" ");
 }
 
@@ -578,6 +591,18 @@ function HeadersPane({
   );
 }
 
+/** The body shapes as Postman names them (ADR 0027). "binary" is a raw
+ *  body that sends one committed file; JSON is a raw type in Postman and its
+ *  own shape here, because only JSON is validated as you type. */
+type BodyChoice = "none" | "multipart" | "form" | "raw" | "binary";
+
+function choiceOf(body: MorseStepDto["body"]): BodyChoice {
+  if (!body) return "none";
+  if (body.kind === "raw") return body.file !== null ? "binary" : "raw";
+  if (body.kind === "json") return "raw";
+  return body.kind;
+}
+
 function BodyPane({
   draft,
   op,
@@ -585,41 +610,261 @@ function BodyPane({
 }: {
   draft: MorseStepDto;
   op: MorseOperationDto;
-  onBody: (body: string | null) => void;
+  onBody: (body: MorseStepDto["body"]) => void;
 }) {
-  if (!op.body.length && !draft.body) {
-    return (
-      <div className="mw-empty" style={{ height: "auto", padding: 30 }}>
-        The spec describes no request body for this operation.
-        <button type="button" className="mw-btn sm" onClick={() => onBody("{\n  \n}")}>
-          <Plus className="i" aria-hidden />
-          Add a JSON body anyway
-        </button>
-      </div>
-    );
-  }
-  const err = bodyError(draft.body);
+  const body = draft.body;
+  const choice = choiceOf(body);
+  const err = bodyError(body);
+  const choose = (next: BodyChoice) => {
+    if (next === choice) return;
+    if (next === "binary") onBody({ kind: "raw", media_type: "application/octet-stream", text: null, file: "" });
+    else if (next === "raw") onBody(op.body.length ? emptyBody("json", body) : emptyBody("raw", body));
+    else onBody(emptyBody(next, body));
+  };
   return (
     <>
-      <textarea
-        className="mw-code"
-        aria-label="Request body"
-        spellCheck={false}
-        value={draft.body ?? ""}
-        onChange={(e) => onBody(e.target.value)}
-      />
+      <div className="mw-bodykinds" role="radiogroup" aria-label="Body type">
+        {(
+          [
+            ["none", "none"],
+            ["multipart", "form-data"],
+            ["form", "x-www-form-urlencoded"],
+            ["raw", "raw"],
+            ["binary", "binary"],
+          ] as Array<[BodyChoice, string]>
+        ).map(([value, label]) => (
+          <label key={value} className={cn("mw-bodykind", choice === value && "on")}>
+            <input type="radio" name="body-kind" checked={choice === value} onChange={() => choose(value)} />
+            {label}
+          </label>
+        ))}
+        {choice === "raw" && body ? (
+          <RawTypePicker body={body} onBody={onBody} />
+        ) : null}
+      </div>
+
+      {choice === "none" ? (
+        <p className="mw-hint">
+          {op.body.length
+            ? "The spec describes a body for this operation — pick raw to send its JSON."
+            : "This request sends no body."}
+        </p>
+      ) : null}
+
+      {body?.kind === "json" ? (
+        <>
+          <textarea
+            className="mw-code"
+            aria-label="Request body (JSON)"
+            spellCheck={false}
+            value={body.text}
+            onChange={(e) => onBody({ kind: "json", text: e.target.value })}
+          />
+          {!err ? (
+            <p className="mw-hint">
+              {op.body.length ? "Pre-filled with the schema's required fields. " : null}
+              <code>{"{{name}}"}</code> can stand in for any value; a value written entirely as one reference takes the
+              shape of what it holds.
+            </p>
+          ) : null}
+        </>
+      ) : null}
+
+      {body?.kind === "raw" && body.file === null ? (
+        <textarea
+          className="mw-code"
+          aria-label={`Request body (${body.media_type})`}
+          spellCheck={false}
+          value={body.text ?? ""}
+          onChange={(e) => onBody({ ...body, text: e.target.value })}
+        />
+      ) : null}
+
+      {body?.kind === "raw" && body.file !== null ? (
+        <div className="mw-binary">
+          <div className="mw-fld">
+            <label htmlFor="mw-binary-file">File in this repository</label>
+            <input
+              id="mw-binary-file"
+              value={body.file}
+              placeholder="fixtures/payload.bin"
+              spellCheck={false}
+              onChange={(e) => onBody({ ...body, file: e.target.value })}
+            />
+          </div>
+          <div className="mw-fld">
+            <label htmlFor="mw-binary-type">Sent as</label>
+            <input
+              id="mw-binary-type"
+              value={body.media_type}
+              spellCheck={false}
+              onChange={(e) => onBody({ ...body, media_type: e.target.value })}
+            />
+          </div>
+        </div>
+      ) : null}
+
+      {body?.kind === "form" ? (
+        <PairTable
+          head="Field"
+          rows={body.fields}
+          onRows={(fields) => onBody({ kind: "form", fields })}
+          placeholderKey="grant_type"
+          placeholderValue="value or {{name}}"
+          addLabel="Add a field"
+        />
+      ) : null}
+
+      {body?.kind === "multipart" ? <PartsTable parts={body.parts} onParts={(parts) => onBody({ kind: "multipart", parts })} /> : null}
+
       {err ? (
         <div className="mw-errline">
           <AlertTriangle className="i" aria-hidden />
-          <span>Not valid JSON: {err}</span>
+          <span>{body?.kind === "json" ? `Not valid JSON: ${err}` : err}</span>
         </div>
-      ) : (
+      ) : null}
+      {choice === "binary" || body?.kind === "multipart" ? (
         <p className="mw-hint">
-          Pre-filled with the schema's required fields. <code>{"{{name}}"}</code> can stand in for any value; a
-          value written entirely as one reference takes the shape of what it holds.
+          A file is read from this repository's last commit, never from your working copy — commit it first. Files
+          git ignores, and anything under <code>.dit/</code>, cannot be sent. Up to 10 MB each.
         </p>
-      )}
+      ) : null}
     </>
+  );
+}
+
+/** Postman's raw type list, plus any other media type typed in. */
+function RawTypePicker({ body, onBody }: { body: NonNullable<MorseStepDto["body"]>; onBody: (b: MorseStepDto["body"]) => void }) {
+  const current = body.kind === "json" ? "application/json" : body.kind === "raw" ? body.media_type : "";
+  const known = [
+    ...RAW_TYPES.filter((t) => t.type !== "application/octet-stream"),
+    { label: "JSON", type: "application/json" },
+  ];
+  const isKnown = known.some((t) => t.type === current);
+  const text = body.kind === "json" ? body.text : body.kind === "raw" ? (body.text ?? "") : "";
+  const pick = (type: string) => {
+    if (type === "application/json") onBody({ kind: "json", text });
+    else onBody({ kind: "raw", media_type: type, text, file: null });
+  };
+  return (
+    <span className="mw-rawtype">
+      <select
+        aria-label="Raw body type"
+        value={isKnown ? current : "custom"}
+        onChange={(e) => (e.target.value === "custom" ? pick("text/plain") : pick(e.target.value))}
+      >
+        {known.map((t) => (
+          <option key={t.type} value={t.type}>
+            {t.label}
+          </option>
+        ))}
+        <option value="custom">Other…</option>
+      </select>
+      {!isKnown ? (
+        <input
+          aria-label="Media type"
+          value={current}
+          spellCheck={false}
+          onChange={(e) => onBody({ kind: "raw", media_type: e.target.value, text, file: null })}
+        />
+      ) : null}
+    </span>
+  );
+}
+
+/** `multipart/form-data` rows: a name, Text or File, and its value. */
+function PartsTable({ parts, onParts }: { parts: MorsePartDto[]; onParts: (parts: MorsePartDto[]) => void }) {
+  const set = (index: number, next: Partial<MorsePartDto>) =>
+    onParts(parts.map((p, i) => (i === index ? { ...p, ...next } : p)));
+  return (
+    <table className="mw-kv">
+      <thead>
+        <tr>
+          <th style={{ width: "24%" }}>Key</th>
+          <th style={{ width: "11%" }}>Type</th>
+          <th>Value</th>
+          <th style={{ width: "20%" }}>Content type</th>
+          <th className="rm" />
+        </tr>
+      </thead>
+      <tbody>
+        {parts.map((part, index) => (
+          <tr key={index}>
+            <td>
+              <input
+                aria-label="Part name"
+                value={part.name}
+                placeholder="avatar"
+                onChange={(e) => set(index, { name: e.target.value })}
+              />
+            </td>
+            <td>
+              <select
+                aria-label="Part type"
+                value={part.file !== null ? "file" : "text"}
+                onChange={(e) =>
+                  set(index, e.target.value === "file" ? { file: "", value: null } : { file: null, value: "" })
+                }
+              >
+                <option value="text">Text</option>
+                <option value="file">File</option>
+              </select>
+            </td>
+            <td>
+              {part.file !== null ? (
+                <input
+                  aria-label="File in this repository"
+                  value={part.file}
+                  placeholder="fixtures/avatar.png"
+                  spellCheck={false}
+                  onChange={(e) => set(index, { file: e.target.value })}
+                />
+              ) : (
+                <input
+                  aria-label="Part value"
+                  value={part.value ?? ""}
+                  placeholder="value or {{name}}"
+                  onChange={(e) => set(index, { value: e.target.value })}
+                />
+              )}
+            </td>
+            <td>
+              <input
+                aria-label="Part content type"
+                value={part.media_type ?? ""}
+                placeholder={part.file !== null ? "application/octet-stream" : "text"}
+                spellCheck={false}
+                onChange={(e) => set(index, { media_type: e.target.value || null })}
+              />
+            </td>
+            <td className="rm">
+              <button
+                type="button"
+                className="mw-ib"
+                title="Remove"
+                aria-label="Remove this part"
+                onClick={() => onParts(parts.filter((_, i) => i !== index))}
+              >
+                <X className="i" aria-hidden />
+              </button>
+            </td>
+          </tr>
+        ))}
+        <tr>
+          <td colSpan={5}>
+            <button
+              type="button"
+              className="mw-btn sm"
+              style={{ margin: 6 }}
+              onClick={() => onParts([...parts, { name: "", value: "", file: null, media_type: null }])}
+            >
+              <Plus className="i" aria-hidden />
+              Add a part
+            </button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
   );
 }
 

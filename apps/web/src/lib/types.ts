@@ -36,6 +36,8 @@ import type { MorseRunStepDto as WireMorseRunStepDto } from "./schema/MorseRunSt
 import type { MorseScenarioDto as WireMorseScenarioDto } from "./schema/MorseScenarioDto";
 import type { MorseSpecDto as WireMorseSpecDto } from "./schema/MorseSpecDto";
 import type { MorseStepDto as WireMorseStepDto } from "./schema/MorseStepDto";
+import type { MorseBodyDto as WireMorseBodyDto } from "./schema/MorseBodyDto";
+import type { MorsePartDto as WireMorsePartDto } from "./schema/MorsePartDto";
 import type { MorsePairDto as WireMorsePairDto } from "./schema/MorsePairDto";
 import type { MorseCheckDto as WireMorseCheckDto } from "./schema/MorseCheckDto";
 import type { MorseCaptureDto as WireMorseCaptureDto } from "./schema/MorseCaptureDto";
@@ -72,6 +74,8 @@ export type MorseReportDto = WireMorseReportDto;
 export type MorseRunDto = WireMorseRunDto;
 export type MorseRunStepDto = WireMorseRunStepDto;
 export type MorseStepDto = WireMorseStepDto;
+export type MorseBodyDto = WireMorseBodyDto;
+export type MorsePartDto = WireMorsePartDto;
 export type MorsePairDto = WireMorsePairDto;
 export type MorseCheckDto = WireMorseCheckDto;
 export type MorseCaptureDto = WireMorseCaptureDto;

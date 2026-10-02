@@ -27,6 +27,7 @@ import {
   sameStep,
   secretHeaders,
   suggestStepId,
+  tabVerb,
 } from "../../lib/morse";
 import {
   useCreateMorseScenario,
@@ -371,11 +372,15 @@ export function MorseView() {
         return { label: "Overview", lead: <Radio className="i" aria-hidden /> };
       case "op": {
         const { op } = findOp(`${r.spec}/${r.op}`);
-        return { label: op?.summary ?? r.op, lead: <Verb method={op?.method ?? "GET"} wide /> };
+        const verb = tabVerb(op);
+        return { label: op?.summary ?? r.op, lead: verb ? <Verb method={verb} wide /> : <Layers className="i" aria-hidden /> };
       }
       case "step": {
+        // A step tab not opened since the page loaded has no draft yet, so
+        // its method is unknown — say nothing rather than guess "GET".
         const { op } = findOp(drafts[t.key]?.operation ?? null);
-        return { label: `${r.scenario} › ${r.step}`, lead: <Verb method={op?.method ?? "GET"} wide /> };
+        const verb = tabVerb(op);
+        return { label: `${r.scenario} › ${r.step}`, lead: verb ? <Verb method={verb} wide /> : <Link2 className="i" aria-hidden /> };
       }
       case "scn":
         return { label: r.scenario, lead: <Link2 className="i" aria-hidden /> };

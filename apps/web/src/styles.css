@@ -1567,6 +1567,15 @@ html[data-present] .fcanvas{border-radius:8px}
 .mw-split.withfence{grid-template-columns:minmax(0,1fr) minmax(260px,38%)}
 .mw-split.withfence .mw-fence{grid-row:1 / span 2;grid-column:2}
 .mw-editor{overflow:auto;padding:12px 16px;min-height:0}
+/* The Body tab's shape picker (ADR 0027): Postman's row of radios. */
+.mw-bodykinds{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:0 0 10px;font-size:12.5px;color:var(--ink-2)}
+.mw-bodykind{display:inline-flex;align-items:center;gap:5px;cursor:pointer}
+.mw-bodykind.on{color:var(--ink)}
+.mw-bodykind input{accent-color:var(--accent);margin:0}
+.mw-rawtype{display:inline-flex;align-items:center;gap:6px;margin-left:auto}
+.mw-rawtype select,.mw-rawtype input{border:1px solid var(--edge-2);border-radius:6px;padding:3px 6px;background:var(--surface);color:var(--ink);font:12px var(--mono);outline:0}
+.mw-rawtype input{width:200px}
+.mw-binary{display:grid;grid-template-columns:2fr 1fr;gap:10px;margin-bottom:8px}
 .mw-kv{width:100%;border-collapse:collapse;border:1px solid var(--edge);border-radius:6px}
 .mw-kv th{font-weight:500;color:var(--muted);text-align:left;font-size:12px;padding:6px 8px;border-bottom:1px solid var(--edge);background:var(--bg)}
 .mw-kv td{border-bottom:1px solid var(--dit-rowline);padding:0;vertical-align:middle}

@@ -7,7 +7,7 @@
 // what Send posts and what Save writes into the fence. There is no second
 // model of a request to drift from the first.
 
-import type { MorseOperationDto, MorsePairDto, MorseSpecDto, MorseStepDto } from "./types";
+import type { MorseBodyDto, MorseOperationDto, MorsePairDto, MorseSpecDto, MorseStepDto } from "./types";
 
 /** Every `{{name}}` in a string, in the order written — the same reading
  *  `dit-model`'s `variables_in` makes. */
@@ -62,14 +62,17 @@ export function draftForOperation(specId: string, op: MorseOperationDto): MorseS
     .filter((p) => p.location === "header")
     .map((p) => ({ key: p.name, value: "" }));
   const required = op.body.filter((f) => f.required);
-  const body =
+  const body: MorseBodyDto | null =
     op.body.length === 0
       ? null
-      : JSON.stringify(
-          Object.fromEntries((required.length ? required : op.body).map((f) => [f.name, placeholder(f.kind)])),
-          null,
-          2,
-        );
+      : {
+          kind: "json",
+          text: JSON.stringify(
+            Object.fromEntries((required.length ? required : op.body).map((f) => [f.name, placeholder(f.kind)])),
+            null,
+            2,
+          ),
+        };
   const ok = op.responses.find((r) => /^2\d\d$/.test(r));
   return {
     id: suggestStepId(op.operation_id),
@@ -85,13 +88,19 @@ export function draftForOperation(specId: string, op: MorseOperationDto): MorseS
   };
 }
 
+/** The verb a tab shows, or null when the operation is not known — a tab
+ *  must not claim GET for an operation it has not looked up. */
+export function tabVerb(op: { method: string } | undefined | null): string | null {
+  return op ? op.method.toUpperCase() : null;
+}
+
 /** Every name a draft reads, in order, without repeats. */
 export function usedVars(d: MorseStepDto): string[] {
   const texts = [
     ...d.params.map((p) => p.value),
     ...d.query.map((p) => p.value),
     ...d.headers.map((p) => p.value),
-    d.body ?? "",
+    ...bodyTexts(d.body),
     ...d.checks.filter((c) => c.rule === "equals").map((c) => c.value),
   ];
   return [...new Set(texts.flatMap(variablesIn))];
@@ -136,15 +145,124 @@ export function secretHeaders(d: MorseStepDto): number[] {
   return d.headers.flatMap((h, i) => (h.key && secretReason(h.key, h.value) ? [i] : []));
 }
 
-/** Why the body will not parse, or null. A `{{name}}` stands in for any
- *  value, quoted or not. */
-export function bodyError(body: string | null): string | null {
-  if (!body || !body.trim()) return null;
-  try {
-    JSON.parse(body.replace(/\{\{[^}]*\}\}/g, "0"));
-    return null;
-  } catch (e) {
-    return e instanceof Error ? e.message : "not JSON";
+// ---- Body shapes (ADR 0027) -------------------------------------------------
+
+export type BodyKind = "none" | MorseBodyDto["kind"];
+
+/** The raw types Postman offers, and the media type each one sends. */
+export const RAW_TYPES: Array<{ label: string; type: string }> = [
+  { label: "Text", type: "text/plain" },
+  { label: "JavaScript", type: "application/javascript" },
+  { label: "HTML", type: "text/html" },
+  { label: "XML", type: "application/xml" },
+  { label: "Binary file", type: "application/octet-stream" },
+];
+
+export function bodyKind(body: MorseBodyDto | null): BodyKind {
+  return body ? body.kind : "none";
+}
+
+/** A new, empty body of a shape — what switching the Body tab's shape
+ *  starts from. JSON keeps the text it had when switching from JSON. */
+export function emptyBody(kind: BodyKind, from: MorseBodyDto | null = null): MorseBodyDto | null {
+  switch (kind) {
+    case "none":
+      return null;
+    case "json":
+      return { kind: "json", text: from?.kind === "raw" ? (from.text ?? "") : "{\n  \n}" };
+    case "form":
+      return { kind: "form", fields: [{ key: "", value: "" }] };
+    case "raw":
+      return { kind: "raw", media_type: "text/plain", text: from?.kind === "json" ? from.text : "", file: null };
+    case "multipart":
+      return { kind: "multipart", parts: [{ name: "", value: "", file: null, media_type: null }] };
+  }
+}
+
+/** Every text a body holds, for finding the variables it reads. */
+export function bodyTexts(body: MorseBodyDto | null): string[] {
+  if (!body) return [];
+  switch (body.kind) {
+    case "json":
+      return [body.text];
+    case "form":
+      return body.fields.map((f) => f.value);
+    case "raw":
+      return [body.text ?? ""];
+    case "multipart":
+      return body.parts.flatMap((p) => [p.name, p.value ?? ""]);
+  }
+}
+
+/** `type/subtype` with optional `; key=value` — the rule the server applies. */
+export function isMediaType(raw: string): boolean {
+  const token = "[A-Za-z0-9!#$%&'*+.^_`|~-]+";
+  return new RegExp(`^${token}/${token}(\\s*;\\s*${token}=("?)${token}\\2)*$`).test(raw.trim());
+}
+
+/** Why a file path will be refused, or null — the server's rule (ADR 0027). */
+export function filePathProblem(path: string): string | null {
+  const p = path.trim();
+  if (!p) return "name a file in this repository";
+  if (p.startsWith("/") || p.includes("\\") || p.includes(":")) return "a path in this repository, not an absolute one";
+  const segments = p.split("/");
+  if (segments.some((s) => s === "" || s === "." || s === "..")) return "the path may not climb out of the repository";
+  if (segments[0] === ".dit" || segments[0] === ".git") return "DIT's and git's own files cannot be sent";
+  return null;
+}
+
+/** Why the body will not be accepted, or null. A `{{name}}` stands in for
+ *  any value, quoted or not. */
+export function bodyError(body: MorseBodyDto | null): string | null {
+  if (!body) return null;
+  switch (body.kind) {
+    case "json": {
+      if (!body.text.trim()) return null;
+      try {
+        JSON.parse(body.text.replace(/\{\{[^}]*\}\}/g, "0"));
+        return null;
+      } catch (e) {
+        return e instanceof Error ? e.message : "not JSON";
+      }
+    }
+    case "form":
+      return null;
+    case "raw":
+      if (!isMediaType(body.media_type)) return `\`${body.media_type}\` is not a media type — like application/xml`;
+      if (body.file !== null) {
+        const problem = filePathProblem(body.file);
+        return problem ? `file: ${problem}` : null;
+      }
+      return null;
+    case "multipart":
+      for (const part of body.parts) {
+        if (!part.name.trim()) continue;
+        if (/["\r\n]/.test(part.name)) return `part \`${part.name}\`: no quotes or line breaks in a name`;
+        if (part.file !== null) {
+          const problem = filePathProblem(part.file);
+          if (problem) return `part \`${part.name}\`: ${problem}`;
+        }
+        if (part.media_type && !isMediaType(part.media_type)) {
+          return `part \`${part.name}\`: \`${part.media_type}\` is not a media type`;
+        }
+      }
+      return null;
+  }
+}
+
+/** A body as the server will store it, so drafts that differ only in an
+ *  empty row compare equal. */
+function normalBody(body: MorseBodyDto | null): MorseBodyDto | null {
+  if (!body) return null;
+  switch (body.kind) {
+    case "json":
+      return body.text.trim() ? body : null;
+    case "form":
+      return { ...body, fields: body.fields.filter((f) => f.key.trim()) };
+    case "multipart":
+      return { ...body, parts: body.parts.filter((p) => p.name.trim()) };
+    case "raw":
+      return body;
   }
 }
 
@@ -209,6 +327,7 @@ export function cloneStep(step: MorseStepDto): MorseStepDto {
     headers: step.headers.map((p) => ({ ...p })),
     checks: step.checks.map((c) => ({ ...c })),
     capture: step.capture.map((c) => ({ ...c })),
+    body: step.body ? structuredClone(step.body) : null,
   };
 }
 
@@ -222,7 +341,7 @@ export function sameStep(a: MorseStepDto, b: MorseStepDto): boolean {
       headers: s.headers.filter((p) => p.key.trim()),
       checks: s.checks.filter((c) => c.path.trim()),
       capture: s.capture.filter((c) => c.name.trim()),
-      body: s.body && s.body.trim() ? s.body : null,
+      body: normalBody(s.body),
     });
   return norm(a) === norm(b);
 }
@@ -260,6 +379,42 @@ function flowPairs(pairs: MorsePairDto[]): string {
   return `{ ${pairs.map((p) => `${p.key}: ${scalar(p.value)}`).join(", ")} }`;
 }
 
+function bodyPreview(body: MorseBodyDto | null): string[] {
+  if (!body) return [];
+  switch (body.kind) {
+    case "json": {
+      let parsed: unknown = null;
+      try {
+        parsed = JSON.parse(body.text.replace(/"?\{\{\s*([^}]+?)\s*\}\}"?/g, (_m: string, n: string) => JSON.stringify(`{{${n}}}`)));
+      } catch {
+        parsed = undefined;
+      }
+      return [parsed === undefined ? "    body: # not valid JSON yet" : `    body: ${flowValue(parsed)}`];
+    }
+    case "form":
+      return body.fields.length ? [`    form: ${flowPairs(body.fields)}`] : [];
+    case "raw":
+      if (body.file !== null) return [`    raw: { type: ${scalar(body.media_type)}, file: ${scalar(body.file)} }`];
+      if (!(body.text ?? "").includes("\n")) return [`    raw: { type: ${scalar(body.media_type)}, text: ${scalar(body.text ?? "")} }`];
+      return [
+        "    raw:",
+        `      type: ${scalar(body.media_type)}`,
+        "      text: |",
+        ...(body.text ?? "").split("\n").map((line) => (line ? `        ${line}` : "")),
+      ];
+    case "multipart":
+      return [
+        "    multipart:",
+        ...body.parts.map((p) => {
+          const fields = [`name: ${scalar(p.name)}`];
+          fields.push(p.file !== null ? `file: ${scalar(p.file)}` : `value: ${scalar(p.value ?? "")}`);
+          if (p.media_type) fields.push(`type: ${scalar(p.media_type)}`);
+          return `      - { ${fields.join(", ")} }`;
+        }),
+      ];
+  }
+}
+
 export function stepPreview(d: MorseStepDto): string {
   const lines = [`  - id: ${scalar(d.id)}`];
   lines.push(d.operation ? `    operation: ${scalar(d.operation)}` : `    request: ${scalar(d.request ?? "")}`);
@@ -269,15 +424,7 @@ export function stepPreview(d: MorseStepDto): string {
   if (query.length) lines.push(`    query: ${flowPairs(query)}`);
   const headers = d.headers.filter((p) => p.key);
   if (headers.length) lines.push(`    headers: ${flowPairs(headers)}`);
-  if (d.body && d.body.trim()) {
-    let parsed: unknown = null;
-    try {
-      parsed = JSON.parse(d.body.replace(/"?\{\{\s*([^}]+?)\s*\}\}"?/g, (_m, n) => JSON.stringify(`{{${n}}}`)));
-    } catch {
-      parsed = undefined;
-    }
-    lines.push(parsed === undefined ? "    body: # not valid JSON yet" : `    body: ${flowValue(parsed)}`);
-  }
+  lines.push(...bodyPreview(normalBody(d.body)));
   const checks = d.checks.filter((c) => c.path);
   if (d.status || checks.length) {
     lines.push("    expect:");
