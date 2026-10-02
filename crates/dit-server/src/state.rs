@@ -71,6 +71,19 @@ impl AppState {
         })
     }
 
+    /// One workspace behind the hub's guard (ADR 0028): the same token and
+    /// local hostnames as every other workspace the process serves.
+    pub fn with_guard(dit: Dit, me: &str, guard: &crate::security::Guard) -> Arc<AppState> {
+        let (events, _) = broadcast::channel(16);
+        Arc::new(AppState {
+            dit: Arc::new(Mutex::new(dit)),
+            me: RwLock::new(me.to_owned()),
+            token: guard.token.clone(),
+            allowed_hosts: guard.allowed_hosts.clone(),
+            events,
+        })
+    }
+
     /// The alias writes are attributed to right now. Empty when the server
     /// knows nobody. A poisoned lock (a panic mid-write of a `String`) is not
     /// a state worth failing a request over — the old value is still a name.
@@ -132,7 +145,7 @@ impl AppState {
 }
 
 /// The hostnames that may appear in a local request's `Host` header.
-fn local_host_names() -> Vec<String> {
+pub(crate) fn local_host_names() -> Vec<String> {
     ["localhost", "127.0.0.1", "[::1]", "::1"]
         .into_iter()
         .map(str::to_owned)

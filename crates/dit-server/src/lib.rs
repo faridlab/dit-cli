@@ -13,10 +13,12 @@
 
 pub mod config;
 pub mod dto;
+pub mod hub;
 pub mod routes;
 pub mod security;
 pub mod state;
 
+pub use hub::{hub_app, Hub, HubOptions};
 pub use routes::app;
 pub use state::AppState;
 

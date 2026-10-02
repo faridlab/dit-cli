@@ -11,7 +11,16 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-use crate::state::{host_hostname, AppState};
+use crate::state::host_hostname;
+
+/// What every guard checks against: the session token, and the hostnames
+/// the `Host` header may name. One per process — a workspace router and the
+/// hub in front of many of them (ADR 0028) share it.
+#[derive(Debug, Clone)]
+pub struct Guard {
+    pub token: String,
+    pub allowed_hosts: Vec<String>,
+}
 
 /// Refuse any request whose `Host` header is not a local name.
 ///
@@ -21,7 +30,7 @@ use crate::state::{host_hostname, AppState};
 /// even that boundary negotiable. The one thing the attacker cannot forge
 /// is the `Host` header the browser itself sets, so it is the gate.
 pub async fn require_local_host(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<Guard>>,
     req: Request<Body>,
     next: Next,
 ) -> Response {
@@ -77,7 +86,7 @@ fn is_private_ip(hostname: &str) -> bool {
 /// handler, so that a request without upgrade headers still gets a real 401
 /// instead of the extractor's protocol error.
 pub async fn require_token(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<Guard>>,
     req: Request<Body>,
     next: Next,
 ) -> Response {

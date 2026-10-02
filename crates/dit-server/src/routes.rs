@@ -32,6 +32,10 @@ use crate::state::AppState;
 /// The layer order is: security headers (outermost, so even a rejection
 /// carries the CSP), then the Host check, then token auth, then handlers.
 pub fn app(state: Arc<AppState>) -> Router {
+    let guard = Arc::new(crate::security::Guard {
+        token: state.token.clone(),
+        allowed_hosts: state.allowed_hosts.clone(),
+    });
     Router::new()
         .route("/api/status", get(get_status))
         .route("/api/schema", get(get_schema))
@@ -135,11 +139,11 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/api/events", get(events))
         .fallback(serve_uri)
         .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
+            guard.clone(),
             crate::security::require_token,
         ))
         .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
+            guard,
             crate::security::require_local_host,
         ))
         .layer(axum::middleware::from_fn(crate::security::security_headers))
@@ -1640,7 +1644,7 @@ async fn events(State(state): State<Arc<AppState>>, ws: WebSocketUpgrade) -> Res
 // -- the UI --------------------------------------------------------------------
 
 #[cfg(feature = "embed-ui")]
-async fn serve_uri(uri: axum::http::Uri) -> Response {
+pub(crate) async fn serve_uri(uri: axum::http::Uri) -> Response {
     // One name covers both: the derive macro that builds the struct and
     // the trait whose `get` reads from it.
     use rust_embed::RustEmbed;
@@ -1711,7 +1715,7 @@ fn asset_mime(name: &str) -> &'static str {
 }
 
 #[cfg(not(feature = "embed-ui"))]
-async fn serve_uri(_uri: axum::http::Uri) -> Response {
+pub(crate) async fn serve_uri(_uri: axum::http::Uri) -> Response {
     // Dev builds have no UI inside them on purpose: the frontend dev server
     // proxies /api here, and embedding would couple every Rust rebuild to a
     // Node build. This page is what you see when that contract is forgotten.
