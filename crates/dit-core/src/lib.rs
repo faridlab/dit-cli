@@ -17,6 +17,7 @@ mod agent;
 mod attachment;
 pub mod board;
 pub mod code;
+pub mod registry;
 pub use code::{
     ApiCall, ApiOperation, ApiReport, CodeGraph, CodeNeighbour, CodeNeighbourhood, CodeOverview,
     CodeUnit, CodeUnitEdge, MapEntryView, MapHealth,
@@ -84,6 +85,7 @@ pub use morse::{
     ProofHealth, ProofView, RunStepLine, ScenarioEdit, ScenarioHealth, SendDraft, SendTarget,
     SyncOutcome, SEND_KEY_PREFIX,
 };
+pub use registry::{config_dir, default_workspace_root, Registry, WorkspaceEntry};
 // Delivery reports what a run did, so the shapes it reports come through
 // the facade rather than making every caller depend on the adapter.
 pub use dit_morse::{RunOutcome, StepOutcome};
