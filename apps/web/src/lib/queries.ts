@@ -36,8 +36,8 @@ export const queryKeys = {
   history: (id: string, field?: string) => ["history", id, field ?? ""] as const,
   activity: (params: { beforeSeq?: number | null; limit?: number }) =>
     ["activity", params.beforeSeq ?? null, params.limit ?? null] as const,
-  activitySummary: (params: { seq?: number | null; days?: number }) =>
-    ["activity-summary", params.seq ?? null, params.days ?? null] as const,
+  activitySummary: (params: { seq?: number | null; since_day?: string | null; days?: number }) =>
+    ["activity-summary", params.seq ?? null, params.since_day ?? null, params.days ?? null] as const,
   markdownPreview: (text: string) => ["markdown-preview", text] as const,
   workspaceComments: (limit: number) => ["workspace-comments", limit] as const,
   releases: ["releases"] as const,
@@ -376,7 +376,9 @@ export function useActivity(params: { beforeSeq?: number | null; limit?: number 
 
 /** The board at a point in history, next to now. Recomputed server-side on
  *  every call — there is nothing cached in the workspace to go stale. */
-export function useActivitySummary(params: { seq?: number | null; days?: number } = {}) {
+export function useActivitySummary(
+  params: { seq?: number | null; since_day?: string | null; days?: number } = {},
+) {
   return useQuery({
     queryKey: queryKeys.activitySummary(params),
     queryFn: () => api.getActivitySummary(params),

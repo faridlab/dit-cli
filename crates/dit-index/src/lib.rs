@@ -2689,6 +2689,20 @@ impl Index {
 
     /// The last `seq` the index has recorded — "now" for time travel. Zero
     /// when nothing has been indexed yet.
+    /// The history position a date range starts from: the highest `seq` among the
+    /// events whose day falls before `day` (`YYYY-MM-DD`), or 0 when none does, so
+    /// the whole history lies inside the range. The day boundary is the only use
+    /// of `ts` here; the position itself is a `seq`, never a timestamp ordering
+    /// (invariant 9). A date maps to a position only through an author's clock,
+    /// which is exactly what "the last 30 days" asks about.
+    pub fn last_seq_before_day(&self, day: &str) -> Result<i64, IndexError> {
+        Ok(self.conn.query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM field_events WHERE substr(ts, 1, 10) < ?1",
+            params![day],
+            |r| r.get(0),
+        )?)
+    }
+
     pub fn max_event_seq(&self) -> Result<i64, IndexError> {
         Ok(self
             .conn
@@ -3982,6 +3996,32 @@ mod tests {
         // From the very beginning, everything counts as new.
         let all = idx.changes_since(0, &["done".to_string()]).unwrap();
         assert_eq!(all.created, 2);
+    }
+
+    #[test]
+    fn last_seq_before_day_is_the_history_position_a_date_range_starts_from() {
+        let mut idx = Index::in_memory().unwrap();
+        assert_eq!(
+            idx.last_seq_before_day("2026-08-15").unwrap(),
+            0,
+            "empty history"
+        );
+        let at = |ts: &str, commit: &str, parent: &str| FieldEvent {
+            ts: ts.into(),
+            ..event("status", None, Some("todo"), commit, parent)
+        };
+        idx.record_field_events(&[
+            at("2026-08-01T09:00:00Z", "c1", ""),
+            at("2026-08-15T00:30:00Z", "c2", "c1"),
+            at("2026-08-16T10:00:00Z", "c3", "c2"),
+        ])
+        .unwrap();
+        // Nothing before the first day: the whole history is inside the range.
+        assert_eq!(idx.last_seq_before_day("2026-08-01").unwrap(), 0);
+        // An event on the range's first day is inside the range, not before it.
+        assert_eq!(idx.last_seq_before_day("2026-08-15").unwrap(), 1);
+        assert_eq!(idx.last_seq_before_day("2026-08-16").unwrap(), 2);
+        assert_eq!(idx.last_seq_before_day("2026-09-01").unwrap(), 3);
     }
 
     #[test]

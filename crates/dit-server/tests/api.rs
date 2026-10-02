@@ -527,6 +527,62 @@ async fn the_activity_summary_answers_what_the_board_looked_like_then() {
 }
 
 #[tokio::test]
+async fn the_activity_summary_starts_a_date_range_from_the_history_before_it() {
+    let (app, _tmp) = test_app();
+    let (_, _, _) = req(
+        &app,
+        "POST",
+        "/api/issues",
+        Some(json!({ "title": "Login timeout", "type": "bug" })),
+    )
+    .await;
+
+    // A range that began long ago holds the whole history: everything is new in it.
+    let (status, long, text) = req(
+        &app,
+        "GET",
+        "/api/activity/summary?since_day=2000-01-01",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(long["seq"], 0, "nothing lies before the range — {text}");
+    assert_eq!(long["since"]["created"], 1, "{text}");
+
+    // A range that starts tomorrow holds nothing yet.
+    let (_, ahead, text) = req(
+        &app,
+        "GET",
+        "/api/activity/summary?since_day=2999-01-01",
+        None,
+    )
+    .await;
+    assert_eq!(ahead["seq"], ahead["max_seq"], "{text}");
+    assert_eq!(ahead["since"]["created"], 0, "{text}");
+
+    // An explicit position in history wins over a date.
+    let (_, pinned, text) = req(
+        &app,
+        "GET",
+        "/api/activity/summary?seq=0&since_day=2999-01-01",
+        None,
+    )
+    .await;
+    assert_eq!(pinned["seq"], 0, "{text}");
+
+    for bad in ["2026-13-01", "yesterday", "2026-8-1"] {
+        let (status, _, text) = req(
+            &app,
+            "GET",
+            &format!("/api/activity/summary?since_day={bad}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {text}");
+    }
+}
+
+#[tokio::test]
 async fn blocked_by_rides_the_wire_and_bad_ids_are_400s() {
     let (app, _tmp) = test_app();
 

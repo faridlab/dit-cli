@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import {
   fillDays,
+  summaryParams,
   filterBucket,
   kindOf,
   mergeActivity,
@@ -312,5 +313,34 @@ describe("fillDays", () => {
       { day: "2026-09-11", count: 3 },
       { day: "2026-09-12", count: 0 },
     ]);
+  });
+});
+
+describe("summaryParams", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const now = Date.parse("2026-10-02T12:00:00Z");
+
+  it("asks the server for the position before a date range instead of guessing from loaded pages", () => {
+    // The "Last 30d" card used to compare against the newest loaded event before the
+    // range; with only recent pages loaded there was none, so it asked for "now" and
+    // every count read zero.
+    expect(summaryParams({ travelling: false, seq: null, since: now - 30 * DAY })).toEqual({
+      since_day: "2026-09-02",
+      days: expect.any(Number),
+    });
+  });
+
+  it("compares 'all' against the start of history", () => {
+    expect(summaryParams({ travelling: false, seq: null, since: Number.NEGATIVE_INFINITY })).toEqual({
+      seq: 0,
+      days: expect.any(Number),
+    });
+  });
+
+  it("keeps an explicit point in history when travelling", () => {
+    expect(summaryParams({ travelling: true, seq: 42, since: now - 30 * DAY })).toEqual({
+      seq: 42,
+      days: expect.any(Number),
+    });
   });
 });

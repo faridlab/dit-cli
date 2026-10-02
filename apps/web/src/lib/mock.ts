@@ -931,7 +931,11 @@ export function installMockApi(): void {
       const all = mockEvents();
       const maxSeq = all.length > 0 ? (all[0]?.seq ?? 0) : 0;
       const raw = url.searchParams.get("seq");
-      const seq = raw === null ? maxSeq : Math.min(Number(raw), maxSeq);
+      const sinceDay = url.searchParams.get("since_day");
+      // Like the server: an explicit seq wins; a date resolves to the last event before it.
+      const beforeDay = () =>
+        all.filter((event) => event.ts.slice(0, 10) < (sinceDay ?? "")).reduce((m, e) => Math.max(m, e.seq), 0);
+      const seq = raw !== null ? Math.min(Number(raw), maxSeq) : sinceDay !== null ? beforeDay() : maxSeq;
       const days = new Map<string, number>();
       for (const event of all) {
         const day = event.ts.slice(0, 10);

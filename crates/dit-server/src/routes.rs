@@ -1035,8 +1035,35 @@ async fn get_activity(
 struct SummaryParams {
     /// Where to stand in history. Absent means now.
     seq: Option<i64>,
+    /// The first day (`YYYY-MM-DD`) of a date range to compare against, resolved
+    /// to the last position before it. `seq` wins when both are given.
+    since_day: Option<String>,
     /// How many days of the histogram to return, counting back from today.
     days: Option<u32>,
+}
+
+/// `day` when it is a real calendar date written `YYYY-MM-DD`.
+fn valid_day(day: &str) -> Option<String> {
+    let b = day.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+        return None;
+    }
+    let num = |r: std::ops::Range<usize>| -> Option<u32> {
+        let part = day.get(r)?;
+        part.bytes()
+            .all(|c| c.is_ascii_digit())
+            .then(|| part.parse().ok())?
+    };
+    let (year, month, dom) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let last = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return None,
+    };
+    (1..=last).contains(&dom).then(|| day.to_owned())
 }
 
 /// The board then, the board now, and the difference — DESIGN.md §14.3.
@@ -1045,8 +1072,20 @@ async fn get_activity_summary(
     Query(params): Query<SummaryParams>,
 ) -> Result<Json<ActivitySummaryDto>, ApiError> {
     let days = params.days.unwrap_or(56).clamp(1, 366);
-    let seq = params.seq;
+    let since_day = match (params.seq, params.since_day) {
+        (None, Some(day)) => Some(valid_day(&day).ok_or_else(|| {
+            ApiError::bad_request(format!(
+                "since_day must be a date as YYYY-MM-DD, got {day:?}"
+            ))
+        })?),
+        _ => None,
+    };
+    let explicit = params.seq;
     let summary = read_dit(&state, move |dit| {
+        let seq = match since_day {
+            Some(day) => Some(dit.seq_before_day(&day).map_err(ServerError::Dit)?),
+            None => explicit,
+        };
         dit.activity_summary(seq, days)
             .map(|s| dto::activity_summary_dto(&s))
             .map_err(ServerError::Dit)
@@ -1348,6 +1387,26 @@ async fn serve_uri(_uri: axum::http::Uri) -> Response {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::asset_mime;
+
+    #[test]
+    fn valid_day_accepts_calendar_dates_only() {
+        for good in ["2026-10-02", "2024-02-29", "2000-02-29", "2026-12-31"] {
+            assert_eq!(super::valid_day(good).as_deref(), Some(good), "{good}");
+        }
+        for bad in [
+            "2026-02-29",
+            "1900-02-29",
+            "2026-13-01",
+            "2026-04-31",
+            "2026-00-10",
+            "2026-8-1",
+            "20261002",
+            "2026-10-0a",
+            "",
+        ] {
+            assert!(super::valid_day(bad).is_none(), "{bad}");
+        }
+    }
 
     #[test]
     fn wasm_assets_get_the_wasm_mime_type() {

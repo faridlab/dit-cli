@@ -114,6 +114,24 @@ export function mergeActivity(
 // ---------------------------------------------------------------------------
 
 import type { ActivityEventDto, DayCountDto, WorkspaceCommentDto } from "./types";
+import { toDay } from "./schedule";
+
+/** What the "what changed" card asks the server to compare against.
+ *  Travelling: the as-of position. A date range: its first day, which the server
+ *  resolves to the last position before it from the whole history — the client
+ *  cannot, because it only holds the pages of the feed it has loaded. "All":
+ *  the start of history. */
+export function summaryParams(input: {
+  travelling: boolean;
+  seq: number | null;
+  since: number;
+  days?: number;
+}): { seq?: number; since_day?: string; days: number } {
+  const days = input.days ?? 56;
+  if (input.travelling && input.seq !== null) return { seq: input.seq, days };
+  if (!Number.isFinite(input.since)) return { seq: 0, days };
+  return { since_day: toDay(input.since), days };
+}
 
 /** The kinds of field change the Timeline draws with their own icon. Every
  *  other field is "other" — shown, but without a special glyph. */
