@@ -777,9 +777,13 @@ impl Dit {
             .map_err(|e| DitError::Refuse(format!("scenario `{scenario}`: {e}")))?;
         let env_name = env.or(parsed.env.as_deref());
         let (spec, base_url, vars) = self.target(&parsed.spec.id, env_name)?;
+        // Specs other than the scenario's own, each read once at HEAD.
+        let mut others: std::collections::BTreeMap<String, (dit_model::OpenApiSpec, String)> =
+            std::collections::BTreeMap::new();
 
         let mut steps = Vec::new();
         for step in &parsed.steps {
+            let mut step_base = None;
             let (method, path) = match &step.operation {
                 StepTarget::Inline(id) => {
                     let found = parsed
@@ -792,7 +796,18 @@ impl Dit {
                     (found.method.clone(), found.path.clone())
                 }
                 StepTarget::Operation(op) => {
-                    let found = spec.operation(&op.operation).ok_or_else(|| {
+                    let step_spec = if op.spec == parsed.spec.id {
+                        &spec
+                    } else {
+                        if !others.contains_key(&op.spec) {
+                            let (other, other_base, _) = self.target(&op.spec, env_name)?;
+                            others.insert(op.spec.clone(), (other, other_base));
+                        }
+                        let (other, other_base) = &others[&op.spec];
+                        step_base = Some(other_base.clone());
+                        other
+                    };
+                    let found = step_spec.operation(&op.operation).ok_or_else(|| {
                         DitError::Refuse(format!(
                             "step `{}` calls `{}`, which the spec no longer describes",
                             step.id,
@@ -804,6 +819,7 @@ impl Dit {
             };
             steps.push(PlannedStep {
                 id: step.id.clone(),
+                base_url: step_base,
                 method,
                 path,
                 params: step.params.clone(),
@@ -1074,6 +1090,7 @@ impl Dit {
             vars,
             steps: vec![PlannedStep {
                 id: draft.operation.operation.clone(),
+                base_url: None,
                 method: op.method.clone(),
                 path: op.path.clone(),
                 params: draft.params.clone(),

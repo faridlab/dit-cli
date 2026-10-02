@@ -24,6 +24,11 @@ use crate::template::{self, Vars};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlannedStep {
     pub id: String,
+    /// Where this step goes when it calls a different spec than the
+    /// scenario's own — a scenario may cross services (DESIGN.md §20.3).
+    /// `None` means the plan's `base_url`. Like that one, it comes from a
+    /// spec's `servers:` or this machine, never from a committed DIT file.
+    pub base_url: Option<String>,
     pub method: String,
     /// The spec's path, `{name}` segments and all.
     pub path: String,
@@ -194,7 +199,8 @@ fn send(
         error: None,
     };
 
-    let url = match build_url(&plan.base_url, step, vars) {
+    let base_url = step.base_url.as_deref().unwrap_or(&plan.base_url);
+    let url = match build_url(base_url, step, vars) {
         Ok(url) => url,
         Err(message) => {
             outcome.error = Some(message);
@@ -486,6 +492,7 @@ mod tests {
     fn a_captured_value_cannot_move_the_request_to_another_host() {
         let step = PlannedStep {
             id: "s".into(),
+            base_url: None,
             method: "GET".into(),
             path: "/users/{{id}}".into(),
             params: vec![],

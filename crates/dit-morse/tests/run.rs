@@ -99,6 +99,7 @@ fn allowing_localhost() -> Policy {
 fn step(id: &str, method: &str, path: &str) -> PlannedStep {
     PlannedStep {
         id: id.into(),
+        base_url: None,
         method: method.into(),
         path: path.into(),
         params: vec![],

@@ -3727,6 +3727,73 @@ fn a_path_parameter_reaches_the_server_through_the_whole_path() {
     );
 }
 
+// ---- A scenario that crosses services (DESIGN.md §20.3) --------------------
+
+#[test]
+fn a_step_calling_another_spec_is_resolved_and_sent_against_that_spec() {
+    // Register against `auth`, then subscribe against `billing`: each step
+    // names its own spec, so each must be looked up in — and sent to the
+    // server of — that spec, not the scenario's first one.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let (_, _) = morse_workspace(root);
+    let auth_port = serve(vec![(201, r#"{"data":{"id":"u_7"}}"#)]);
+    let billing_port = serve(vec![(200, "{}")]);
+    std::fs::write(
+        root.join("api/openapi.yaml"),
+        SPEC_V1.replace(
+            "http://localhost:3000",
+            &format!("http://127.0.0.1:{auth_port}"),
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("api/billing.yaml"),
+        format!(
+            "openapi: 3.0.3\ninfo:\n  title: Acme Billing\n  version: \"1.0.0\"\nservers:\n  - url: \"http://127.0.0.1:{billing_port}\"\npaths:\n  /subscriptions:\n    post:\n      operationId: subscribe\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join(".dit/config.yaml"),
+        "schema_version: 1\nlayout: root\nnumbering: local\nspecs:\n  - { id: auth, path: api/openapi.yaml }\n  - { id: billing, path: api/billing.yaml }\n",
+    )
+    .unwrap();
+    let repo = Repo::open(root).unwrap();
+    repo.add(".").unwrap();
+    repo.commit("register the billing spec").unwrap();
+    let pin = repo.head().unwrap();
+    let mut dit = Dit::open(root).unwrap();
+    dit.reindex(ReindexMode::All).unwrap();
+    std::fs::write(
+        root.join(dit_core::MORSE_LOCAL_PATH),
+        "allow_hosts:\n  - 127.0.0.1\n",
+    )
+    .unwrap();
+    write_doc(
+        &mut dit,
+        "docs/api/subscribe.md",
+        &format!(
+            "```dit-morse\nscenario: subscribe\nspec: {{ id: auth, commit: {pin} }}\nsteps:\n  - id: create\n    operation: auth/createUser\n    expect: {{ status: 201 }}\n  - id: pay\n    operation: billing/subscribe\n    expect: {{ status: 200 }}\n```\n"
+        ),
+    );
+
+    let outcome = dit.morse_run("subscribe", None).unwrap();
+    assert!(outcome.passed(), "{outcome:#?}");
+    assert!(
+        outcome.steps[0]
+            .url
+            .starts_with(&format!("http://127.0.0.1:{auth_port}/")),
+        "{}",
+        outcome.steps[0].url
+    );
+    assert_eq!(
+        outcome.steps[1].url,
+        format!("http://127.0.0.1:{billing_port}/subscriptions"),
+        "the billing step went to billing's server"
+    );
+}
+
 // ---- The workbench: editing, creating and sending (ADR 0023) --------------
 
 const WITH_PROSE: &str = "# Register\n\nWhy this chain exists, in a person's words.\n\n";
