@@ -120,6 +120,13 @@ pub fn fill_path_params(
             MorseValue::Str(text) => fill(text, vars).map_err(|e| e.to_string())?,
             other => to_json(other, vars).map_err(|e| e.to_string())?,
         };
+        // An empty segment is a different endpoint (`/users/` for
+        // `/users/{id}`), so it is refused, not sent.
+        if rendered.trim().is_empty() {
+            return Err(format!(
+                "path parameter `{name}` is empty — the path is `{path}`; give `{name}` a value"
+            ));
+        }
         out.push_str(&percent_encode(&rendered));
         rest = &after[close + 1..];
     }
@@ -222,6 +229,28 @@ pub fn json_string(text: &str) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_path_parameter_that_renders_empty_refuses_the_step() {
+        // `/users/{id}` with `id: ""` went out as `/users/` — a different
+        // endpoint than the one the step names, sent without a word.
+        let vars = Vars::new();
+        let empty = vec![("id".to_owned(), MorseValue::Str(String::new()))];
+        let err = fill_path_params("/users/{id}", &empty, &vars).unwrap_err();
+        assert!(err.contains("`id`") && err.contains("empty"), "{err}");
+        let mut blank_var = Vars::new();
+        blank_var.insert("user".into(), "  ".into());
+        let via_var = vec![("id".to_owned(), MorseValue::Str("{{user}}".into()))];
+        assert!(
+            fill_path_params("/users/{id}", &via_var, &blank_var).is_err(),
+            "a blank variable is empty too"
+        );
+        let set = vec![("id".to_owned(), MorseValue::Str("u_7".into()))];
+        assert_eq!(
+            fill_path_params("/users/{id}", &set, &vars).unwrap(),
+            "/users/u_7"
+        );
+    }
 
     fn vars(pairs: &[(&str, &str)]) -> Vars {
         pairs
