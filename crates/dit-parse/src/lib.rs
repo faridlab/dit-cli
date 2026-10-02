@@ -21,7 +21,8 @@ pub mod html;
 pub mod issue;
 pub mod json;
 pub mod morse;
-pub mod morse_write;
+mod morse_import;
+mod morse_write;
 pub mod openapi;
 pub mod prosemirror;
 mod quote;
@@ -40,6 +41,10 @@ pub use json::{parse as parse_json, JsonError};
 pub use morse::{
     inline_request_problem, morse_fences, morse_value, parse_morse_scenario, parse_selector,
     scenario_in_fence, MorseError, MORSE_FENCE,
+};
+pub use morse_import::{
+    import_curl, import_postman, import_postman_env, ImportCatalogue, ImportError, ImportReport,
+    ImportedEnv, ImportedScenario,
 };
 pub use morse_write::{
     append_morse_fence, has_comments, remove_morse_fence, replace_morse_fence,
