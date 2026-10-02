@@ -1439,3 +1439,48 @@ async fn an_environment_set_from_the_page_never_answers_with_a_value_or_a_new_ho
     assert_eq!(envs["envs"], json!([]));
     assert_eq!(envs["allow_hosts"], json!(["127.0.0.1"]));
 }
+
+#[tokio::test]
+async fn a_new_request_is_sent_and_saved_with_its_method_and_path_but_never_a_host() {
+    let (app, _tmp) = morse_app();
+    let step = json!({ "id": "ping", "operation": null, "request": "ping", "params": [], "query": [], "headers": [],
+                       "body": null, "status": null, "checks": [], "capture": [] });
+    // Without its method and path an inline step is a 400, not a guess.
+    let (status, _, _) = req(
+        &app,
+        "POST",
+        "/api/morse/send",
+        Some(json!({ "env": null, "step": step })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // A path that is really an address is refused before anything is sent.
+    let (status, body, _) = req(&app, "POST", "/api/morse/send", Some(json!({
+        "env": null, "step": step, "request": { "spec": "t", "method": "GET", "path": "https://evil.test/x" } }))).await;
+    assert!(status.is_client_error(), "{body}");
+    // A real one is aimed at the spec's server — and, this machine allowing
+    // no host yet, refused there: the refusal names the spec's host, never
+    // anything the page could have named.
+    let (status, run, text) = req(&app, "POST", "/api/morse/send", Some(json!({
+        "env": null, "step": step, "request": { "spec": "t", "method": "post", "path": "/internal/ping" } }))).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert!(
+        run["refused"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("127.0.0.1"),
+        "{run}"
+    );
+
+    let first = json!({ "id": "one", "operation": "t/a", "request": null, "params": [], "query": [], "headers": [],
+                        "body": null, "status": null, "checks": [], "capture": [] });
+    req(&app, "POST", "/api/morse/scenarios",
+        Some(json!({ "doc": "docs/api/t.md", "name": "s", "spec_id": "t", "env": null, "step": first }))).await;
+    let mut save = step.clone();
+    save["define_request"] =
+        json!({ "id": "ping", "method": "post", "path": "/internal/ping", "summary": null });
+    let (status, detail, text) = req(&app, "PUT", "/api/morse/scenarios/s/steps", Some(save)).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(detail["requests"][0]["method"], "POST");
+    assert_eq!(detail["steps"][1]["request"], "ping");
+}

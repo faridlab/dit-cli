@@ -784,15 +784,29 @@ async fn send_morse(
     Json(input): Json<dto::MorseSendDto>,
 ) -> Result<Json<dto::MorseRunDto>, ApiError> {
     let step = dto::morse_step_from(&input.step).map_err(ServerError::BadRequest)?;
-    let dit_core::StepTarget::Operation(operation) = step.operation else {
-        return Err(ServerError::BadRequest(
-            "Send takes an operation from a spec; an inline request is run from its scenario"
-                .into(),
-        )
-        .into());
+    let target = match (step.operation, input.request) {
+        (dit_core::StepTarget::Operation(operation), _) => {
+            dit_core::SendTarget::Operation(operation)
+        }
+        (dit_core::StepTarget::Inline(id), Some(request)) => dit_core::SendTarget::Request {
+            spec: request.spec,
+            request: dit_core::InlineRequest {
+                id,
+                method: request.method,
+                path: request.path,
+                summary: None,
+            },
+        },
+        (dit_core::StepTarget::Inline(_), None) => {
+            return Err(ServerError::BadRequest(
+                "an inline step is sent with its `request`: the spec, the method and the path"
+                    .into(),
+            )
+            .into())
+        }
     };
     let draft = dit_core::SendDraft {
-        operation,
+        target,
         params: step.params,
         query: step.query,
         headers: step.headers,
@@ -914,12 +928,13 @@ async fn get_morse_scenario(
 async fn save_morse_step(
     State(state): State<Arc<AppState>>,
     Path(scenario): Path<String>,
-    Json(input): Json<dto::MorseStepDto>,
+    Json(input): Json<dto::MorseSaveStepDto>,
 ) -> Result<Json<dto::MorseScenarioDetailDto>, ApiError> {
-    let step = dto::morse_step_from(&input).map_err(ServerError::BadRequest)?;
+    let step = dto::morse_step_from(&input.step).map_err(ServerError::BadRequest)?;
+    let request = input.define_request.as_ref().map(dto::inline_request_from);
     let me = state.me();
     let detail = write_dit(&state, move |dit| {
-        dit.morse_save_step(&scenario, step, &me)
+        dit.morse_save_step(&scenario, step, request, &me)
             .map_err(ServerError::Dit)?;
         let detail = dit.morse_scenario(&scenario).map_err(ServerError::Dit)?;
         Ok(dto::morse_scenario_detail_dto(&detail))
@@ -971,6 +986,12 @@ async fn create_morse_scenario(
             &input.spec_id,
             input.env.as_deref(),
             step,
+            input
+                .requests
+                .iter()
+                .flatten()
+                .map(dto::inline_request_from)
+                .collect(),
             &me,
         )
         .map_err(ServerError::Dit)?;

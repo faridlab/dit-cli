@@ -850,7 +850,7 @@ pub struct MorseStepDto {
     pub capture: Vec<MorseCaptureDto>,
 }
 
-#[derive(Debug, Serialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct MorseInlineRequestDto {
     pub id: String,
@@ -883,6 +883,40 @@ pub struct MorseScenarioDetailDto {
 pub struct MorseSendDto {
     pub env: Option<String>,
     pub step: MorseStepDto,
+    /// What an inline step calls (ADR 0027): the spec whose server it goes
+    /// to, and the method and path the page typed. Never a host.
+    #[serde(default)]
+    #[ts(optional)]
+    pub request: Option<MorseSendRequestDto>,
+}
+
+#[derive(Debug, Clone, Deserialize, TS)]
+#[ts(export)]
+pub struct MorseSendRequestDto {
+    pub spec: String,
+    pub method: String,
+    pub path: String,
+}
+
+/// A step to save, and — when it calls a request the page typed — that
+/// request, so both land in one commit (ADR 0027).
+#[derive(Debug, Clone, Deserialize, TS)]
+#[ts(export)]
+pub struct MorseSaveStepDto {
+    #[serde(flatten)]
+    pub step: MorseStepDto,
+    #[serde(default)]
+    #[ts(optional)]
+    pub define_request: Option<MorseInlineRequestDto>,
+}
+
+pub fn inline_request_from(dto: &MorseInlineRequestDto) -> dit_core::InlineRequest {
+    dit_core::InlineRequest {
+        id: dto.id.trim().to_owned(),
+        method: dto.method.trim().to_owned(),
+        path: dto.path.trim().to_owned(),
+        summary: dto.summary.clone().filter(|s| !s.trim().is_empty()),
+    }
 }
 
 /// What "Save to scenario" posts for a scenario that does not exist yet.
@@ -895,6 +929,10 @@ pub struct MorseCreateDto {
     pub spec_id: String,
     pub env: Option<String>,
     pub step: MorseStepDto,
+    /// Requests the first step calls that no spec describes (ADR 0027).
+    #[serde(default)]
+    #[ts(optional)]
+    pub requests: Option<Vec<MorseInlineRequestDto>>,
 }
 
 #[derive(Debug, Serialize, TS)]
