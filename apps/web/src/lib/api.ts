@@ -329,10 +329,11 @@ export function getActivity(params: { beforeSeq?: number | null; limit?: number 
 /** The board then, the board now, and the difference. `seq` is a position in
  *  the commit graph; absent means now. */
 export function getActivitySummary(
-  params: { seq?: number | null; days?: number } = {},
+  params: { seq?: number | null; since_day?: string | null; days?: number } = {},
 ): Promise<ActivitySummaryDto> {
   const qs = new URLSearchParams();
   if (params.seq !== undefined && params.seq !== null) qs.set("seq", String(params.seq));
+  if (params.since_day) qs.set("since_day", params.since_day);
   if (params.days !== undefined) qs.set("days", String(params.days));
   const suffix = qs.size > 0 ? `?${qs.toString()}` : "";
   return request<ActivitySummaryDto>(`/api/activity/summary${suffix}`);

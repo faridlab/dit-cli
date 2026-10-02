@@ -1226,7 +1226,11 @@ two optional date fields and derive everything else:
   `GET /api/activity/summary?seq=` answers §14.3b's "what did the board look
   like then" with the aggregate query written there, plus §14.3c's semantic
   diff. Nothing is snapshotted: the answer is recomputed per request, which
-  is the only reason it can be asked of any point in history.
+  is the only reason it can be asked of any point in history. A date range
+  ("last 30 days") passes `?since_day=YYYY-MM-DD` instead, and the server
+  resolves it to the last `seq` before that day from the whole index; the
+  client cannot, since it holds only the feed pages it has loaded. `seq` wins
+  when both are given.
 - **Gantt** draws `start` and `due`. `start` is the one field these views
   added, and it is optional: an issue with only a `due` gets an inferred
   start from its estimate, drawn dashed and never written back. Dragging a

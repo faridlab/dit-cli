@@ -1449,6 +1449,14 @@ impl Dit {
         Ok(self.index.activity(before_seq, limit.clamp(1, 500))?)
     }
 
+    /// The history position a date range starting on `day` (`YYYY-MM-DD`)
+    /// compares against: the last event before that day, or 0 when the whole
+    /// history lies inside the range. Lets "the last 30 days" be answered from
+    /// the index instead of from whatever page of the feed a client has loaded.
+    pub fn seq_before_day(&self, day: &str) -> Result<i64, DitError> {
+        Ok(self.index.last_seq_before_day(day)?)
+    }
+
     /// The workspace as it stood at a point in its history, next to how it
     /// stands now (DESIGN.md §14.3). `cutoff_seq` is a position in the commit
     /// graph, not a date: a tag or a row in the feed resolves to one exactly,

@@ -44,6 +44,7 @@ import {
   fillDays,
   filterBucket,
   seqForDay,
+  summaryParams,
   workspaceTimeline,
   type TimelineEvent,
   type TimelineKind,
@@ -187,17 +188,11 @@ export function TimelineView({
   const rangeDays = RANGE_DAYS[timeline.range];
   const since = Number.isFinite(rangeDays) ? now - rangeDays * DAY_MS : Number.NEGATIVE_INFINITY;
 
-  // The "what changed" card compares against a point in history. When
-  // travelling that is the as-of seq; otherwise it is the start of the
-  // range, so "Last 30d" counts the last thirty days rather than nothing.
-  const rangeStartSeq = useMemo(() => {
-    if (!Number.isFinite(since)) return 0;
-    const found = seqForDay(toDay(since), events);
-    if (found !== null) return found;
-    // Nothing loaded before the window: exact only if history is fully loaded.
-    return nextBeforeSeq === null && !feed.isPending ? 0 : null;
-  }, [since, events, nextBeforeSeq, feed.isPending]);
-  const summary = useActivitySummary({ seq: travelling ? seq : rangeStartSeq, days: DENSITY_DAYS });
+  // The "what changed" card compares against a point in history: the as-of seq
+  // when travelling, otherwise the start of the range, which the server resolves
+  // from the whole history (summaryParams), so "Last 30d" counts the last thirty
+  // days however few pages of the feed are loaded.
+  const summary = useActivitySummary(summaryParams({ travelling, seq, since, days: DENSITY_DAYS }));
 
   // --- the feed --------------------------------------------------------------
   const visible = useMemo(
