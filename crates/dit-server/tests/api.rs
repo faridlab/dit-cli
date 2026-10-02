@@ -1484,3 +1484,42 @@ async fn a_new_request_is_sent_and_saved_with_its_method_and_path_but_never_a_ho
     assert_eq!(detail["requests"][0]["method"], "POST");
     assert_eq!(detail["steps"][1]["request"], "ping");
 }
+
+#[tokio::test]
+async fn an_import_previews_writes_and_never_echoes_a_credential() {
+    let (app, _tmp) = morse_app();
+    let body = json!({
+        "kind": "curl",
+        "text": "curl -X POST http://127.0.0.1:1/a -H 'Authorization: Bearer leaked-token-value'",
+        "scenario": "from-curl",
+    });
+    let (status, preview, text) = req(
+        &app,
+        "POST",
+        "/api/morse/import/preview",
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(preview["scenarios"][0]["steps"][0]["target"], "t/a");
+    assert!(!text.contains("leaked-token-value"), "{text}");
+    let (status, _, _) = req(&app, "POST", "/api/morse/import", Some(body.clone())).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "an import needs a document"
+    );
+    let mut with_doc = body;
+    with_doc["doc"] = json!("docs/api/imported.md");
+    let (status, done, text) = req(&app, "POST", "/api/morse/import", Some(with_doc)).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(done["scenarios"], json!(["from-curl"]));
+    let (status, _, _) = req(&app, "GET", "/api/morse/scenarios/from-curl", None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _, text) = req(&app, "POST", "/api/morse/import/env", Some(json!({ "text":
+        r#"{ "name": "Staging", "values": [{ "key": "token", "value": "env-secret-value", "enabled": true }] }"# }))).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert!(!text.contains("env-secret-value"), "{text}");
+    assert!(text.contains("\"staging\""), "{text}");
+}

@@ -63,6 +63,18 @@ pub fn app(state: Arc<AppState>) -> Router {
         // Send is the workbench's one-operation twin of Run (ADR 0023): the
         // same gates, and the page still cannot name a host or trust one.
         .route("/api/morse/send", post(send_morse))
+        // Imports convert once and keep no address, credential or script
+        // (ADR 0027). A collection can be large; the limit says how large.
+        .route(
+            "/api/morse/import/preview",
+            post(preview_morse_import)
+                .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024)),
+        )
+        .route(
+            "/api/morse/import",
+            post(morse_import).layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024)),
+        )
+        .route("/api/morse/import/env", post(morse_import_env))
         .route("/api/morse/envs", get(get_morse_envs))
         // Environments are edited here and trusted nowhere here (ADR 0027):
         // values go in and never come back, and the allowlist is not a field.
@@ -835,6 +847,66 @@ async fn get_morse_envs(
     })
     .await?;
     Ok(Json(envs))
+}
+
+async fn preview_morse_import(
+    State(state): State<Arc<AppState>>,
+    Json(input): Json<dto::MorseImportDto>,
+) -> Result<Json<dto::MorseImportPreviewDto>, ApiError> {
+    let source = input.source().map_err(ServerError::BadRequest)?;
+    let preview = read_dit(&state, move |dit| {
+        let report = dit
+            .morse_import_preview(&source, input.spec.as_deref())
+            .map_err(ServerError::Dit)?;
+        let catalogue = dit.morse_report().map_err(ServerError::Dit)?;
+        Ok(dto::import_preview_dto(&report, &catalogue))
+    })
+    .await?;
+    Ok(Json(preview))
+}
+
+async fn morse_import(
+    State(state): State<Arc<AppState>>,
+    Json(input): Json<dto::MorseImportDto>,
+) -> Result<Json<dto::MorseImportedDto>, ApiError> {
+    let source = input.source().map_err(ServerError::BadRequest)?;
+    let doc = input
+        .doc
+        .clone()
+        .filter(|d| !d.trim().is_empty())
+        .ok_or_else(|| {
+            ServerError::BadRequest("say which document the scenarios go in (`doc`)".into())
+        })?;
+    let me = state.me();
+    let done = write_dit(&state, move |dit| {
+        let outcome = dit
+            .morse_import(&source, input.spec.as_deref(), &doc, &me)
+            .map_err(ServerError::Dit)?;
+        Ok(dto::MorseImportedDto {
+            scenarios: outcome.scenarios,
+            notes: outcome.notes,
+        })
+    })
+    .await?;
+    Ok(Json(done))
+}
+
+async fn morse_import_env(
+    State(state): State<Arc<AppState>>,
+    Json(input): Json<dto::MorseImportEnvDto>,
+) -> Result<Json<dto::MorseEnvImportedDto>, ApiError> {
+    let done = write_dit(&state, move |dit| {
+        let imported = dit
+            .morse_import_env(&input.text)
+            .map_err(ServerError::Dit)?;
+        Ok(dto::MorseEnvImportedDto {
+            name: imported.name,
+            notes: imported.notes,
+            envs: dto::morse_envs_dto(&dit.morse_envs().map_err(ServerError::Dit)?),
+        })
+    })
+    .await?;
+    Ok(Json(done))
 }
 
 async fn set_morse_env(

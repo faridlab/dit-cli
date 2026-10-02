@@ -803,6 +803,150 @@ impl From<MorseScenarioEditDto> for dit_core::ScenarioEdit {
     }
 }
 
+/// What to import (ADR 0027): a `curl` command or a Postman collection.
+#[derive(Debug, Clone, Deserialize, TS)]
+#[ts(export)]
+pub struct MorseImportDto {
+    /// `curl` or `postman`.
+    pub kind: String,
+    pub text: String,
+    /// The scenario a curl import is called.
+    #[serde(default)]
+    #[ts(optional)]
+    pub scenario: Option<String>,
+    /// The spec a `{{baseUrl}}` host, or a host nothing names, stands for.
+    #[serde(default)]
+    #[ts(optional)]
+    pub spec: Option<String>,
+    /// Where the fences go; required to import, ignored by a preview.
+    #[serde(default)]
+    #[ts(optional)]
+    pub doc: Option<String>,
+}
+
+impl MorseImportDto {
+    pub fn source(&self) -> Result<dit_core::ImportSource, String> {
+        match self.kind.as_str() {
+            "curl" => Ok(dit_core::ImportSource::Curl {
+                command: self.text.clone(),
+                scenario: self
+                    .scenario
+                    .clone()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| "imported".into()),
+            }),
+            "postman" => Ok(dit_core::ImportSource::Postman {
+                json: self.text.clone(),
+            }),
+            other => Err(format!(
+                "`{other}` is not something Morse imports — `curl` or `postman`"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct MorseImportStepDto {
+    pub id: String,
+    pub method: String,
+    /// `<spec>/<operationId>`, or `request <path>` for one no spec describes.
+    pub target: String,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct MorseImportScenarioDto {
+    pub name: String,
+    pub spec: String,
+    pub requires: Vec<String>,
+    pub steps: Vec<MorseImportStepDto>,
+}
+
+/// What an import would write — or, after an import, what it wrote.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct MorseImportPreviewDto {
+    pub scenarios: Vec<MorseImportScenarioDto>,
+    pub notes: Vec<String>,
+}
+
+pub fn import_preview_dto(
+    report: &dit_core::ImportReport,
+    catalogue: &dit_core::MorseReport,
+) -> MorseImportPreviewDto {
+    MorseImportPreviewDto {
+        scenarios: report
+            .scenarios
+            .iter()
+            .map(|s| MorseImportScenarioDto {
+                name: s.name.clone(),
+                spec: s.spec.clone(),
+                requires: s.requires.clone(),
+                steps: s
+                    .steps
+                    .iter()
+                    .map(|st| {
+                        let (method, target) = match &st.operation {
+                            dit_core::StepTarget::Operation(op) => (
+                                catalogue
+                                    .specs
+                                    .iter()
+                                    .find(|sp| sp.id == op.spec)
+                                    .and_then(|sp| {
+                                        sp.operations
+                                            .iter()
+                                            .find(|o| o.operation_id == op.operation)
+                                    })
+                                    .map(|o| o.method.clone())
+                                    .unwrap_or_default(),
+                                op.qualified(),
+                            ),
+                            dit_core::StepTarget::Inline(id) => {
+                                let r = s.requests.iter().find(|r| &r.id == id);
+                                (
+                                    r.map(|r| r.method.clone()).unwrap_or_default(),
+                                    format!(
+                                        "request {}",
+                                        r.map(|r| r.path.as_str()).unwrap_or("?")
+                                    ),
+                                )
+                            }
+                        };
+                        MorseImportStepDto {
+                            id: st.id.clone(),
+                            method,
+                            target,
+                        }
+                    })
+                    .collect(),
+            })
+            .collect(),
+        notes: report.notes.clone(),
+    }
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct MorseImportedDto {
+    pub scenarios: Vec<String>,
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, TS)]
+#[ts(export)]
+pub struct MorseImportEnvDto {
+    pub text: String,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct MorseEnvImportedDto {
+    pub name: String,
+    pub notes: Vec<String>,
+    pub envs: MorseEnvsDto,
+}
+
 /// One `multipart/form-data` part: a value or a repository file.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
