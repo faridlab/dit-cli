@@ -25,6 +25,7 @@ import type {
   MorseReportDto,
   MorseRunDto,
   MorseScenarioDetailDto,
+  MorseScenarioEditDto,
   MorseSendDto,
   MorseStepDto,
   NewIssueInput,
@@ -206,6 +207,18 @@ export function saveMorseStep(scenario: string, step: MorseStepDto): Promise<Mor
 }
 
 /** Start a scenario with one step, as a new fence at the end of a document. */
+/** One change to a scenario (ADR 0027): one commit, the fence rewritten. */
+export function editMorseScenario(name: string, edit: MorseScenarioEditDto): Promise<MorseScenarioDetailDto> {
+  return request<MorseScenarioDetailDto>(`/api/morse/scenarios/${encodeURIComponent(name)}`, {
+    method: "PATCH",
+    body: JSON.stringify(edit),
+  });
+}
+
+export function deleteMorseScenario(name: string): Promise<void> {
+  return request<void>(`/api/morse/scenarios/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
 export function createMorseScenario(input: MorseCreateDto): Promise<MorseScenarioDetailDto> {
   return request<MorseScenarioDetailDto>("/api/morse/scenarios", {
     method: "POST",

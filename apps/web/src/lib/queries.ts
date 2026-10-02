@@ -16,6 +16,7 @@ import { POOL_LIMIT } from "./lists";
 import type {
   BoardDto,
   FieldPatch,
+  MorseScenarioEditDto,
   MorseStepDto,
   NewIssueInput,
   ReleasePatchInput,
@@ -166,6 +167,31 @@ export function useSaveMorseStep() {
       api.saveMorseStep(scenario, step),
     onSuccess: (detail) => {
       client.setQueryData(queryKeys.morseScenario(detail.scenario), detail);
+      void client.invalidateQueries({ queryKey: queryKeys.morse });
+    },
+  });
+}
+
+/** Rename, reorder, copy or delete — one commit each (ADR 0027). */
+export function useEditMorseScenario() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ scenario, edit }: { scenario: string; edit: MorseScenarioEditDto }) =>
+      api.editMorseScenario(scenario, edit),
+    onSuccess: (detail, { scenario }) => {
+      if (detail.scenario !== scenario) client.removeQueries({ queryKey: queryKeys.morseScenario(scenario) });
+      client.setQueryData(queryKeys.morseScenario(detail.scenario), detail);
+      void client.invalidateQueries({ queryKey: queryKeys.morse });
+    },
+  });
+}
+
+export function useDeleteMorseScenario() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (scenario: string) => api.deleteMorseScenario(scenario),
+    onSuccess: (_done, scenario) => {
+      client.removeQueries({ queryKey: queryKeys.morseScenario(scenario) });
       void client.invalidateQueries({ queryKey: queryKeys.morse });
     },
   });

@@ -115,6 +115,8 @@ vi.mock("../../lib/queries", () => ({
   useRunMorse: () => mutation((i: unknown) => ran.push(i), SENT),
   useSaveMorseStep: () => mutation(() => undefined, DETAIL),
   useCreateMorseScenario: () => mutation(() => undefined, DETAIL),
+  useEditMorseScenario: () => mutation(() => undefined, DETAIL),
+  useDeleteMorseScenario: () => mutation(() => undefined, undefined),
 }));
 
 const { MorseView } = await import("./MorseView");

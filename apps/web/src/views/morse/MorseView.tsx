@@ -31,6 +31,8 @@ import {
 } from "../../lib/morse";
 import {
   useCreateMorseScenario,
+  useDeleteMorseScenario,
+  useEditMorseScenario,
   useMorse,
   useMorseEnvs,
   useMorseRuns,
@@ -39,7 +41,7 @@ import {
   useSaveMorseStep,
   useSendMorse,
 } from "../../lib/queries";
-import type { MorseRunDto, MorseStepDto } from "../../lib/types";
+import type { MorseRunDto, MorseScenarioEditDto, MorseStepDto } from "../../lib/types";
 import { ErrorBox, Loading } from "../../components/states";
 import { type Tab, type TabRef, tabKey, Verb } from "./common";
 import { Explorer, type Seg } from "./Explorer";
@@ -82,6 +84,8 @@ export function MorseView() {
   const run = useRunMorse();
   const saveStep = useSaveMorseStep();
   const createScenario = useCreateMorseScenario();
+  const editScenario = useEditMorseScenario();
+  const deleteScenario = useDeleteMorseScenario();
 
   const [seg, setSeg] = useState<Seg>(() => load("dit.morse.seg", "specs"));
   const [open, setOpen] = useState<Set<string>>(() => new Set(load<string[]>("dit.morse.open", [])));
@@ -206,6 +210,72 @@ export function MorseView() {
   );
 
   const pin = (key: string) => setTabs((list) => list.map((t) => (t.key === key ? { ...t, pinned: true } : t)));
+
+  /** Move every piece of a tab's state from one key to another — a rename
+   *  must not lose a draft, a result or the tab's place. */
+  const rekey = useCallback((from: string, ref: TabRef) => {
+    const to = tabKey(ref);
+    if (from === to) return;
+    const move = <T,>(record: Record<string, T>): Record<string, T> => {
+      if (!(from in record)) return record;
+      const { [from]: value, ...rest } = record;
+      return value === undefined ? rest : { ...rest, [to]: value };
+    };
+    setTabs((list) => list.map((t) => (t.key === from ? { ...t, key: to, ref } : t)));
+    setDrafts(move);
+    setBaseline(move);
+    setSubs(move);
+    setResults(move);
+    setDirty((d) => {
+      if (!d.has(from)) return d;
+      const n = new Set(d);
+      n.delete(from);
+      n.add(to);
+      return n;
+    });
+    setActive((a) => (a === from ? to : a));
+  }, []);
+
+  /** One change to a scenario (ADR 0027); the open tabs follow it. */
+  const doEditScenario = (scenario: string, edit: MorseScenarioEditDto) => {
+    editScenario.mutate(
+      { scenario, edit },
+      {
+        onSuccess: (detail) => {
+          if (edit.op === "rename") {
+            for (const t of tabs) {
+              if (t.ref.kind === "scn" && t.ref.scenario === scenario) rekey(t.key, { kind: "scn", scenario: detail.scenario });
+              if (t.ref.kind === "step" && t.ref.scenario === scenario) {
+                rekey(t.key, { kind: "step", scenario: detail.scenario, step: t.ref.step });
+              }
+            }
+            toast.success(`Renamed to ${detail.scenario}`);
+          } else if (edit.op === "rename_step") {
+            rekey(tabKey({ kind: "step", scenario, step: edit.step }), { kind: "step", scenario, step: edit.to });
+            setDrafts((d) => {
+              const key = tabKey({ kind: "step", scenario, step: edit.to });
+              return d[key] ? { ...d, [key]: { ...d[key], id: edit.to } } : d;
+            });
+          } else if (edit.op === "delete_step") {
+            closeTab(tabKey({ kind: "step", scenario, step: edit.step }), true);
+          }
+        },
+        onError: (error) => toast.error(message(error)),
+      },
+    );
+  };
+
+  const doDeleteScenario = (scenario: string) => {
+    deleteScenario.mutate(scenario, {
+      onSuccess: () => {
+        for (const t of tabs) {
+          if ((t.ref.kind === "scn" || t.ref.kind === "step") && t.ref.scenario === scenario) closeTab(t.key, true);
+        }
+        toast.success(`Deleted ${scenario}`);
+      },
+      onError: (error) => toast.error(message(error)),
+    });
+  };
 
   // ---- editing ------------------------------------------------------------
 
@@ -446,6 +516,9 @@ export function MorseView() {
             result={results[key]}
             onRun={() => doRun(r.scenario)}
             onOpenStep={(step) => openTab({ kind: "step", scenario: r.scenario, step }, true)}
+            envNames={envsQ.data?.envs.map((e) => e.name) ?? []}
+            onEdit={(edit) => doEditScenario(r.scenario, edit)}
+            onDelete={() => doDeleteScenario(r.scenario)}
           />
         );
       case "op":

@@ -3,10 +3,35 @@
 // terminal — `dit morse sync` fires the chain first and moves the pin only
 // on green, and a browser moving pins would be a claim nobody verified.
 
-import { AlertTriangle, CircleCheck, CircleX, Clock, Code2, Copy, Lock, Play, ShieldAlert } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  CircleCheck,
+  CircleX,
+  Clock,
+  Code2,
+  Copy,
+  Lock,
+  MoreHorizontal,
+  Pencil,
+  Play,
+  Plus,
+  ShieldAlert,
+  Trash2,
+  X,
+} from "lucide-react";
+import { MenuButton, type MenuItem } from "../../components/chrome";
 import { cn } from "../../lib/cn";
 import { usedVars } from "../../lib/morse";
-import type { MorseEnvDto, MorseReportDto, MorseRunDto, MorseScenarioDetailDto, MorseScenarioDto } from "../../lib/types";
+import type {
+  MorseEnvDto,
+  MorseReportDto,
+  MorseRunDto,
+  MorseScenarioDetailDto,
+  MorseScenarioDto,
+  MorseScenarioEditDto,
+} from "../../lib/types";
 import { Loading } from "../../components/states";
 import { ago, allowCommand, Banner, Coded, copyText, CopyCmd, HealthPill, Verb } from "./common";
 import type { RunState } from "./RequestTab";
@@ -21,6 +46,9 @@ export function ScenarioTab({
   result,
   onRun,
   onOpenStep,
+  envNames,
+  onEdit,
+  onDelete,
 }: {
   view: MorseScenarioDto | undefined;
   detail: MorseScenarioDetailDto | undefined;
@@ -31,6 +59,11 @@ export function ScenarioTab({
   result: RunState | undefined;
   onRun: () => void;
   onOpenStep: (step: string) => void;
+  /** This machine's environments, for the scenario's `env:`. */
+  envNames: string[];
+  /** One change, written back as one commit (ADR 0027). */
+  onEdit: (edit: MorseScenarioEditDto) => void;
+  onDelete: () => void;
 }) {
   if (!view) {
     return (
@@ -45,6 +78,77 @@ export function ScenarioTab({
   const missing = env ? view.requires.filter((v) => !env.vars.includes(v)) : [];
   const produced = new Map<string, string>();
   for (const st of detail?.steps ?? []) for (const c of st.capture) if (c.name) produced.set(c.name, st.id);
+  // A fence with a comment is read-only here: rewriting it would drop the
+  // comment. Nothing below offers to change it then.
+  const editable = detail?.editable === true;
+  const scenarioMenu: MenuItem[] = [
+    {
+      kind: "input",
+      placeholder: "New name",
+      value: view.scenario,
+      button: "Rename",
+      run: (to) => {
+        if (to && to !== view.scenario) onEdit({ op: "rename", to });
+      },
+    },
+    { kind: "sep" },
+    {
+      label: "Delete scenario",
+      icon: <Trash2 className="i" aria-hidden />,
+      danger: true,
+      confirm: "Click again — the fence leaves its document",
+      run: onDelete,
+    },
+  ];
+  const envMenu: MenuItem[] = [
+    { kind: "head", label: "Environment this scenario runs in" },
+    ...envNames.map((name) => ({
+      label: name,
+      on: view.env === name,
+      run: () => onEdit({ op: "set_env", env: name }),
+    })),
+    { label: "None — the spec's own server", on: !view.env, run: () => onEdit({ op: "set_env", env: null }) },
+    { kind: "input", placeholder: "Another name", button: "Use", run: (env) => env && onEdit({ op: "set_env", env }) },
+  ];
+  const stepMenu = (id: string, index: number, count: number): MenuItem[] => [
+    {
+      kind: "input",
+      placeholder: "Step id",
+      value: id,
+      button: "Rename",
+      run: (to) => {
+        if (to && to !== id) onEdit({ op: "rename_step", step: id, to });
+      },
+    },
+    {
+      kind: "input",
+      placeholder: "Id of the copy",
+      value: `${id}-copy`,
+      button: "Duplicate",
+      run: (as_id) => as_id && onEdit({ op: "duplicate_step", step: id, as_id }),
+    },
+    { kind: "sep" },
+    {
+      label: "Move up",
+      icon: <ArrowUp className="i" aria-hidden />,
+      disabled: index === 0,
+      run: () => onEdit({ op: "move_step", step: id, to: index - 1 }),
+    },
+    {
+      label: "Move down",
+      icon: <ArrowDown className="i" aria-hidden />,
+      disabled: index + 1 >= count,
+      run: () => onEdit({ op: "move_step", step: id, to: index + 1 }),
+    },
+    { kind: "sep" },
+    {
+      label: "Delete step",
+      icon: <Trash2 className="i" aria-hidden />,
+      danger: true,
+      confirm: "Click again to delete",
+      run: () => onEdit({ op: "delete_step", step: id }),
+    },
+  ];
   const opOf = (ref: string | null) => {
     if (!ref) return undefined;
     const [spec, ...rest] = ref.split("/");
@@ -72,6 +176,13 @@ export function ScenarioTab({
           <Copy className="i" aria-hidden />
           Copy sync command
         </button>
+        {editable ? (
+          <MenuButton items={scenarioMenu} align="end">
+            <button type="button" className="mw-btn" aria-label="Rename or delete this scenario" title="Rename or delete">
+              <MoreHorizontal className="i" aria-hidden />
+            </button>
+          </MenuButton>
+        ) : null}
       </div>
       <div className="mw-facts">
         <span>
@@ -83,14 +194,51 @@ export function ScenarioTab({
         <span>
           pinned at <b className="mw-mono">{view.pin.slice(0, 7)}</b>
         </span>
-        {view.env ? (
+        {editable ? (
+          <MenuButton items={envMenu}>
+            <button type="button" className="mw-factbtn" title="Choose the environment this scenario runs in">
+              env <b className="mw-mono">{view.env ?? "none"}</b>
+              <Pencil className="i" aria-hidden />
+            </button>
+          </MenuButton>
+        ) : view.env ? (
           <span>
             env <b className="mw-mono">{view.env}</b>
           </span>
         ) : null}
-        {view.requires.length ? (
-          <span>
-            requires <b className="mw-mono">{view.requires.join(", ")}</b>
+        {view.requires.length || editable ? (
+          <span className="mw-requires">
+            requires
+            {view.requires.map((name) => (
+              <span key={name} className="mw-chip mono">
+                {name}
+                {editable ? (
+                  <button
+                    type="button"
+                    aria-label={`Stop requiring ${name}`}
+                    onClick={() => onEdit({ op: "set_requires", names: view.requires.filter((n) => n !== name) })}
+                  >
+                    <X className="i" aria-hidden />
+                  </button>
+                ) : null}
+              </span>
+            ))}
+            {editable ? (
+              <MenuButton
+                items={[
+                  {
+                    kind: "input",
+                    placeholder: "Variable name, like token",
+                    button: "Require",
+                    run: (name) => name && onEdit({ op: "set_requires", names: [...view.requires, name] }),
+                  },
+                ]}
+              >
+                <button type="button" className="mw-chip add" aria-label="Require another variable">
+                  <Plus className="i" aria-hidden />
+                </button>
+              </MenuButton>
+            ) : null}
           </span>
         ) : null}
       </div>
@@ -140,8 +288,15 @@ export function ScenarioTab({
             const op = opOf(st.operation);
             const line = run?.steps.find((r) => r.id === st.id);
             return (
-              <div key={st.id}>
+              <div key={st.id} className="mw-step-wrap">
                 {i ? <div className="mw-link" /> : null}
+                {editable ? (
+                  <MenuButton items={stepMenu(st.id, i, detail.steps.length)} align="end" className="mw-step-menu-list">
+                    <button type="button" className="mw-step-menu" aria-label={`Actions for step ${st.id}`} title="Rename, copy, move or delete">
+                      <MoreHorizontal className="i" aria-hidden />
+                    </button>
+                  </MenuButton>
+                ) : null}
                 <button type="button" className={cn("mw-step", !op && st.operation && "bad")} onClick={() => onOpenStep(st.id)}>
                   <span className="n">{i + 1}</span>
                   <span>

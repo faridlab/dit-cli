@@ -1698,3 +1698,19 @@ button.mw-li:hover{background:var(--hover)}
   .mw-url .base{display:none}
   .mw-page{padding:16px}
 }
+
+/* Scenario management (ADR 0027): the step menu sits on the step's own
+   row, beside the button that opens it. */
+.mw-step-wrap{position:relative}
+.mw-step-menu{position:absolute;right:10px;bottom:9px;z-index:1;display:grid;place-items:center;width:24px;height:24px;border-radius:5px;color:var(--muted);opacity:0}
+.mw-step-wrap:hover .mw-step-menu,.mw-step-menu:focus-visible,.mw-step-menu[data-state="open"]{opacity:1}
+.mw-step-menu:hover{background:var(--hover);color:var(--ink)}
+.mw-factbtn{display:inline-flex;align-items:center;gap:4px;color:inherit;border-radius:4px;padding:0 3px;margin:0 -3px}
+.mw-factbtn:hover{background:var(--hover);color:var(--ink)}
+.mw-factbtn .i{width:11px;height:11px;opacity:.6}
+.mw-requires{display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap}
+.mw-requires .mw-chip{display:inline-flex;align-items:center;gap:3px}
+.mw-requires .mw-chip button{display:grid;place-items:center;color:var(--muted)}
+.mw-requires .mw-chip button:hover{color:var(--crit)}
+.mw-requires .mw-chip .i{width:11px;height:11px}
+.mw-requires .mw-chip.add{cursor:pointer;padding:0 5px}
