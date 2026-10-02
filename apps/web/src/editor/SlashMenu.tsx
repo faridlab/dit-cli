@@ -8,6 +8,7 @@ import type { Editor, Range } from "@tiptap/core";
 import { Extension } from "@tiptap/core";
 import Suggestion, { exitSuggestion, type SuggestionProps } from "@tiptap/suggestion";
 import { ReactRenderer } from "@tiptap/react";
+import { requestInsert } from "./InsertDialog";
 import {
   Code2,
   GitFork,
@@ -32,9 +33,6 @@ type SlashItem = {
   icon: typeof Type;
   command: (args: { editor: Editor; range: Range }) => void;
 };
-
-const ask = (prompt: string, fallback = "") =>
-  typeof window === "undefined" ? fallback : window.prompt(prompt) ?? fallback;
 
 const ITEMS: SlashItem[] = [
   {
@@ -167,42 +165,13 @@ const ITEMS: SlashItem[] = [
     label: "Image",
     keywords: "picture photo img upload image",
     icon: ImageIcon,
-    command: ({ editor, range }) => {
-      const chain = editor.chain().focus().deleteRange(range);
-      const src = ask("Image URL");
-      if (!src) {
-        chain.run();
-        return;
-      }
-      const alt = ask("Alt text (optional)");
-      chain
-        .insertContent({
-          type: "image",
-          attrs: { src, title: "" },
-          content: alt ? [{ type: "text", text: alt }] : [],
-        })
-        .run();
-    },
+    command: ({ editor, range }) => requestInsert({ kind: "image", editor, range }),
   },
   {
     label: "Link",
     keywords: "url href anchor link",
     icon: Link2,
-    command: ({ editor, range }) => {
-      const href = ask("Link URL");
-      if (!href) return;
-      const chain = editor.chain().focus().deleteRange(range);
-      const { empty } = editor.state.selection;
-      if (empty) {
-        chain
-          .insertContent([
-            { type: "text", text: href, marks: [{ type: "link", attrs: { href, title: "" } }] },
-          ])
-          .run();
-      } else {
-        chain.setLink({ href }).run();
-      }
-    },
+    command: ({ editor, range }) => requestInsert({ kind: "link", editor, range }),
   },
 ];
 

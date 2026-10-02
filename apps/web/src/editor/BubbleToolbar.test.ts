@@ -9,7 +9,7 @@
 // is the signal the rule was missing.
 import { describe, expect, it } from "vitest";
 import { Editor } from "@tiptap/core";
-import { shouldShowBubble } from "./BubbleToolbar";
+import { isOpenableHref, shouldShowBubble } from "./BubbleToolbar";
 import { ditExtensions } from "./extensions";
 
 function editorWith(content: Record<string, unknown>): Editor {
@@ -90,4 +90,17 @@ describe("shouldShowBubble", () => {
 
     expect(visibility(editor, false, element)).toBe(true);
   });
+});
+
+describe("isOpenableHref", () => {
+  // Links arrive in documents other people pushed; "open" must not become a
+  // way to run script.
+  it.each(["https://example.com", "http://localhost:3000/x", "mailto:a@b.test", "  HTTPS://X.test"])(
+    "opens %j",
+    (href) => expect(isOpenableHref(href)).toBe(true),
+  );
+  it.each(["javascript:alert(1)", " javascript:alert(1)", "data:text/html,<script>", "vbscript:x", "../docs/a.md", ""])(
+    "refuses %j",
+    (href) => expect(isOpenableHref(href)).toBe(false),
+  );
 });

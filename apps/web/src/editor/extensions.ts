@@ -317,21 +317,96 @@ const DitCodeBlock = CodeBlock.extend({
       if (node.attrs.language === "mermaid") {
         return MermaidView(this.name, editor, node, getPos);
       }
-      const pre = document.createElement("pre");
-      const code = document.createElement("code");
-      if (node.attrs.language) code.className = `language-${node.attrs.language}`;
-      pre.append(code);
-      return {
-        dom: pre,
-        contentDOM: code,
-        update: (updated) => {
-          if (updated.type.name !== this.name) return false;
-          return updated.attrs.language === node.attrs.language;
-        },
-      };
+      return CodeView(this.name, editor, node, getPos);
     };
   },
 });
+
+/** Info strings people reach for most; any other is typed freely. */
+const COMMON_LANGUAGES = [
+  "bash", "css", "diff", "dit-diagram", "go", "html", "http", "java", "javascript", "json",
+  "kotlin", "markdown", "mermaid", "python", "rust", "sh", "sql", "swift", "toml", "tsx",
+  "typescript", "yaml",
+];
+
+/** Keeps a fence's info string to the characters the editor reads back. */
+export function cleanLanguage(value: string): string {
+  return value.trim().replace(/[^\w:.+#-]/g, "");
+}
+
+function languageList(): string {
+  const id = "dit-code-languages";
+  if (typeof document !== "undefined" && !document.getElementById(id)) {
+    const list = document.createElement("datalist");
+    list.id = id;
+    for (const language of COMMON_LANGUAGES) {
+      const option = document.createElement("option");
+      option.value = language;
+      list.append(option);
+    }
+    document.body.append(list);
+  }
+  return id;
+}
+
+/** A plain code block with its language shown and editable above it —
+ *  before, the info string could only be changed in source mode. */
+function CodeView(
+  name: string,
+  editor: Editor,
+  node: PmNode,
+  getPos: () => number | undefined,
+): NodeView {
+  const wrap = document.createElement("div");
+  wrap.className = "dit-code";
+  const bar = document.createElement("div");
+  bar.className = "dit-code-bar";
+  bar.contentEditable = "false";
+  const language = document.createElement("input");
+  language.className = "dit-code-lang";
+  language.placeholder = "plain text";
+  language.setAttribute("aria-label", "Code language");
+  language.setAttribute("list", languageList());
+  language.spellcheck = false;
+  language.value = node.attrs.language;
+  bar.append(language);
+
+  const commit = () => {
+    const next = cleanLanguage(language.value);
+    language.value = next;
+    const pos = getPos();
+    if (typeof pos !== "number" || next === node.attrs.language) return;
+    editor.view.dispatch(editor.state.tr.setNodeMarkup(pos, undefined, { ...node.attrs, language: next }));
+  };
+  language.addEventListener("change", commit);
+  language.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commit();
+      editor.commands.focus();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      language.value = node.attrs.language;
+      editor.commands.focus();
+    }
+  });
+
+  const pre = document.createElement("pre");
+  const code = document.createElement("code");
+  if (node.attrs.language) code.className = `language-${node.attrs.language}`;
+  pre.append(code);
+  wrap.append(bar, pre);
+  return {
+    dom: wrap,
+    contentDOM: code,
+    update: (updated) => {
+      if (updated.type.name !== name) return false;
+      return updated.attrs.language === node.attrs.language;
+    },
+    ignoreMutation: (mutation) => !code.contains(mutation.target),
+    stopEvent: (event) => event.target instanceof Element && bar.contains(event.target),
+  };
+}
 
 /** One node, two comrak states: `soft` is a single newline inside a paragraph. */
 const DitHardBreak = HardBreak.extend({
@@ -627,7 +702,7 @@ const DitShape = Extension.create({
   },
 });
 
-export function ditExtensions() {
+export function ditExtensions(options: { placeholder?: string } = {}) {
   return [
     DitShape,
     StarterKit.configure({
@@ -665,7 +740,7 @@ export function ditExtensions() {
           ? "Heading"
           : node.type.name === "codeBlock"
             ? "code"
-            : "Write something, or type '/' for commands",
+            : options.placeholder ?? "Write something, or type '/' for commands",
     }),
   ];
 }

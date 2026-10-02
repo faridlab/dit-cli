@@ -320,17 +320,31 @@
 
 /* The drag handle is positioned by the extension; this is only its look.
    Quiet until hovered, loud enough to grab when aimed at. */
-.dit-drag-handle {
+/* The handle beside the hovered block: "+" adds a block, the grip drags
+   or opens the block menu. */
+.dit-block-handle {
+  align-items: center;
+  display: inline-flex;
+  gap: 1px;
+  margin-right: 4px;
+}
+.dit-handle-btn {
   align-items: center;
   border-radius: 4px;
-  color: var(--color-dim);
-  cursor: grab;
+  color: var(--color-muted);
+  cursor: pointer;
   display: inline-flex;
-  padding: 2px;
+  justify-content: center;
+  height: 22px;
+  width: 20px;
 }
-.dit-drag-handle:hover {
-  background: var(--color-card);
+.dit-handle-btn:hover,
+.dit-handle-btn[data-state="open"] {
+  background: var(--color-hover);
   color: var(--color-ink);
+}
+.dit-drag-handle {
+  cursor: grab;
 }
 
 /* The selection toolbar and the slash menu share the floating-card look. */
@@ -344,7 +358,89 @@
   z-index: 50;
 }
 .dit-bubble {
+  align-items: center;
   display: flex;
+  gap: 1px;
+}
+/* "Turn into": the current block kind, opening the list of kinds. */
+.dit-bubble-kind {
+  align-items: center;
+  border-radius: 4px;
+  color: var(--color-ink-2);
+  display: inline-flex;
+  font-size: 12px;
+  gap: 4px;
+  height: 28px;
+  padding: 0 6px 0 8px;
+  white-space: nowrap;
+}
+.dit-bubble-kind:hover {
+  background: var(--color-edge);
+  color: var(--color-ink);
+}
+.dit-bubble-blocks {
+  align-items: stretch;
+  flex-direction: column;
+  min-width: 168px;
+}
+.dit-bubble-row {
+  align-items: center;
+  border-radius: 4px;
+  color: var(--color-ink-2);
+  display: flex;
+  font-size: 12.5px;
+  gap: 8px;
+  height: 28px;
+  padding: 0 8px;
+  text-align: left;
+}
+.dit-bubble-row:hover {
+  background: var(--color-hover);
+  color: var(--color-ink);
+}
+.dit-bubble-row[data-active] {
+  color: var(--color-accent-hi);
+}
+.dit-bubble-input {
+  background: var(--color-sunken);
+  border: 1px solid var(--color-edge);
+  border-radius: 4px;
+  color: var(--color-ink);
+  font-size: 12.5px;
+  height: 28px;
+  outline: none;
+  padding: 0 8px;
+  width: 260px;
+}
+.dit-bubble-input:focus {
+  border-color: var(--color-accent);
+}
+/* The table toolbar: icon + short label, so "Row above" needs no tooltip. */
+.dit-table-btn {
+  align-items: center;
+  border-radius: 4px;
+  color: var(--color-ink-2);
+  display: inline-flex;
+  font-size: 11.5px;
+  gap: 4px;
+  height: 26px;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+.dit-table-btn:hover:not(:disabled) {
+  background: var(--color-hover);
+  color: var(--color-ink);
+}
+.dit-table-btn[data-danger]:hover:not(:disabled) {
+  color: var(--color-p0, #d14343);
+}
+.dit-table-btn:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+.dit-table-group {
+  color: var(--color-faint);
+  margin: 0 2px 0 4px;
 }
 .dit-slash-list {
   max-height: 320px;
@@ -389,4 +485,33 @@
   font-size: 12px;
   margin: 0;
   white-space: pre-wrap;
+}
+
+
+/* A plain code block: its language sits in the top-right corner, editable. */
+.dit-rich .dit-code {
+  position: relative;
+}
+.dit-code-bar {
+  position: absolute;
+  right: 6px;
+  top: 4px;
+  z-index: 1;
+}
+.dit-code-lang {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--color-muted);
+  font: 11px var(--font-mono, ui-monospace, monospace);
+  outline: none;
+  padding: 1px 6px;
+  text-align: right;
+  width: 112px;
+}
+.dit-code:hover .dit-code-lang,
+.dit-code-lang:focus {
+  background: var(--color-card);
+  border-color: var(--color-edge);
+  color: var(--color-ink-2);
 }

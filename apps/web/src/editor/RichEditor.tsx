@@ -10,12 +10,13 @@
 
 import { useEffect, useRef, useState } from "react";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
-import { DragHandle } from "@tiptap/extension-drag-handle-react";
-import { GripVertical } from "lucide-react";
 
 import { docToMarkdown, markdownToDoc, type PmDoc } from "./bridge";
 import { ditExtensions } from "./extensions";
 import { BubbleToolbar } from "./BubbleToolbar";
+import { BlockHandle } from "./BlockHandle";
+import { TableToolbar } from "./TableToolbar";
+import { InsertDialog } from "./InsertDialog";
 import { Loading } from "../components/states";
 import "./editor.css";
 
@@ -28,6 +29,9 @@ export default function RichEditor({
   onSave,
   onFallbackToSource,
   className,
+  compact = false,
+  placeholder,
+  flushRef,
 }: {
   value: string;
   onChange: (markdown: string) => void;
@@ -37,6 +41,14 @@ export default function RichEditor({
    *  parent should switch to source mode. The reason is in our own banner. */
   onFallbackToSource?: () => void;
   className?: string;
+  /** A small editor (a comment box): no block handle beside each line. */
+  compact?: boolean;
+  /** Replaces the default "type '/' for commands" hint on an empty editor. */
+  placeholder?: string;
+  /** Set to a function that serializes what is on screen right now — for a
+   *  button outside the editor that must act on the last keystrokes, which
+   *  the debounced `onChange` may not have delivered yet. */
+  flushRef?: { current: (() => Promise<string | null>) | null };
 }) {
   const [initialDoc, setInitialDoc] = useState<PmDoc | null>(null);
   const [bridgeError, setBridgeError] = useState<string | null>(null);
@@ -103,7 +115,7 @@ export default function RichEditor({
   const editor = useEditor(
     {
       content: initialDoc ?? { type: "doc", content: [] },
-      extensions: ditExtensions(),
+      extensions: ditExtensions({ placeholder }),
       editorProps: {
         attributes: { class: "dit-rich", spellcheck: "true" },
         handleKeyDown: (_view, event) => {
@@ -170,6 +182,17 @@ export default function RichEditor({
   );
 
   editorRef.current = editor;
+  if (flushRef) {
+    flushRef.current = async () => {
+      if (timer.current !== null) {
+        clearTimeout(timer.current);
+        timer.current = null;
+      }
+      const markdown = await serialize();
+      emit(markdown);
+      return markdown;
+    };
+  }
 
   // External value changes (a different issue, a server refresh) sync into
   // the document — but never the ones we emitted ourselves.
@@ -225,12 +248,10 @@ export default function RichEditor({
   return (
     <div className={className ?? "h-full"}>
       <EditorContent editor={editor} />
-      <DragHandle editor={editor}>
-        <span className="dit-drag-handle" aria-hidden>
-          <GripVertical className="size-3.5" />
-        </span>
-      </DragHandle>
+      {compact ? null : <BlockHandle editor={editor} />}
       <BubbleToolbar editor={editor} />
+      <TableToolbar editor={editor} />
+      <InsertDialog editor={editor} />
     </div>
   );
 }
