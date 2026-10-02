@@ -1199,7 +1199,7 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
                         .collect()
                 };
                 let draft = dit_core::SendDraft {
-                    operation,
+                    target: dit_core::SendTarget::Operation(operation),
                     params: pairs(&params, '=')?,
                     query: pairs(&query, '=')?,
                     headers: pairs(&headers, ':')?,

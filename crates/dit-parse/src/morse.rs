@@ -223,6 +223,21 @@ pub fn parse_morse_scenario(text: &str) -> Result<MorseScenario, MorseError> {
     })
 }
 
+/// Why a method and a path typed in the page cannot be a request, if they
+/// cannot — the same two rules a fence's `requests:` entry is held to.
+pub fn inline_request_problem(method: &str, path: &str) -> Option<String> {
+    let upper = method.trim().to_ascii_uppercase();
+    if !METHODS.contains(&upper.as_str()) {
+        return Some(format!("`{method}` is not an HTTP method"));
+    }
+    if !is_plain_path(path) {
+        return Some(format!(
+            "`{path}` must be a path beginning with `/`, never an address — the host comes from the spec or the environment"
+        ));
+    }
+    None
+}
+
 /// A path on the spec's own server: it begins with `/` and carries no
 /// scheme and no authority. Broad on purpose — a scheme of any name, and
 /// the protocol-relative form a scheme test alone would miss.
@@ -497,6 +512,23 @@ fn refuse_forbidden(node: &Yaml) -> Result<(), MorseError> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_request_typed_in_the_page_is_checked_like_one_in_a_fence() {
+        assert_eq!(inline_request_problem("post", "/users/{id}"), None);
+        for (method, path) in [
+            ("FETCH", "/a"),
+            ("GET", "https://evil.test/a"),
+            ("GET", "//evil.test/a"),
+            ("GET", "a"),
+            ("GET", ""),
+        ] {
+            assert!(
+                inline_request_problem(method, path).is_some(),
+                "{method} {path}"
+            );
+        }
+    }
 
     fn step_with(body_lines: &str) -> Result<MorseScenario, MorseError> {
         parse_morse_scenario(&format!(

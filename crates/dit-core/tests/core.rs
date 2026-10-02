@@ -3823,7 +3823,7 @@ fn a_step_saved_from_the_screen_lands_in_its_fence_and_nothing_else_moves() {
     assert!(detail.editable);
     assert_eq!(detail.scenario.steps.len(), 3);
 
-    dit.morse_save_step("register", step_me_checking("Ada"), "farid")
+    dit.morse_save_step("register", step_me_checking("Ada"), None, "farid")
         .unwrap();
 
     let body = dit.read_doc("docs/api/register.md").unwrap();
@@ -3861,7 +3861,8 @@ fn a_new_step_that_reads_a_new_name_adds_it_to_requires() {
         "X-Api-Key".into(),
         dit_model::MorseValue::Str("{{api_key}}".into()),
     )];
-    dit.morse_save_step("register", extra, "farid").unwrap();
+    dit.morse_save_step("register", extra, None, "farid")
+        .unwrap();
     let saved = dit.morse_scenario("register").unwrap().scenario;
     assert_eq!(saved.steps.last().unwrap().id, "again");
     assert_eq!(
@@ -3888,7 +3889,7 @@ fn a_fence_with_a_comment_is_not_rewritten_from_the_screen() {
     );
     assert!(!dit.morse_scenario("register").unwrap().editable);
     let err = dit
-        .morse_save_step("register", step_me_checking("Ada"), "farid")
+        .morse_save_step("register", step_me_checking("Ada"), None, "farid")
         .unwrap_err();
     assert!(err.to_string().contains("comment"), "{err}");
     assert!(
@@ -3914,6 +3915,7 @@ fn a_scenario_created_from_the_screen_is_pinned_where_the_spec_stands() {
             "auth",
             Some("local"),
             step_me_checking("Ada"),
+            vec![],
             "farid",
         )
         .unwrap();
@@ -3935,6 +3937,7 @@ fn a_scenario_created_from_the_screen_is_pinned_where_the_spec_stands() {
             "auth",
             None,
             step_me_checking("Ada"),
+            vec![],
             "farid",
         )
         .unwrap_err();
@@ -3946,7 +3949,7 @@ fn a_scenario_created_from_the_screen_is_pinned_where_the_spec_stands() {
 
 fn send_draft(op: &str, params: &[(&str, &str)]) -> dit_core::SendDraft {
     dit_core::SendDraft {
-        operation: dit_model::OperationRef::parse(op).unwrap(),
+        target: dit_core::SendTarget::Operation(dit_model::OperationRef::parse(op).unwrap()),
         params: params
             .iter()
             .map(|(k, v)| ((*k).to_owned(), dit_model::MorseValue::Str((*v).to_owned())))
@@ -4052,14 +4055,22 @@ fn a_credential_written_out_is_refused_before_it_can_reach_a_commit() {
         dit_model::MorseValue::Str("Bearer eyJhbGciOiJIUzI1NiJ9.abc.def".into()),
     )];
     let err = dit
-        .morse_save_step("register", leaky.clone(), "farid")
+        .morse_save_step("register", leaky.clone(), None, "farid")
         .unwrap_err();
     assert!(
         err.to_string().contains("Authorization") && err.to_string().contains("{{"),
         "names the field and the fix: {err}"
     );
     let err = dit
-        .morse_create_scenario("docs/api/x.md", "leak", "auth", None, leaky, "farid")
+        .morse_create_scenario(
+            "docs/api/x.md",
+            "leak",
+            "auth",
+            None,
+            leaky,
+            vec![],
+            "farid",
+        )
         .unwrap_err();
     assert!(err.to_string().contains("Authorization"), "{err}");
     assert!(
@@ -5554,4 +5565,184 @@ fn an_environment_edit_refuses_addresses_and_names_that_would_mislead() {
 fn dit_morse_local_value(root: &Path, env: &str, var: &str) -> Option<String> {
     let local = dit_morse::LocalConfig::parse(&local_file(root)).unwrap();
     local.envs.get(env)?.vars.get(var).cloned()
+}
+
+// ---- New requests: a method and a path (ADR 0027) ---------------------------
+
+fn send_draft_for(target: dit_core::SendTarget) -> dit_core::SendDraft {
+    dit_core::SendDraft {
+        target,
+        params: vec![],
+        query: vec![],
+        headers: vec![],
+        body: None,
+        expect: dit_core::Expect::default(),
+        capture: vec![],
+    }
+}
+
+fn inline(id: &str, method: &str, path: &str) -> dit_model::InlineRequest {
+    dit_model::InlineRequest {
+        id: id.into(),
+        method: method.into(),
+        path: path.into(),
+        summary: None,
+    }
+}
+
+#[test]
+fn a_request_no_spec_describes_is_sent_to_the_spec_s_host() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, _) = morse_workspace(tmp.path());
+    let port = serve(vec![(204, "{}")]);
+    point_at(tmp.path(), port);
+    let outcome = dit
+        .morse_send(
+            &send_draft_for(dit_core::SendTarget::Request {
+                spec: "auth".into(),
+                request: inline("ping", "post", "/internal/ping"),
+            }),
+            Some("local"),
+        )
+        .unwrap();
+    assert!(outcome.steps[0].error.is_none(), "{outcome:#?}");
+    assert_eq!(outcome.steps[0].method, "POST");
+    assert_eq!(
+        outcome.steps[0].url,
+        format!("http://127.0.0.1:{port}/internal/ping")
+    );
+}
+
+#[test]
+fn a_new_request_cannot_name_a_host_or_an_unknown_verb() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, _) = morse_workspace(tmp.path());
+    for (method, path) in [
+        ("GET", "https://evil.test/x"),
+        ("GET", "//evil.test/x"),
+        ("FETCH", "/x"),
+    ] {
+        let err = dit
+            .morse_send(
+                &send_draft_for(dit_core::SendTarget::Request {
+                    spec: "auth".into(),
+                    request: inline("x", method, path),
+                }),
+                Some("local"),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, dit_core::DitError::Refuse(_)),
+            "{method} {path}: {err}"
+        );
+    }
+}
+
+#[test]
+fn a_new_request_is_saved_into_a_scenario_with_its_step_in_one_commit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, pin) = morse_workspace(tmp.path());
+    three_step_scenario(&mut dit, &pin);
+    let step = dit_model::MorseStep {
+        id: "ping".into(),
+        operation: dit_model::StepTarget::Inline("ping".into()),
+        params: vec![],
+        headers: vec![],
+        query: vec![],
+        body: None,
+        expect: dit_core::Expect {
+            status: Some(204),
+            json: vec![],
+        },
+        capture: vec![],
+    };
+    dit.morse_save_step(
+        "register",
+        step.clone(),
+        Some(inline("ping", "post", "/internal/ping")),
+        "farid",
+    )
+    .unwrap();
+    let s = dit.morse_scenario("register").unwrap().scenario;
+    assert_eq!(
+        s.requests,
+        [inline("ping", "POST", "/internal/ping")],
+        "stored as people write it"
+    );
+    assert_eq!(
+        s.steps.last().unwrap().operation,
+        dit_model::StepTarget::Inline("ping".into())
+    );
+    // Editing the request changes it in place.
+    dit.morse_save_step(
+        "register",
+        step,
+        Some(inline("ping", "GET", "/internal/health")),
+        "farid",
+    )
+    .unwrap();
+    let s = dit.morse_scenario("register").unwrap().scenario;
+    assert_eq!(s.requests, [inline("ping", "GET", "/internal/health")]);
+
+    // A new scenario can start from one, too.
+    let created = dit
+        .morse_create_scenario(
+            "docs/api/ping.md",
+            "ping-only",
+            "auth",
+            None,
+            dit_model::MorseStep {
+                id: "p".into(),
+                ..s.steps.last().unwrap().clone()
+            },
+            vec![inline("ping", "GET", "/internal/health")],
+            "farid",
+        )
+        .unwrap();
+    assert_eq!(created.requests.len(), 1);
+}
+
+#[test]
+fn a_request_another_step_calls_is_not_redefined_from_under_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, pin) = morse_workspace(tmp.path());
+    three_step_scenario(&mut dit, &pin);
+    let calling = |id: &str| dit_model::MorseStep {
+        id: id.into(),
+        operation: dit_model::StepTarget::Inline("ping".into()),
+        params: vec![],
+        headers: vec![],
+        query: vec![],
+        body: None,
+        expect: dit_core::Expect::default(),
+        capture: vec![],
+    };
+    dit.morse_save_step(
+        "register",
+        calling("first"),
+        Some(inline("ping", "GET", "/ping")),
+        "farid",
+    )
+    .unwrap();
+    // A second step reusing the request as it stands is fine…
+    dit.morse_save_step(
+        "register",
+        calling("second"),
+        Some(inline("ping", "GET", "/ping")),
+        "farid",
+    )
+    .unwrap();
+    // …but changing it from one step would silently change the other.
+    let err = dit
+        .morse_save_step(
+            "register",
+            calling("second"),
+            Some(inline("ping", "POST", "/other")),
+            "farid",
+        )
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("first"),
+        "names the other step: {err}"
+    );
 }

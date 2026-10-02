@@ -38,8 +38,8 @@ pub use issue::{
 };
 pub use json::{parse as parse_json, JsonError};
 pub use morse::{
-    morse_fences, morse_value, parse_morse_scenario, parse_selector, scenario_in_fence, MorseError,
-    MORSE_FENCE,
+    inline_request_problem, morse_fences, morse_value, parse_morse_scenario, parse_selector,
+    scenario_in_fence, MorseError, MORSE_FENCE,
 };
 pub use morse_write::{
     append_morse_fence, has_comments, remove_morse_fence, replace_morse_fence,

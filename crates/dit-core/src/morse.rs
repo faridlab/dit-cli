@@ -999,13 +999,26 @@ pub struct MorseScenarioDetail {
 /// or this machine (§20.6, ADR 0023).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SendDraft {
-    pub operation: OperationRef,
+    pub target: SendTarget,
     pub params: Vec<(String, MorseValue)>,
     pub query: Vec<(String, MorseValue)>,
     pub headers: Vec<(String, MorseValue)>,
     pub body: Option<dit_model::RequestBody>,
     pub expect: Expect,
     pub capture: Vec<Capture>,
+}
+
+/// What a Send calls: an operation in a spec's catalogue, or a request the
+/// page typed — a method and a path, resolved against `spec`'s server or
+/// this machine's environment, never against an address of its own
+/// (ADR 0027).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendTarget {
+    Operation(OperationRef),
+    Request {
+        spec: String,
+        request: dit_model::InlineRequest,
+    },
 }
 
 /// One environment on this machine, by name. The variables are *names*:
@@ -1128,6 +1141,47 @@ fn check_env_server(url: &str) -> Result<(), DitError> {
     Ok(())
 }
 
+/// Add a request to `requests:`, or replace the one with its id. The method
+/// is stored upper-case, as people write it in a request line.
+/// Saving from one step must not redefine a request another step calls:
+/// that would change the other step without anyone looking at it.
+fn upsert_request(
+    s: &mut MorseScenario,
+    mut request: dit_model::InlineRequest,
+    for_step: Option<&str>,
+) -> Result<(), DitError> {
+    check_step_id(&request.id)?;
+    if let Some(problem) = dit_parse::inline_request_problem(&request.method, &request.path) {
+        return Err(DitError::Refuse(format!(
+            "request `{}`: {problem}",
+            request.id
+        )));
+    }
+    request.method = request.method.trim().to_ascii_uppercase();
+    request.path = request.path.trim().to_owned();
+    let others: Vec<String> = s
+        .steps
+        .iter()
+        .filter(|st| Some(st.id.as_str()) != for_step)
+        .filter(|st| st.operation == StepTarget::Inline(request.id.clone()))
+        .map(|st| st.id.clone())
+        .collect();
+    match s.requests.iter_mut().find(|r| r.id == request.id) {
+        Some(existing) if *existing == request => {}
+        Some(_) if !others.is_empty() => {
+            return Err(DitError::Refuse(format!(
+                "request `{}` is also called by step {} — changing it here would change that step too; \
+                 give this request another id",
+                request.id,
+                others.iter().map(|o| format!("`{o}`")).collect::<Vec<_>>().join(", ")
+            )))
+        }
+        Some(existing) => *existing = request,
+        None => s.requests.push(request),
+    }
+    Ok(())
+}
+
 /// A scenario name: a lowercase letter, then letters, digits, `_` or `-`.
 fn check_scenario_name(name: &str) -> Result<(), DitError> {
     let mut chars = name.chars();
@@ -1187,6 +1241,7 @@ impl Dit {
         &mut self,
         scenario: &str,
         step: MorseStep,
+        request: Option<dit_model::InlineRequest>,
         author: &str,
     ) -> Result<(), DitError> {
         let id = step.id.clone();
@@ -1195,6 +1250,11 @@ impl Dit {
             author,
             &format!("dit morse: save step {id} of {scenario}"),
             |s| {
+                // A request the page typed travels with the step that calls
+                // it, so the two land in one commit (ADR 0027).
+                if let Some(request) = request {
+                    upsert_request(s, request, Some(&id))?;
+                }
                 match s.steps.iter_mut().find(|x| x.id == id) {
                     Some(existing) => *existing = step,
                     None => s.steps.push(step),
@@ -1404,6 +1464,7 @@ impl Dit {
         spec_id: &str,
         env: Option<&str>,
         step: MorseStep,
+        requests: Vec<dit_model::InlineRequest>,
         author: &str,
     ) -> Result<MorseScenario, DitError> {
         if self
@@ -1435,6 +1496,9 @@ impl Dit {
             steps: vec![step],
             proven: Vec::new(),
         };
+        for request in requests {
+            upsert_request(&mut scenario, request, None)?;
+        }
         require_unbound(&mut scenario);
         refuse_secrets(&scenario)?;
         let fence = dit_parse::write_morse_scenario(&scenario)
@@ -1459,24 +1523,52 @@ impl Dit {
         draft: &SendDraft,
         env: Option<&str>,
     ) -> Result<RunOutcome, DitError> {
-        let (spec, base_url, vars) = self.target(&draft.operation.spec, env)?;
-        let op = spec.operation(&draft.operation.operation).ok_or_else(|| {
-            DitError::Refuse(format!(
-                "`{}` is not an operation the spec describes at HEAD",
-                draft.operation.qualified()
-            ))
-        })?;
-        let key = format!("{SEND_KEY_PREFIX}{}", draft.operation.qualified());
+        let (key, spec_id, id, method, path) = match &draft.target {
+            SendTarget::Operation(op_ref) => {
+                let (spec, _, _) = self.target(&op_ref.spec, env)?;
+                let op = spec.operation(&op_ref.operation).ok_or_else(|| {
+                    DitError::Refuse(format!(
+                        "`{}` is not an operation the spec describes at HEAD",
+                        op_ref.qualified()
+                    ))
+                })?;
+                (
+                    format!("{SEND_KEY_PREFIX}{}", op_ref.qualified()),
+                    op_ref.spec.clone(),
+                    op_ref.operation.clone(),
+                    op.method.clone(),
+                    op.path.clone(),
+                )
+            }
+            SendTarget::Request { spec, request } => {
+                if let Some(problem) =
+                    dit_parse::inline_request_problem(&request.method, &request.path)
+                {
+                    return Err(DitError::Refuse(format!(
+                        "request `{}`: {problem}",
+                        request.id
+                    )));
+                }
+                (
+                    format!("{SEND_KEY_PREFIX}{spec}/{}", request.id),
+                    spec.clone(),
+                    request.id.clone(),
+                    request.method.trim().to_ascii_uppercase(),
+                    request.path.trim().to_owned(),
+                )
+            }
+        };
+        let (_, base_url, vars) = self.target(&spec_id, env)?;
         let mut plan = RunPlan {
             scenario: key,
             base_url,
             files: BTreeMap::new(),
             vars,
             steps: vec![PlannedStep {
-                id: draft.operation.operation.clone(),
+                id,
                 base_url: None,
-                method: op.method.clone(),
-                path: op.path.clone(),
+                method,
+                path,
                 params: draft.params.clone(),
                 headers: draft.headers.clone(),
                 query: draft.query.clone(),
