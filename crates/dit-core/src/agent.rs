@@ -662,10 +662,26 @@ steps:
 `requires:` names the variables the environment must supply — names only. A route no spec
 describes is declared inline under `requests:` with a method and a path.
 
+A step sends one body shape: `body:` (JSON), `form:` (url-encoded), `raw: { type, text }`
+(or `file:`), or `multipart:` parts with `value:` or `file:`. A file is read from the
+repository's last commit — commit it first; ignored files and `.dit/` cannot be sent.
+
+To turn an existing request into a scenario, import it rather than retyping it:
+
+    dit morse import curl --doc docs/api/x.md --scenario <name> -- curl …   # one step
+    dit morse import postman <collection.json> --doc docs/api/x.md [--spec <id>]
+    dit morse import postman-env <environment.json>   # local values, never committed
+
+Add `--dry-run` to see the scenarios and every note (credentials turned into
+`{{variables}}`, scripts dropped) without writing.
+
 ## Environments and proof
 
 Environment addresses and values live in `.dit/morse.local.yaml` (gitignored), never in a
 committed file; `dit morse allow <host>` trusts a host on this machine.
+
+    dit morse env set <name> --server <url> --var <name>=<value>   # values land in shell history
+    dit morse env rm <name>
 
     dit morse run <scenario> --env <name>     # fire it, record nothing
     dit morse sync <scenario> --env <name>    # fire it; on green, pin the spec commit and

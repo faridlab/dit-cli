@@ -5746,3 +5746,70 @@ fn a_request_another_step_calls_is_not_redefined_from_under_it() {
         "names the other step: {err}"
     );
 }
+
+// ---- Importing (ADR 0027) ----------------------------------------------------
+
+#[test]
+fn a_curl_import_previews_without_writing_and_then_lands_as_one_commit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, _) = morse_workspace(tmp.path());
+    let repo = Repo::open(tmp.path()).unwrap();
+    let head = repo.head().unwrap();
+    let source = dit_core::ImportSource::Curl {
+        command: "curl -X POST http://localhost:3000/users -H 'Authorization: Bearer eyJ.secret' -d '{\"email\":\"a@b.test\"}' -H 'Content-Type: application/json'".into(),
+        scenario: "sign-up".into(),
+    };
+    let preview = dit.morse_import_preview(&source, None).unwrap();
+    assert_eq!(
+        preview.scenarios[0].steps[0].operation.qualified(),
+        "auth/createUser"
+    );
+    assert_eq!(repo.head().unwrap(), head, "a preview writes nothing");
+
+    let outcome = dit
+        .morse_import(&source, None, "docs/api/imported.md", "farid")
+        .unwrap();
+    assert_eq!(outcome.scenarios, ["sign-up"]);
+    assert_ne!(repo.head().unwrap(), head);
+    let detail = dit.morse_scenario("sign-up").unwrap();
+    assert_eq!(detail.scenario.spec.id, "auth");
+    assert_eq!(
+        detail.scenario.spec.commit.len(),
+        40,
+        "pinned where the spec stands"
+    );
+    assert!(detail.scenario.requires.contains(&"token".to_owned()));
+    assert!(!detail.fence.contains("eyJ.secret"));
+
+    // A second import of the same name gets a name of its own.
+    let again = dit
+        .morse_import(&source, None, "docs/api/imported.md", "farid")
+        .unwrap();
+    assert_eq!(again.scenarios, ["sign-up-2"]);
+}
+
+#[test]
+fn a_postman_environment_import_lands_in_the_local_file_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (dit, _) = morse_workspace(tmp.path());
+    let repo = Repo::open(tmp.path()).unwrap();
+    let head = repo.head().unwrap();
+    let name = dit
+        .morse_import_env(
+            r#"{ "name": "Staging", "values": [
+            { "key": "baseUrl", "value": "https://api.staging.acme.test", "enabled": true },
+            { "key": "token", "value": "t0k3n", "enabled": true } ] }"#,
+        )
+        .unwrap();
+    assert_eq!(name.name, "staging");
+    let env = dit
+        .morse_envs()
+        .unwrap()
+        .envs
+        .into_iter()
+        .find(|e| e.name == "staging")
+        .unwrap();
+    assert_eq!(env.server.as_deref(), Some("https://api.staging.acme.test"));
+    assert_eq!(env.vars, ["token"]);
+    assert_eq!(repo.head().unwrap(), head, "nothing committed");
+}

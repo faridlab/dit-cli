@@ -1048,6 +1048,28 @@ pub struct MorseRunRecord {
 /// mistaken for a scenario's.
 pub const SEND_KEY_PREFIX: &str = "send:";
 
+/// What to import (ADR 0027).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImportSource {
+    /// One `curl` command, as one scenario of that name.
+    Curl { command: String, scenario: String },
+    /// A Postman collection (v2.1), as JSON text.
+    Postman { json: String },
+}
+
+/// The scenarios an import wrote, and what it left behind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportOutcome {
+    pub scenarios: Vec<String>,
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvImported {
+    pub name: String,
+    pub notes: Vec<String>,
+}
+
 /// One change the Morse screen makes to a scenario (ADR 0027).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScenarioEdit {
@@ -1512,6 +1534,173 @@ impl Dit {
         tx.write_doc(doc, &dit_parse::append_morse_fence(&document, &fence))?;
         tx.commit(&format!("dit morse: new scenario {name}"))?;
         Ok(scenario)
+    }
+
+    /// What an import would write (ADR 0027), written nowhere: the
+    /// conversion, every note, and the scenarios it would create.
+    pub fn morse_import_preview(
+        &self,
+        source: &ImportSource,
+        default_spec: Option<&str>,
+    ) -> Result<dit_parse::ImportReport, DitError> {
+        let catalogue = self.import_catalogue(default_spec)?;
+        let report = match source {
+            ImportSource::Curl { command, scenario } => {
+                dit_parse::import_curl(command, &catalogue, scenario)
+            }
+            ImportSource::Postman { json } => dit_parse::import_postman(json, &catalogue),
+        };
+        report.map_err(|e| DitError::Refuse(e.to_string()))
+    }
+
+    /// Import into `doc` as one commit: each scenario pinned where its spec
+    /// stands now, under a name no scenario has yet. The conversion is run
+    /// again here from the source itself, so what lands is never something a
+    /// client edited after the preview.
+    pub fn morse_import(
+        &mut self,
+        source: &ImportSource,
+        default_spec: Option<&str>,
+        doc: &str,
+        author: &str,
+    ) -> Result<ImportOutcome, DitError> {
+        let report = self.morse_import_preview(source, default_spec)?;
+        let mut taken: Vec<String> = self
+            .index
+            .morse_scenarios()?
+            .into_iter()
+            .map(|s| s.scenario)
+            .collect();
+        let mut document = match self.read_doc(doc) {
+            Ok(text) => text,
+            Err(DitError::NotFound(_)) => {
+                let title = doc
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(doc)
+                    .trim_end_matches(".md");
+                format!("# {title}\n\nImported into Morse. Scripts and credentials were not carried over.\n")
+            }
+            Err(other) => return Err(other),
+        };
+        let mut names = Vec::new();
+        for imported in report.scenarios {
+            let mut name = imported.name.clone();
+            let mut n = 2;
+            while taken.contains(&name) {
+                name = format!("{}-{n}", imported.name);
+                n += 1;
+            }
+            taken.push(name.clone());
+            let entry = self.spec_entry(&imported.spec)?;
+            let head = self
+                .spec_repo(&entry)
+                .map_err(DitError::Refuse)?
+                .get()
+                .head()
+                .map_err(|e| DitError::Refuse(format!("the spec's repo has no HEAD: {e}")))?;
+            let mut scenario = MorseScenario {
+                scenario: name.clone(),
+                spec: dit_model::SpecPin {
+                    id: imported.spec.clone(),
+                    commit: head,
+                },
+                env: None,
+                requires: imported.requires,
+                requests: imported.requests,
+                steps: imported.steps,
+                proven: Vec::new(),
+            };
+            require_unbound(&mut scenario);
+            refuse_secrets(&scenario)?;
+            let fence = dit_parse::write_morse_scenario(&scenario)
+                .map_err(|e| DitError::Refuse(format!("scenario `{name}`: {e}")))?;
+            document = dit_parse::append_morse_fence(&document, &fence);
+            names.push(name);
+        }
+        let mut tx = self.transaction(author)?;
+        tx.write_doc(doc, &document)?;
+        tx.commit(&format!(
+            "dit morse: import {} scenario{} into {doc}",
+            names.len(),
+            if names.len() == 1 { "" } else { "s" }
+        ))?;
+        Ok(ImportOutcome {
+            scenarios: names,
+            notes: report.notes,
+        })
+    }
+
+    /// A Postman environment into this machine's local file (ADR 0027) —
+    /// never committed, under a name no environment has yet.
+    pub fn morse_import_env(&self, json: &str) -> Result<EnvImported, DitError> {
+        let env =
+            dit_parse::import_postman_env(json).map_err(|e| DitError::Refuse(e.to_string()))?;
+        let existing: Vec<String> = self
+            .morse_envs()?
+            .envs
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        let mut name = env.name.clone();
+        let mut n = 2;
+        while existing.contains(&name) {
+            name = format!("{}-{n}", env.name);
+            n += 1;
+        }
+        self.morse_edit_env(
+            &name,
+            EnvEdit::Upsert {
+                server: Some(env.server),
+                set: env.vars.into_iter().map(|(k, v)| (k, Some(v))).collect(),
+            },
+        )?;
+        Ok(EnvImported {
+            name,
+            notes: env.notes,
+        })
+    }
+
+    /// Where an import's requests may go: every spec's `servers:`, and each
+    /// environment's server — attributed to the chosen spec, or to the only
+    /// one, since an environment's server is not tied to a spec of its own.
+    fn import_catalogue(
+        &self,
+        default_spec: Option<&str>,
+    ) -> Result<dit_parse::ImportCatalogue, DitError> {
+        let report = self.morse_report()?;
+        let mut servers = Vec::new();
+        let mut operations = Vec::new();
+        for spec in &report.specs {
+            for server in &spec.servers {
+                if server.url.contains("://") {
+                    servers.push((spec.id.clone(), server.url.clone()));
+                }
+            }
+            for op in &spec.operations {
+                operations.push((
+                    spec.id.clone(),
+                    op.operation_id.clone(),
+                    op.method.clone(),
+                    op.path.clone(),
+                ));
+            }
+        }
+        let owner = default_spec
+            .map(str::to_owned)
+            .or_else(|| (report.specs.len() == 1).then(|| report.specs[0].id.clone()));
+        if let Some(owner) = owner {
+            for env in self.morse_envs()?.envs {
+                if let Some(server) = env.server {
+                    servers.push((owner.clone(), server));
+                }
+            }
+        }
+        Ok(dit_parse::ImportCatalogue {
+            servers,
+            operations,
+            default_spec: default_spec.map(str::to_owned),
+        })
     }
 
     /// Send one operation as a tab drafted it (ADR 0023). A one-step plan
