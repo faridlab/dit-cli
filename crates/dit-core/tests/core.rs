@@ -5179,3 +5179,239 @@ fn an_ignored_or_uncommitted_file_is_never_sent() {
         "nothing reached the server"
     );
 }
+
+// ---- Managing scenarios and steps from the screen (ADR 0027) ---------------
+
+fn three_step_scenario(dit: &mut Dit, pin: &str) {
+    write_doc(
+        dit,
+        "docs/api/register.md",
+        &format!(
+            "# Register\n\nWhy this chain exists.\n\n```dit-morse\nscenario: register\nspec: {{ id: auth, commit: {pin} }}\nenv: local\nsteps:\n  - id: create\n    operation: auth/createUser\n  - id: login\n    operation: auth/loginUser\n  - id: me\n    operation: auth/getCurrentUser\n```\n\nAfter the chain.\n"
+        ),
+    );
+}
+
+fn step_ids(dit: &Dit, scenario: &str) -> Vec<String> {
+    dit.morse_scenario(scenario)
+        .unwrap()
+        .scenario
+        .steps
+        .iter()
+        .map(|s| s.id.clone())
+        .collect()
+}
+
+#[test]
+fn steps_are_moved_duplicated_renamed_and_deleted_one_commit_each() {
+    use dit_core::ScenarioEdit as E;
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, pin) = morse_workspace(tmp.path());
+    three_step_scenario(&mut dit, &pin);
+    let repo = Repo::open(tmp.path()).unwrap();
+    let commits = |repo: &Repo| {
+        repo.git(&["rev-list", "--count", "HEAD"])
+            .unwrap()
+            .trim()
+            .parse::<u32>()
+            .unwrap()
+    };
+    let before = commits(&repo);
+
+    dit.morse_edit_scenario(
+        "register",
+        E::MoveStep {
+            step: "me".into(),
+            to: 0,
+        },
+        "farid",
+    )
+    .unwrap();
+    assert_eq!(step_ids(&dit, "register"), ["me", "create", "login"]);
+    dit.morse_edit_scenario(
+        "register",
+        E::DuplicateStep {
+            step: "login".into(),
+            as_id: "login-again".into(),
+        },
+        "farid",
+    )
+    .unwrap();
+    assert_eq!(
+        step_ids(&dit, "register"),
+        ["me", "create", "login", "login-again"]
+    );
+    dit.morse_edit_scenario(
+        "register",
+        E::RenameStep {
+            step: "me".into(),
+            to: "whoami".into(),
+        },
+        "farid",
+    )
+    .unwrap();
+    dit.morse_edit_scenario(
+        "register",
+        E::DeleteStep {
+            step: "login-again".into(),
+        },
+        "farid",
+    )
+    .unwrap();
+    assert_eq!(step_ids(&dit, "register"), ["whoami", "create", "login"]);
+    assert_eq!(commits(&repo), before + 4, "one commit per edit");
+
+    let doc = dit.read_doc("docs/api/register.md").unwrap();
+    assert!(
+        doc.starts_with("# Register\n\nWhy this chain exists.\n\n```dit-morse\n"),
+        "{doc}"
+    );
+    assert!(
+        doc.ends_with("```\n\nAfter the chain.\n"),
+        "the prose is untouched: {doc}"
+    );
+
+    // Ids stay unique, and a step that is not there is named as such.
+    for (edit, what) in [
+        (
+            E::RenameStep {
+                step: "create".into(),
+                to: "login".into(),
+            },
+            "taken",
+        ),
+        (
+            E::DuplicateStep {
+                step: "create".into(),
+                as_id: "whoami".into(),
+            },
+            "taken",
+        ),
+        (
+            E::RenameStep {
+                step: "create".into(),
+                to: "two words".into(),
+            },
+            "one word",
+        ),
+        (
+            E::DeleteStep {
+                step: "nope".into(),
+            },
+            "no step",
+        ),
+    ] {
+        let err = dit
+            .morse_edit_scenario("register", edit, "farid")
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                dit_core::DitError::Refuse(_) | dit_core::DitError::NotFound(_)
+            ),
+            "{what}: {err}"
+        );
+    }
+}
+
+#[test]
+fn a_scenario_s_environment_and_required_names_are_edited_in_its_fence() {
+    use dit_core::ScenarioEdit as E;
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, pin) = morse_workspace(tmp.path());
+    three_step_scenario(&mut dit, &pin);
+    dit.morse_edit_scenario("register", E::SetEnv(Some("staging".into())), "farid")
+        .unwrap();
+    dit.morse_edit_scenario(
+        "register",
+        E::SetRequires(vec!["email".into(), "password".into()]),
+        "farid",
+    )
+    .unwrap();
+    let s = dit.morse_scenario("register").unwrap().scenario;
+    assert_eq!(s.env.as_deref(), Some("staging"));
+    assert_eq!(s.requires, ["email", "password"]);
+    dit.morse_edit_scenario("register", E::SetEnv(None), "farid")
+        .unwrap();
+    assert_eq!(dit.morse_scenario("register").unwrap().scenario.env, None);
+}
+
+#[test]
+fn a_scenario_is_renamed_or_deleted_unless_an_issue_names_it() {
+    use dit_core::ScenarioEdit as E;
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut dit, pin) = morse_workspace(tmp.path());
+    three_step_scenario(&mut dit, &pin);
+
+    dit.morse_edit_scenario(
+        "register",
+        E::Rename {
+            to: "sign-up".into(),
+        },
+        "farid",
+    )
+    .unwrap();
+    assert!(matches!(
+        dit.morse_scenario("register"),
+        Err(dit_core::DitError::NotFound(_))
+    ));
+    assert_eq!(step_ids(&dit, "sign-up").len(), 3);
+
+    // An issue that needs the scenario would lose its gate silently.
+    let needing = issue_with(
+        &mut dit,
+        "Ship sign-up",
+        dit_core::FieldPatch {
+            needs_scenarios: Some(vec!["sign-up".into()]),
+            ..Default::default()
+        },
+    );
+    let err = dit
+        .morse_edit_scenario("sign-up", E::Rename { to: "join".into() }, "farid")
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("Ship sign-up"),
+        "names the issue: {err}"
+    );
+    let err = dit.morse_delete_scenario("sign-up", "farid").unwrap_err();
+    assert!(err.to_string().contains("Ship sign-up"), "{err}");
+
+    let mut tx = dit.transaction("farid").unwrap();
+    tx.set_fields(
+        &needing,
+        dit_core::FieldPatch {
+            needs_scenarios: Some(vec![]),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    tx.commit("let go of it").unwrap();
+    dit.morse_delete_scenario("sign-up", "farid").unwrap();
+    assert!(matches!(
+        dit.morse_scenario("sign-up"),
+        Err(dit_core::DitError::NotFound(_))
+    ));
+    let doc = dit.read_doc("docs/api/register.md").unwrap();
+    assert_eq!(
+        doc,
+        "# Register\n\nWhy this chain exists.\n\nAfter the chain.\n"
+    );
+
+    // A name already in use is refused.
+    three_step_scenario(&mut dit, &pin);
+    write_doc(
+        &mut dit,
+        "docs/api/other.md",
+        &format!("```dit-morse\nscenario: other\nspec: {{ id: auth, commit: {pin} }}\nsteps:\n  - id: a\n    operation: auth/createUser\n```\n"),
+    );
+    let err = dit
+        .morse_edit_scenario(
+            "other",
+            E::Rename {
+                to: "register".into(),
+            },
+            "farid",
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("register"), "{err}");
+}

@@ -42,7 +42,8 @@ pub use morse::{
     MORSE_FENCE,
 };
 pub use morse_write::{
-    append_morse_fence, has_comments, replace_morse_fence, write_morse_scenario, MorseWriteError,
+    append_morse_fence, has_comments, remove_morse_fence, replace_morse_fence,
+    write_morse_scenario, MorseWriteError,
 };
 pub use openapi::{parse_openapi, OpenApiError};
 pub use prosemirror::{doc_to_markdown, markdown_to_doc, ProseMirrorError};

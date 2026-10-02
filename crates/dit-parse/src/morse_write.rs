@@ -60,10 +60,9 @@ pub fn has_comments(fence_body: &str) -> bool {
     })
 }
 
-/// Replace the body of the fence that names `scenario`, leaving the markers
-/// and every other line of the document exactly as they were. `None` when no
-/// fence in the document names it.
-pub fn replace_morse_fence(document: &str, scenario: &str, body: &str) -> Option<String> {
+/// The lines of a document, and the indexes of the opening and closing
+/// markers of the fence that names `scenario`.
+fn fence_bounds<'a>(document: &'a str, scenario: &str) -> Option<(Vec<&'a str>, usize, usize)> {
     let target = morse_fences(document)
         .into_iter()
         .find(|f| scenario_in_fence(&f.body).as_deref() == Some(scenario))?;
@@ -85,6 +84,14 @@ pub fn replace_morse_fence(document: &str, scenario: &str, body: &str) -> Option
                 && t.trim_start_matches('`').trim().is_empty()
         })
         .map(|(i, _)| i)?;
+    Some((lines, open, close))
+}
+
+/// Replace the body of the fence that names `scenario`, leaving the markers
+/// and every other line of the document exactly as they were. `None` when no
+/// fence in the document names it.
+pub fn replace_morse_fence(document: &str, scenario: &str, body: &str) -> Option<String> {
+    let (lines, open, close) = fence_bounds(document, scenario)?;
     let mut out = String::with_capacity(document.len() + body.len());
     for line in &lines[..=open] {
         out.push_str(line);
@@ -93,6 +100,30 @@ pub fn replace_morse_fence(document: &str, scenario: &str, body: &str) -> Option
     out.push('\n');
     for line in &lines[close..] {
         out.push_str(line);
+    }
+    Some(out)
+}
+
+/// Take out the fence that names `scenario`, markers and all, with one of
+/// the blank lines around it so the prose closes up. Every other line stays
+/// exactly as it was. `None` when no fence in the document names it.
+pub fn remove_morse_fence(document: &str, scenario: &str) -> Option<String> {
+    let (lines, open, close) = fence_bounds(document, scenario)?;
+    let blank = |i: usize| lines.get(i).is_some_and(|l| l.trim().is_empty());
+    // Drop the blank line after the fence; if the fence ended the document,
+    // drop the one before it instead.
+    let (from, to) = if blank(close + 1) {
+        (open, close + 1)
+    } else if open > 0 && blank(open - 1) {
+        (open - 1, close)
+    } else {
+        (open, close)
+    };
+    let mut out = String::with_capacity(document.len());
+    for (i, line) in lines.iter().enumerate() {
+        if i < from || i > to {
+            out.push_str(line);
+        }
     }
     Some(out)
 }
@@ -344,6 +375,22 @@ fn scalar(s: &str) -> Result<String, MorseWriteError> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removing_a_fence_leaves_the_prose_and_the_other_fences_alone() {
+        let doc = "# Auth\n\nWhy these exist.\n\n```dit-morse\nscenario: a\nspec: { id: s, commit: c }\n```\n\nBetween.\n\n```dit-morse\nscenario: b\nspec: { id: s, commit: c }\n```\n";
+        let without_a = remove_morse_fence(doc, "a").unwrap();
+        assert_eq!(
+            without_a,
+            "# Auth\n\nWhy these exist.\n\nBetween.\n\n```dit-morse\nscenario: b\nspec: { id: s, commit: c }\n```\n"
+        );
+        let without_b = remove_morse_fence(doc, "b").unwrap();
+        assert_eq!(
+            without_b,
+            "# Auth\n\nWhy these exist.\n\n```dit-morse\nscenario: a\nspec: { id: s, commit: c }\n```\n\nBetween.\n"
+        );
+        assert_eq!(remove_morse_fence(doc, "missing"), None);
+    }
 
     // ---- body shapes (ADR 0027) -------------------------------------------
 

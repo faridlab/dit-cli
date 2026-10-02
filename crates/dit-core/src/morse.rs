@@ -950,6 +950,61 @@ pub struct MorseRunRecord {
 /// mistaken for a scenario's.
 pub const SEND_KEY_PREFIX: &str = "send:";
 
+/// One change the Morse screen makes to a scenario (ADR 0027).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScenarioEdit {
+    Rename {
+        to: String,
+    },
+    /// `None` clears `env:`.
+    SetEnv(Option<String>),
+    SetRequires(Vec<String>),
+    DeleteStep {
+        step: String,
+    },
+    /// Move a step to position `to` (clamped to the end).
+    MoveStep {
+        step: String,
+        to: usize,
+    },
+    DuplicateStep {
+        step: String,
+        as_id: String,
+    },
+    RenameStep {
+        step: String,
+        to: String,
+    },
+}
+
+/// A scenario name: a lowercase letter, then letters, digits, `_` or `-`.
+fn check_scenario_name(name: &str) -> Result<(), DitError> {
+    let mut chars = name.chars();
+    let ok = chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if ok {
+        Ok(())
+    } else {
+        Err(DitError::Refuse(format!(
+            "`{name}` is not a scenario name — start with a lowercase letter, then letters, digits, `-` or `_`"
+        )))
+    }
+}
+
+/// A step id is one word.
+fn check_step_id(id: &str) -> Result<(), DitError> {
+    if id.is_empty()
+        || id
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, ',' | '{' | '}' | '[' | ']' | ':' | '#'))
+    {
+        return Err(DitError::Refuse(format!(
+            "`{id}` is not a step id — one word, like `login`"
+        )));
+    }
+    Ok(())
+}
+
 /// The largest file a body may send (ADR 0027).
 pub const MORSE_FILE_MAX_BYTES: usize = 10 * 1024 * 1024;
 
@@ -983,6 +1038,183 @@ impl Dit {
         step: MorseStep,
         author: &str,
     ) -> Result<(), DitError> {
+        let id = step.id.clone();
+        self.rewrite_scenario(
+            scenario,
+            author,
+            &format!("dit morse: save step {id} of {scenario}"),
+            |s| {
+                match s.steps.iter_mut().find(|x| x.id == id) {
+                    Some(existing) => *existing = step,
+                    None => s.steps.push(step),
+                }
+                require_unbound(s);
+                Ok(())
+            },
+        )?;
+        Ok(())
+    }
+
+    /// One change to a scenario from the screen (ADR 0027), written back
+    /// through the fence writer as one commit. Returns the scenario's name
+    /// afterwards, which a rename changes.
+    pub fn morse_edit_scenario(
+        &mut self,
+        scenario: &str,
+        edit: ScenarioEdit,
+        author: &str,
+    ) -> Result<String, DitError> {
+        let (message, renamed) = match &edit {
+            ScenarioEdit::Rename { to } => {
+                check_scenario_name(to)?;
+                if to != scenario && self.stored_scenario(to).is_ok() {
+                    return Err(DitError::Refuse(format!(
+                        "a scenario called `{to}` already exists"
+                    )));
+                }
+                self.refuse_if_named(scenario, "renamed")?;
+                (
+                    format!("dit morse: rename scenario {scenario} to {to}"),
+                    Some(to.clone()),
+                )
+            }
+            ScenarioEdit::SetEnv(_) | ScenarioEdit::SetRequires(_) => {
+                (format!("dit morse: edit scenario {scenario}"), None)
+            }
+            ScenarioEdit::DeleteStep { step } => {
+                (format!("dit morse: delete step {step} of {scenario}"), None)
+            }
+            ScenarioEdit::MoveStep { step, .. } => {
+                (format!("dit morse: move step {step} of {scenario}"), None)
+            }
+            ScenarioEdit::DuplicateStep { step, as_id } => (
+                format!("dit morse: copy step {step} of {scenario} as {as_id}"),
+                None,
+            ),
+            ScenarioEdit::RenameStep { step, to } => (
+                format!("dit morse: rename step {step} of {scenario} to {to}"),
+                None,
+            ),
+        };
+        self.rewrite_scenario(scenario, author, &message, move |s| {
+            let index_of = |s: &MorseScenario, id: &str| {
+                s.steps.iter().position(|x| x.id == id).ok_or_else(|| {
+                    DitError::NotFound(format!("step `{id}` of scenario `{}`", s.scenario))
+                })
+            };
+            let free = |s: &MorseScenario, id: &str| -> Result<(), DitError> {
+                check_step_id(id)?;
+                if s.steps.iter().any(|x| x.id == id) {
+                    return Err(DitError::Refuse(format!(
+                        "a step called `{id}` is already in this scenario"
+                    )));
+                }
+                Ok(())
+            };
+            match edit {
+                ScenarioEdit::Rename { to } => s.scenario = to,
+                ScenarioEdit::SetEnv(env) => s.env = env.filter(|e| !e.trim().is_empty()),
+                ScenarioEdit::SetRequires(names) => {
+                    let mut kept: Vec<String> = Vec::new();
+                    for name in names
+                        .into_iter()
+                        .map(|n| n.trim().to_owned())
+                        .filter(|n| !n.is_empty())
+                    {
+                        if !kept.contains(&name) {
+                            kept.push(name);
+                        }
+                    }
+                    s.requires = kept;
+                }
+                ScenarioEdit::DeleteStep { step } => {
+                    let at = index_of(s, &step)?;
+                    s.steps.remove(at);
+                }
+                ScenarioEdit::MoveStep { step, to } => {
+                    let at = index_of(s, &step)?;
+                    let moved = s.steps.remove(at);
+                    let to = to.min(s.steps.len());
+                    s.steps.insert(to, moved);
+                }
+                ScenarioEdit::DuplicateStep { step, as_id } => {
+                    let at = index_of(s, &step)?;
+                    free(s, &as_id)?;
+                    let mut copy = s.steps[at].clone();
+                    copy.id = as_id;
+                    s.steps.insert(at + 1, copy);
+                }
+                ScenarioEdit::RenameStep { step, to } => {
+                    let at = index_of(s, &step)?;
+                    if to != step {
+                        free(s, &to)?;
+                    }
+                    s.steps[at].id = to;
+                }
+            }
+            Ok(())
+        })?;
+        Ok(renamed.unwrap_or_else(|| scenario.to_owned()))
+    }
+
+    /// Take a scenario's fence out of its document, prose left as it was —
+    /// unless an issue still names it, whose gate would silently go.
+    pub fn morse_delete_scenario(&mut self, scenario: &str, author: &str) -> Result<(), DitError> {
+        let detail = self.morse_scenario(scenario)?;
+        self.refuse_if_named(scenario, "deleted")?;
+        let document = self.read_doc(&detail.path)?;
+        let written = dit_parse::remove_morse_fence(&document, scenario).ok_or_else(|| {
+            DitError::Refuse(format!(
+                "the fence for `{scenario}` is no longer in {}",
+                detail.path
+            ))
+        })?;
+        let mut tx = self.transaction(author)?;
+        tx.write_doc(&detail.path, &written)?;
+        tx.commit(&format!("dit morse: delete scenario {scenario}"))?;
+        Ok(())
+    }
+
+    /// Issues whose `needs_scenarios` or `proves` names this scenario. A
+    /// rename or a delete would leave them pointing at nothing, so both are
+    /// refused with the list, not quietly applied.
+    fn refuse_if_named(&self, scenario: &str, verb: &str) -> Result<(), DitError> {
+        let naming: Vec<String> = self
+            .query("", None)?
+            .into_iter()
+            .filter(|hit| {
+                hit.issue.needs_scenarios.iter().any(|n| n == scenario)
+                    || hit.issue.proves.iter().any(|n| n == scenario)
+            })
+            .map(|hit| {
+                format!(
+                    "{} ({})",
+                    hit.issue.title,
+                    hit.issue.id.short_ref().as_str()
+                )
+            })
+            .collect();
+        if naming.is_empty() {
+            return Ok(());
+        }
+        Err(DitError::Refuse(format!(
+            "`{scenario}` cannot be {verb}: {} name{} it in `needs_scenarios` or `proves` — {}",
+            naming.len(),
+            if naming.len() == 1 { "s" } else { "" },
+            naming.join(", ")
+        )))
+    }
+
+    /// Read a scenario, change it, write its fence back as one commit. The
+    /// fence must be editable (no `#` comments) and the result must still be
+    /// free of literal secrets.
+    fn rewrite_scenario(
+        &mut self,
+        scenario: &str,
+        author: &str,
+        message: &str,
+        change: impl FnOnce(&mut MorseScenario) -> Result<(), DitError>,
+    ) -> Result<(), DitError> {
         let detail = self.morse_scenario(scenario)?;
         if !detail.editable {
             return Err(DitError::Refuse(format!(
@@ -992,15 +1224,10 @@ impl Dit {
             )));
         }
         let mut updated = detail.scenario;
-        let id = step.id.clone();
-        match updated.steps.iter_mut().find(|s| s.id == id) {
-            Some(existing) => *existing = step,
-            None => updated.steps.push(step),
-        }
-        require_unbound(&mut updated);
+        change(&mut updated)?;
         refuse_secrets(&updated)?;
         let fence = dit_parse::write_morse_scenario(&updated)
-            .map_err(|e| DitError::Refuse(format!("step `{id}`: {e}")))?;
+            .map_err(|e| DitError::Refuse(format!("scenario `{scenario}`: {e}")))?;
         let document = self.read_doc(&detail.path)?;
         let written =
             dit_parse::replace_morse_fence(&document, scenario, &fence).ok_or_else(|| {
@@ -1011,7 +1238,7 @@ impl Dit {
             })?;
         let mut tx = self.transaction(author)?;
         tx.write_doc(&detail.path, &written)?;
-        tx.commit(&format!("dit morse: save step {id} of {scenario}"))?;
+        tx.commit(message)?;
         Ok(())
     }
 
