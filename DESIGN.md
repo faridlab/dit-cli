@@ -2953,6 +2953,11 @@ envs:
 allow_hosts: ["localhost", "api.staging.acme.com"]
 ```
 
+The page may write this file's `envs:` — servers and values, values never
+read back — but never `allow_hosts:` (ADR 0027): a page that points an
+environment somewhere new still sends nothing there until a person on this
+machine runs `dit morse allow`.
+
 This is what keeps §20.5 honest. No URL Morse might call is ever introduced by
 a committed DIT file: the ones it can reach come either from the API's own
 spec or from a file that only exists on this machine. A committed
@@ -3025,13 +3030,18 @@ where everything lands:
 | An operation's method, path, parameters and body fields | The spec at HEAD — derived, never stored |
 | A draft in an operation tab | The browser, until **Save to scenario** writes it into a fence |
 | An edit in a step's tab | The fence, re-serialised and committed after a pause, prose untouched |
-| The environment picker | Names, servers and which variables are set — never a value |
+| The environment picker and editor | `.dit/morse.local.yaml` (ignored): servers and values written from the page, values never read back; the allowlist only from `dit morse allow` (ADR 0027) |
+| **New request** | A method and a path in the scenario's `requests:`; the host still comes from the spec or the environment (ADR 0027) |
+| The Body tab | `body:` (JSON), `form:`, `raw:` with a media type, or `multipart:` — a file part names a path read from HEAD, never the working tree (ADR 0027) |
+| **Import** | cURL, a Postman collection (v2.1) or a Postman environment, converted once; scripts dropped and listed, credentials turned into `{{variables}}` (ADR 0027) |
 | The response panel | Status, time, size, each check, capture names — never the body (§20.7) |
 | Expect and Capture | Where Postman has Scripts. There is no Scripts tab |
 
 A fence containing a `#` comment is not rewritten from the screen, because a
 re-serialised fence would drop the comment; the tab points at the document
-instead.
+instead. Steps can be renamed, duplicated, deleted and reordered, and a
+scenario renamed or deleted, from the screen — each one commit through the
+fence writer (ADR 0027).
 
 ---
 
