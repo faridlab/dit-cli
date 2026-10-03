@@ -924,7 +924,7 @@ mark{background:var(--mark);color:inherit;border-radius:2px;padding:0 1px}
 .menu .mi .chk{opacity:1}
 .menu .mi.on .lbl{font-weight:500}
 .menu .sep{height:1px;background:var(--edge);margin:4px 2px}
-.menu .txt{padding:4px 9px 8px;font-size:12px;color:var(--muted);line-height:1.45}
+.menu .txt{padding:4px 9px 8px;font-size:12px;color:var(--muted);line-height:1.45;overflow-wrap:anywhere}
 .menu .in{display:flex;gap:6px;padding:4px 5px 5px}
 .menu .in input{flex:1;height:30px;border:1px solid var(--edge);border-radius:6px;background:var(--bg);padding:0 9px;outline:0;min-width:0}
 .menu .in input:focus{border-color:var(--accent)}
@@ -1114,6 +1114,11 @@ mark{background:var(--mark);color:inherit;border-radius:2px;padding:0 1px}
 .sp-inner{height:100%;display:flex;flex-direction:column;min-height:0}
 .sp-h{display:flex;align-items:center;gap:6px;height:36px;padding:0 6px 0 14px;flex:none;font-size:11px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
 .sp-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* The workspace switcher (ADR 0028): the panel's title, and plainly a menu. */
+.sp-ws{flex:1;min-width:0;display:flex;align-items:center;gap:6px;height:28px;margin-left:-6px;padding:0 6px;border-radius:6px;font-size:13px;font-weight:600;letter-spacing:0;text-transform:none;color:var(--ink);text-align:left}
+.sp-ws:hover,.sp-ws[data-state="open"]{background:var(--hover)}
+.sp-ws-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sp-ws svg.i{width:14px;height:14px;flex:none;color:var(--muted)}
 .sp-fold{width:24px;height:24px;border-radius:5px;display:grid;place-items:center;color:var(--muted)}
 .sp-fold:hover{background:var(--hover);color:var(--ink)}
 .sp-fold svg.i{width:14px;height:14px}
@@ -1176,6 +1181,8 @@ mark{background:var(--mark);color:inherit;border-radius:2px;padding:0 1px}
 .dens .db[aria-disabled="true"] { opacity: .35; cursor: default; }
 /* The popover library positions the menu; the recipe only dresses it. */
 .menu .mi svg.i { color: var(--muted); }
+/* An icon's empty place, so a list with one marked item stays aligned. */
+.menu .mi span.i{display:inline-block;width:16px;height:16px;flex:none}
 .menu .mi.danger svg.i { color: var(--crit); }
 }
 

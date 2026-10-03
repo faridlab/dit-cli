@@ -13,7 +13,7 @@
 // question "which list is the real one?".
 
 import { useRef, type ReactNode } from "react";
-import { ChartGantt, ChevronsLeft, Clock, Columns3, Layers, ListTodo, Search } from "lucide-react";
+import { ChartGantt, ChevronsLeft, ChevronsUpDown, Clock, Columns3, Layers, ListTodo, Search } from "lucide-react";
 import type { Route } from "../lib/router";
 import { useOpenPool, useSchema, useStatus } from "../lib/queries";
 import { doneIds, isInbox } from "../lib/lists";
@@ -21,6 +21,7 @@ import { mineQuery } from "../lib/dql";
 import { useStarred } from "../lib/starred";
 import { cn } from "../lib/cn";
 import { clampPanelWidth, type ActivityId } from "../lib/workbench";
+import { MenuButton, type MenuItem } from "./chrome";
 
 function SubRow({
   label,
@@ -153,6 +154,8 @@ export function SidePanel({
   onNavigate,
   onFold,
   onOpenPalette,
+  workspace,
+  workspaceMenu,
   children,
 }: {
   activity: ActivityId;
@@ -164,6 +167,9 @@ export function SidePanel({
   onNavigate: (route: Route) => void;
   onFold: () => void;
   onOpenPalette: () => void;
+  /** The workspace this page shows, and the menu that switches it. */
+  workspace: string;
+  workspaceMenu: MenuItem[];
   /** The open view's own sections — a PaneSection each. */
   children: ReactNode;
 }) {
@@ -184,7 +190,12 @@ export function SidePanel({
     >
       <div className="sp-inner" style={{ width }}>
         <div className="sp-h">
-          <span className="sp-title">{PANEL_TITLES[activity]}</span>
+          <MenuButton items={workspaceMenu}>
+            <button type="button" className="sp-ws" title="Switch or manage workspaces">
+              <span className="sp-ws-name">{workspace}</span>
+              <ChevronsUpDown className="i" aria-hidden />
+            </button>
+          </MenuButton>
           <button type="button" className="sp-fold" title="Hide the side panel (⌘B)" onClick={onFold}>
             <ChevronsLeft className="i" aria-hidden />
           </button>

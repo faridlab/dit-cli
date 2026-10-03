@@ -5,7 +5,7 @@
 
 import { useMemo, useState, type ReactNode } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { AlertTriangle, FolderPlus, Plus, Star, X } from "lucide-react";
+import { AlertTriangle, Check, FolderPlus, Plus, Star, X } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
@@ -295,6 +295,9 @@ export function useWorkspaceSwitcher(): { items: MenuItem[]; dialogs: ReactNode 
         (w): MenuItem => ({
           label: w.name,
           on: w.name === current,
+          // A check on the one this page shows; the rest keep its space so
+          // the names line up.
+          icon: w.name === current ? <Check className="i" aria-hidden /> : <span className="i" aria-hidden />,
           meta: w.name === data.default ? "default" : undefined,
           run: () => {
             if (w.name !== current) openWorkspace(w.name);

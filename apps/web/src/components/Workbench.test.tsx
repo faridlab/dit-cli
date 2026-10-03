@@ -65,8 +65,6 @@ function bar(active: ActivityId = "work", inbox: number | null = 5) {
         panelOpen
         badges={{ work: inbox }}
         onActivate={(id) => activated.push(id)}
-        workspaceMenu={[]}
-        workspace="kyntati"
       />,
     ),
   );
@@ -84,6 +82,8 @@ function panel(activity: ActivityId, route: Route) {
         onNavigate={(r) => went.push(r)}
         onFold={() => undefined}
         onOpenPalette={() => undefined}
+        workspace="kyntati"
+        workspaceMenu={[]}
       >
         <PaneSection id="test.one" title="One">
           <p>first body</p>
@@ -112,8 +112,6 @@ describe("the activity bar", () => {
           panelOpen={false}
           badges={{}}
           onActivate={(id) => activated.push(id)}
-          workspaceMenu={[]}
-          workspace="kyntati"
           only={activitiesFor("code")}
         />,
       ),

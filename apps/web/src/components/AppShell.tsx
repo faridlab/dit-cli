@@ -236,8 +236,6 @@ function CodeShell() {
           panelOpen={false}
           badges={{}}
           onActivate={() => go({ name: "code" })}
-          workspaceMenu={menu}
-          workspace={workspace}
           only={activitiesFor("code")}
         />
         <main className="main flex-1">
@@ -658,8 +656,6 @@ function WorkspaceShell() {
           panelOpen={panelOpen && hasSidePanel(activity)}
           badges={{ work: inbox }}
           onActivate={activate}
-          workspaceMenu={workspaceMenu}
-          workspace={workspace}
         />
         {hasSidePanel(activity) ? (
           <SidePanel
@@ -674,6 +670,8 @@ function WorkspaceShell() {
             onNavigate={navigate}
             onFold={() => setPanelOpen(false)}
             onOpenPalette={() => setPaletteOpen(true)}
+            workspace={workspace}
+            workspaceMenu={workspaceMenu}
           >
             {section?.node ?? null}
           </SidePanel>

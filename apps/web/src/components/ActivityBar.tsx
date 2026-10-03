@@ -24,7 +24,6 @@ import {
 } from "lucide-react";
 import { cn } from "../lib/cn";
 import type { ActivityId } from "../lib/workbench";
-import { MenuButton, type MenuItem } from "./chrome";
 import logo from "../assets/dit-logo.png";
 
 type Icon = typeof House;
@@ -50,8 +49,6 @@ export function ActivityBar({
   panelOpen,
   badges,
   onActivate,
-  workspaceMenu,
-  workspace,
   only,
 }: {
   active: ActivityId;
@@ -59,8 +56,6 @@ export function ActivityBar({
   panelOpen: boolean;
   badges: Partial<Record<ActivityId, number | null>>;
   onActivate: (id: ActivityId) => void;
-  workspaceMenu: MenuItem[];
-  workspace: string;
   /** The activities to offer, when not all of them (code-only mode). */
   only?: readonly ActivityId[];
 }) {
@@ -91,11 +86,17 @@ export function ActivityBar({
 
   return (
     <nav className="ab" aria-label="Activities">
-      <MenuButton items={workspaceMenu}>
-        <button type="button" className="ab-logo" aria-label={`Workspace menu — ${workspace}`} title={workspace}>
-          <img src={logo} alt="" width={22} height={22} draggable={false} />
-        </button>
-      </MenuButton>
+      {/* The workspace menu lives at the top of the side panel, named and
+          marked as a menu; the logo only goes home. */}
+      <button
+        type="button"
+        className="ab-logo"
+        aria-label="Home"
+        title="Home"
+        onClick={() => onActivate(only?.[0] ?? "home")}
+      >
+        <img src={logo} alt="" width={22} height={22} draggable={false} />
+      </button>
       {ACTIVITIES.filter((a) => offered(a.id)).map(item)}
       <span className="ab-sp" />
       {offered("settings")
