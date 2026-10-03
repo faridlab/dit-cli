@@ -232,6 +232,9 @@ pub enum FolderPurpose {
 pub struct FolderChosenDto {
     /// `null` when the person cancelled.
     pub path: Option<String>,
+    /// The chosen folder already is a DIT workspace — "New workspace" must
+    /// not make another inside it; the page offers to add it instead.
+    pub is_workspace: bool,
 }
 
 #[derive(Debug, Deserialize, TS)]
@@ -342,8 +345,12 @@ async fn choose_folder(
     })
     .await
     .map_err(|_| HubError::Internal("the folder dialog task failed".into()))??;
+    let is_workspace = chosen
+        .as_deref()
+        .is_some_and(|p| Dit::is_workspace(p).unwrap_or(false));
     Ok(Json(FolderChosenDto {
         path: chosen.map(|p| p.display().to_string()),
+        is_workspace,
     }))
 }
 

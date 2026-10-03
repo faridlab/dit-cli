@@ -250,8 +250,9 @@ async fn routes_with_path_parameters_work_behind_the_prefix() {
 
 /// A chooser standing in for the system's folder dialog (ADR 0030): it
 /// answers what a person would have picked.
-fn chooser(answer: Option<&'static str>) -> dit_server::FolderChooser {
-    std::sync::Arc::new(move |_prompt: &str| Ok(answer.map(std::path::PathBuf::from)))
+fn chooser(answer: Option<&str>) -> dit_server::FolderChooser {
+    let answer = answer.map(std::path::PathBuf::from);
+    std::sync::Arc::new(move |_prompt: &str| Ok(answer.clone()))
 }
 
 #[tokio::test]
@@ -269,6 +270,7 @@ async fn the_folder_dialog_answers_the_one_path_a_person_chose_or_null() {
     .await;
     assert_eq!(status, StatusCode::OK, "{chosen}");
     assert_eq!(chosen["path"], "/Users/someone/Projects");
+    assert_eq!(chosen["is_workspace"], false);
 
     let f = fixture_with("127.0.0.1", Some(chooser(None)));
     let (_, cancelled) = call(
@@ -335,4 +337,26 @@ async fn a_new_workspace_can_go_to_a_chosen_folder_that_exists() {
         !f.tmp.path().join("nowhere").exists(),
         "no folder is made up"
     );
+}
+
+/// Picking a folder that already is a DIT workspace must say so: "New
+/// workspace" would otherwise make a second one inside it, and the page
+/// offers to add the one that is there instead.
+#[tokio::test]
+async fn a_chosen_folder_that_already_is_a_workspace_is_named_as_one() {
+    let tmp = tempfile::tempdir().unwrap();
+    let existing = tmp.path().join("serpa-dit");
+    std::fs::create_dir_all(&existing).unwrap();
+    dit_core::Dit::init(&existing, &std::env::current_exe().unwrap()).unwrap();
+    let f = fixture_with("127.0.0.1", Some(chooser(Some(existing.to_str().unwrap()))));
+    let (status, chosen) = call(
+        &f.app,
+        "POST",
+        "/api/workspaces/choose-folder",
+        Some(json!({ "purpose": "new" })),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{chosen}");
+    assert_eq!(chosen["is_workspace"], true);
 }
