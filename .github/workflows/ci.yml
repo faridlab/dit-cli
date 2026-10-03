@@ -124,3 +124,46 @@ jobs:
           files: |
             dit-${{ matrix.target }}.tar.gz
             dit-${{ matrix.target }}.tar.gz.sha256
+
+  # DIT.app for the menu bar (ADR 0029): one universal bundle holding `dit`
+  # (UI embedded) and `dit-tray`, signed ad hoc, zipped with its digest, plus
+  # the Homebrew cask filled in for this release. Publishing the cask to the
+  # tap repository is a separate, deliberate step.
+  macos-app:
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin,wasm32-unknown-unknown
+      - run: cargo install wasm-pack --locked
+      - run: wasm-pack build crates/dit-wasm --target web --out-name dit_wasm --no-pack --out-dir ../../apps/web/src/editor/wasm
+      - run: npm ci --prefix apps/web && npm run build --prefix apps/web
+      - run: |
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --locked --features dit-cli/embed-ui -p dit-cli -p dit-tray --target "$target"
+          done
+          mkdir -p target/universal
+          for bin in dit dit-tray; do
+            lipo -create -output "target/universal/$bin" \
+              "target/aarch64-apple-darwin/release/$bin" \
+              "target/x86_64-apple-darwin/release/$bin"
+          done
+      - run: scripts/build-macos-app.sh target/universal/dit target/universal/dit-tray "${GITHUB_REF_NAME#v}" dist
+      - run: |
+          sha=$(cut -d' ' -f1 dist/DIT-macos.zip.sha256)
+          sed -e "s/version \"VERSION\"/version \"${GITHUB_REF_NAME#v}\"/" \
+              -e "s/sha256 \"SHA256\"/sha256 \"$sha\"/" \
+              packaging/homebrew/dit.rb > dist/dit.rb
+          grep -q "$sha" dist/dit.rb
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/DIT-macos.zip
+            dist/DIT-macos.zip.sha256
+            dist/dit.rb

@@ -21,7 +21,21 @@ layer, the block editor. See [`DESIGN.md`](DESIGN.md) §10 for the roadmap.
 
 ## Install
 
-Requires git. The installer downloads a release binary for your platform and
+**On a Mac, without the terminal afterwards** — the DIT app lives in the menu
+bar, starts and stops DIT, and opens it in your browser:
+
+```bash
+brew install --cask faridlab/tap/dit
+```
+
+Then open **DIT** from Applications. The first page asks for a name for your
+first workspace; nothing else to set up. The cask also puts `dit` on your
+`PATH`. (DIT is not notarized by Apple yet, so the cask clears macOS's
+download quarantine from DIT's own app — see ADR 0029. A zip downloaded from
+the releases page in a browser instead needs System Settings → Privacy &
+Security → Open Anyway once.)
+
+**The command line, any platform.** Requires git. The installer downloads a release binary for your platform and
 falls back to building from source when there isn't one:
 
 ```bash
@@ -138,12 +152,15 @@ crates/
   dit-store  dit-index  dit-vcs  dit-ai  adapters — touch the outside world
   dit-core                              facade — the only public API
   dit-cli    dit-server  dit-wasm       delivery
+  dit-tray                              delivery — the macOS menu bar app
 tests/
   architecture.rs   dependency direction
   invariants.rs     invariants I1–I11
 apps/web/                               React + TypeScript UI
 scripts/
   install.sh                           the curl | bash installer
+  build-macos-app.sh                   assembles DIT.app (CI runs it on release)
+packaging/homebrew/dit.rb              the cask template for faridlab/homebrew-tap
 ```
 
 ## License

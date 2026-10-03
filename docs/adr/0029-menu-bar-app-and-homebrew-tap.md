@@ -73,6 +73,9 @@ Distribution, with no Apple Developer account:
   DIT** / **Stop DIT**, **Open at Login**, and **Quit DIT**, which stops the
   server first. The icon is the DIT mark as a template image, drawn in code,
   dimmed while the server is stopped.
+- **The server never outlives the app.** The app passes
+  `--stop-with-parent`; the server watches its parent and stops, gracefully,
+  once the app is gone — even when the app was killed rather than quit.
 - **Stopping is graceful.** `dit ui` (and `dit-server`) now stop on SIGINT and
   SIGTERM by refusing new connections and letting requests in flight finish —
   a write is a commit, and a process killed mid-commit leaves
@@ -96,23 +99,28 @@ Distribution, with no Apple Developer account:
   `LSUIElement` (no Dock icon), an `.icns` made from the DIT mark, ad-hoc
   signed, zipped as `DIT-macos.zip` with a `.sha256`, next to the existing
   tarballs.
-- The cask lives in this repository (`packaging/homebrew/dit.rb`) and is
-  published to the tap repository `faridlab/homebrew-tap`. It installs
-  `DIT.app`, links `dit` onto `PATH` (terminals and AI agents use the same
-  binary the app runs), and in `postflight` removes `com.apple.quarantine`
-  from `DIT.app` — our own bundle, from our own tap, and nothing else.
-  `uninstall` quits the app and removes the LaunchAgent; `zap` never touches
+- The cask template lives in this repository (`packaging/homebrew/dit.rb`);
+  the release workflow fills in the version and digest and attaches the
+  result to the release, and it is copied to the tap repository
+  `faridlab/homebrew-tap` — by hand until a token for that repository is
+  configured. It installs `DIT.app`, links `dit` onto `PATH` (terminals and AI
+  agents use the same binary the app runs), and in `preflight_steps` removes
+  `com.apple.quarantine` from the staged `DIT.app` — after the digest check,
+  before Homebrew moves the bundle to Applications (the move copies the
+  bundle's attributes as they then are). Our own bundle, from our own tap,
+  and nothing else. `uninstall` quits the app and removes the LaunchAgent;
+  `zap` removes DIT's per-machine configuration and never touches
   workspaces.
 - **When an Apple Developer account exists**, CI signs with a Developer ID and
-  notarizes, the `postflight` goes, and the cask can move to `homebrew/cask`.
-  The workflow keeps that step behind secrets so adding them is the whole
-  change.
+  notarizes after the bundle is assembled, the quarantine step goes, and the
+  cask can move to `homebrew/cask`. `scripts/build-macos-app.sh` signs ad hoc
+  in one place, which is where the Developer ID signature replaces it.
 
 Invariant check: I1 — the LaunchAgent is per-machine configuration written
 atomically through `dit-store`, like the registry. I3 — the app never runs
 `git`; it looks for one. I7 — nothing in a repository names a program the app
-runs: the only programs are `dit` (its own sibling), `open`, `kill`,
-`xcode-select` and `launchctl`. I11 — the app adds no outbound request; the
+runs: the only programs are `dit` (its own sibling), `open`, `kill` and
+`xcode-select`. I11 — the app adds no outbound request; the
 server stays bound to 127.0.0.1 with its token.
 
 ## Consequences
@@ -135,7 +143,11 @@ server stays bound to 127.0.0.1 with its token.
 
 `dit-core` pins the LaunchAgent: written with the program path, removed, and
 read back as on or off. The CLI suite pins `dit ui --all` serving the
-workspace list from a directory that is not a workspace. The server suite
-pins graceful stop: a request in flight when the signal arrives completes.
+workspace list from a directory that is not a workspace, and
+`--stop-with-parent` freeing the port once its parent dies. The server suite
+pins graceful stop: a request in flight when the signal arrives completes,
+and a connection that never ends cannot hold the stop past the grace period.
+`dit-tray`'s own tests pin reading the address from `open:`, stopping with
+SIGTERM before killing, and finding git without running it.
 The app itself is verified by hand on macOS: start, open, switch, stop
 (no `index.lock` after stopping during a write), open at login, quit.
