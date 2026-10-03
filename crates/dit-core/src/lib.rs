@@ -17,6 +17,7 @@ mod agent;
 mod attachment;
 pub mod board;
 pub mod code;
+pub mod doc_templates;
 pub mod login_item;
 pub mod registry;
 pub use code::{
@@ -75,6 +76,7 @@ pub use dit_model::{
 pub use dit_model::{FlowGroup, FlowPhase, FlowShape, PHASE_LABEL_PREFIX};
 pub use dit_parse::{ImportReport, ImportedScenario};
 pub use dit_vcs::{SyncOptions, SyncReport};
+pub use doc_templates::{DocTemplate, DOC_TEMPLATE_DIR};
 pub use flow::{
     EdgeDisposition, FlowBoard, FlowClaim, FlowEdge, FlowLane, FlowNode, FlowOutsideBlocker,
     FlowSummary,

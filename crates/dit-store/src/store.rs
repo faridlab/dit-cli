@@ -520,6 +520,11 @@ impl Transaction {
         Ok(comment_id)
     }
 
+    /// The alias this transaction writes as.
+    pub fn author(&self) -> &str {
+        &self.author
+    }
+
     /// How many writes are staged. Purely informational — the abort path
     /// logs it so a discarded transaction is visible in the trace.
     pub fn staged_len(&self) -> usize {
