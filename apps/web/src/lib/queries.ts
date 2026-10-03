@@ -390,6 +390,28 @@ export function usePutDoc() {
   });
 }
 
+/** The document templates (ADR 0031); fetched when the dialog opens. */
+export function useDocTemplates(enabled: boolean) {
+  return useQuery({
+    queryKey: ["doc-templates"] as const,
+    queryFn: api.getDocTemplates,
+    enabled,
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+/** Make a page from a template; the page that landed is cached at once. */
+export function useDocFromTemplate() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ kind, title }: { kind: string; title: string }) => api.docFromTemplate(kind, title),
+    onSuccess: (made) => {
+      void client.setQueryData(queryKeys.doc(made.path), made);
+      void client.invalidateQueries({ queryKey: queryKeys.docs });
+    },
+  });
+}
+
 export function useDeleteDoc() {
   const client = useQueryClient();
   return useMutation({

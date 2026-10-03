@@ -36,6 +36,7 @@ import {
   ChevronRight,
   ChevronsUpDown,
   Copy,
+  FilePlus2,
   FileText,
   Folder,
   Pencil,
@@ -55,6 +56,7 @@ import { ErrorBox, Loading } from "../states";
 import { ContextMenuFor, MenuButton, type MenuItem } from "../chrome";
 import { PaneSection } from "../PaneSection";
 import { scopedKey } from "../../lib/workspace";
+import { DocTemplateDialog } from "../DocTemplateDialog";
 
 const DOC_ROOTS = ["docs", "notes", "epics", "changelogs"] as const;
 const FILE_DRAG_PREFIX = "file:";
@@ -480,6 +482,8 @@ export function DocsPane({
   // The folder the heading buttons file into. Clicking a folder selects it;
   // clicking a page clears the selection, and "docs" is the fallback.
   const [selectedDir, setSelectedDir] = useState<string | null>("docs");
+  /** The "New page from a template" dialog (ADR 0031). */
+  const [templateOpen, setTemplateOpen] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [followUp, setFollowUp] = useState<{
     path: string;
@@ -686,7 +690,27 @@ export function DocsPane({
       button: "Create",
       run: (value) => createDoc(dir, value),
     },
+    { kind: "sep" },
+    {
+      label: "From a template…",
+      icon: <FilePlus2 className="i" aria-hidden />,
+      meta: "PRD, FSD, flow…",
+      run: () => setTemplateOpen(true),
+    },
   ];
+
+  /** A page made from a template lands in its stage folder: unfold the way
+   *  to it and open it. */
+  const openMade = (path: string) => {
+    toast(`Created ${path} · committed`);
+    const parts = parentOf(path).split("/");
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      parts.forEach((_, i) => next.add(parts.slice(0, i + 1).join("/")));
+      return next;
+    });
+    onOpen(path);
+  };
 
   const newFolderItems = (dir: string): MenuItem[] => [
     { kind: "head", label: `New folder in ${dir}/` },
@@ -865,6 +889,7 @@ export function DocsPane({
       }
     >
 
+      <DocTemplateDialog open={templateOpen} onOpenChange={setTemplateOpen} onMade={openMade} />
       <div
         className="sb-body tree"
         onDoubleClick={(event) => {

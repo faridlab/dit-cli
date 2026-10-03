@@ -14,6 +14,7 @@ import type {
   CodeRootsDto,
   CommentDto,
   DocBodyDto,
+  DocTemplateDto,
   DocEntryDto,
   ActivityPageDto,
   ActivitySummaryDto,
@@ -360,6 +361,19 @@ export function listDocs(): Promise<DocEntryDto[]> {
 
 export function getDoc(path: string): Promise<DocBodyDto> {
   return request<DocBodyDto>(docUrl(path));
+}
+
+/** The kinds of document a page can be made from (ADR 0031). */
+export function getDocTemplates(): Promise<DocTemplateDto[]> {
+  return request<DocTemplateDto[]>("/api/docs/templates");
+}
+
+/** Make a page of `kind` titled `title`, placed by its stage; one commit. */
+export function docFromTemplate(kind: string, title: string): Promise<DocBodyDto> {
+  return request<DocBodyDto>("/api/docs/from-template", {
+    method: "POST",
+    body: JSON.stringify({ kind, title }),
+  });
 }
 
 /** One save is one commit; the response carries the formatted body that

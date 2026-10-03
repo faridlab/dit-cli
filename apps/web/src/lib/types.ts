@@ -23,6 +23,7 @@ import type { BoardIssueDto as WireBoardIssueDto } from "./schema/BoardIssueDto"
 import type { CommentDto as WireCommentDto } from "./schema/CommentDto";
 import type { DerivedDto } from "./schema/DerivedDto";
 import type { DocBodyDto as WireDocBodyDto } from "./schema/DocBodyDto";
+import type { DocTemplateDto as WireDocTemplateDto } from "./schema/DocTemplateDto";
 import type { AttachedDto as WireAttachedDto } from "./schema/AttachedDto";
 import type { DocEntryDto as WireDocEntryDto } from "./schema/DocEntryDto";
 import type { FieldEventDto as WireFieldEventDto } from "./schema/FieldEventDto";
@@ -118,6 +119,7 @@ export type FieldEventDto = WireFieldEventDto;
 // metadata (the file's mtime), the real history is git.
 export type DocEntryDto = WireDocEntryDto;
 export type DocBodyDto = WireDocBodyDto;
+export type DocTemplateDto = WireDocTemplateDto;
 export type AttachedDto = WireAttachedDto;
 
 export interface StatusDto extends WireStatusDto {
