@@ -1677,6 +1677,9 @@ button.mw-li:hover{background:var(--hover)}
 .mw-dlg-h{padding:14px 16px 6px;font-weight:600;font-size:14px;color:var(--ink)}
 .mw-dlg-b{padding:6px 16px 12px;overflow:auto;display:flex;flex-direction:column;gap:10px;font-size:12.5px;color:var(--ink-2)}
 .mw-dlg-f{display:flex;gap:8px;justify-content:flex-end;padding:10px 16px;border-top:1px solid var(--edge)}
+/* The first-run page (ADR 0028): the dialog card, standing on the page. */
+.mw-dlg.ws-first{position:static;transform:none;max-height:none;width:min(460px,100%)}
+.ws-first-lede{margin:0;padding:0 16px 4px;font-size:13px;color:var(--ink-2)}
 .mw-fld{display:flex;flex-direction:column;gap:4px}
 .mw-fld label{font-size:12px;color:var(--muted)}
 .mw-fld input,.mw-fld select{border:1px solid var(--edge-2);border-radius:6px;padding:6px 8px;background:var(--surface);outline:0;color:var(--ink);font-size:12.5px}

@@ -58,15 +58,17 @@ import { ConfirmDialog, SaveDialog, type SaveTarget } from "./SaveDialog";
 import { ImportDialog } from "./ImportDialog";
 import { RegisterSpecDialog } from "./RegisterSpecDialog";
 import { ScenarioTab } from "./ScenarioTab";
+import { scopedKey } from "../../lib/workspace";
 
 type Sub = Parameters<typeof RequestTab>[0]["sub"];
 
 const AUTOSAVE_MS = 1500;
 const OVERVIEW: Tab = { key: "overview", ref: { kind: "overview" }, pinned: true };
 
+/** Scenario tabs and the chosen environment belong to one workspace. */
 function load<T>(key: string, fallback: T): T {
   try {
-    const raw = localStorage.getItem(key);
+    const raw = localStorage.getItem(scopedKey(key));
     return raw === null ? fallback : (JSON.parse(raw) as T);
   } catch {
     return fallback;
@@ -75,7 +77,7 @@ function load<T>(key: string, fallback: T): T {
 
 function keep(key: string, value: unknown) {
   try {
-    localStorage.setItem(key, JSON.stringify(value));
+    localStorage.setItem(scopedKey(key), JSON.stringify(value));
   } catch {
     /* a private window keeps nothing, and nothing here needs keeping */
   }

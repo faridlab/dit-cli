@@ -4,6 +4,7 @@
 // server. The bytes on disk never name the server or carry the token.
 
 import { getToken } from "./auth";
+import { workspaceBase } from "./workspace";
 
 /** What an upload is attached to, as the server's query names it. */
 export type AttachTarget = { doc: string } | { issue: string } | { comment: string };
@@ -23,7 +24,12 @@ export function dirOf(path: string): string {
  *  load. Absolute URLs and `data:` pass through untouched (the CSP decides
  *  what loads); a relative link into an `attachments/` folder becomes the
  *  attachments route; anything else is left as written. */
-export function resolveAttachmentSrc(src: string, baseDir: string, token: string | null = getToken()): string {
+export function resolveAttachmentSrc(
+  src: string,
+  baseDir: string,
+  token: string | null = getToken(),
+  base: string = workspaceBase(),
+): string {
   if (src === "" || /^[a-z][a-z0-9+.-]*:/i.test(src) || src.startsWith("/") || src.startsWith("#")) return src;
   const parts = baseDir.split("/").filter(Boolean);
   for (const segment of (src.split(/[?#]/, 1)[0] ?? "").split("/")) {
@@ -37,7 +43,8 @@ export function resolveAttachmentSrc(src: string, baseDir: string, token: string
   }
   if (parts.length < 3 || parts[parts.length - 2] !== "attachments") return src;
   const path = parts.map(encodeURIComponent).join("/");
-  return token ? `/api/attachments/${path}?token=${encodeURIComponent(token)}` : `/api/attachments/${path}`;
+  const url = `${base}/api/attachments/${path}`;
+  return token ? `${url}?token=${encodeURIComponent(token)}` : url;
 }
 
 /** Server-rendered HTML (a comment) with every relative attachment `src`

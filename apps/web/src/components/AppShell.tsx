@@ -9,7 +9,7 @@ import { Code, Columns3, PanelRight, Settings, Terminal } from "lucide-react";
 import { toast } from "sonner";
 import { useLiveEvents } from "../lib/events";
 import { useDocTabs } from "../lib/doctabs";
-import { invalidateWorkspaceData, useIssue, useStatus } from "../lib/queries";
+import { invalidateWorkspaceData, useIssue, useStatus, useWorkspaces } from "../lib/queries";
 import { parseHash, peekHost, peekOf, replaceRoute, useNavigate, useRoute, withPeek, type Route } from "../lib/router";
 import { stepPeek, usePeekList } from "../lib/peeklist";
 import { useTheme } from "../lib/theme";
@@ -38,6 +38,8 @@ import { DisplayButton, FilterButton, HeaderHint, SortButton } from "./HeaderMen
 import { NotesDrawer } from "./NotesDrawer";
 import { Btn, type MenuItem } from "./chrome";
 import { Loading } from "./states";
+import { FirstRun, openWorkspace, useWorkspaceSwitcher } from "./Workspaces";
+import { workspaceName } from "../lib/workspace";
 import { GanttOptionsProvider, GanttPane } from "./panes/GanttPane";
 import { RoadmapOptionsProvider, RoadmapPane } from "./panes/RoadmapPane";
 import { TimelinePane } from "./panes/TimelinePane";
@@ -116,6 +118,26 @@ export function AppShell() {
  *  — `dit ui` outside one — only the code map, read-only. Until the status
  *  answer arrives the frame stays neutral, so neither UI flashes first. */
 function Shell() {
+  // A page at `/w/<name>/` is that workspace's; one at `/` first asks
+  // whether this server keeps a list of workspaces (ADR 0028).
+  return workspaceName() === null ? <RootGate /> : <ServedShell />;
+}
+
+/** `/`: on a server for many workspaces, go to the default one — or, with
+ *  none yet, offer to make the first. A server for one workspace has no
+ *  list (404) and serves that workspace right here. */
+function RootGate() {
+  const list = useWorkspaces();
+  const target = list.data ? (list.data.default ?? list.data.workspaces[0]?.name ?? null) : null;
+  useEffect(() => {
+    if (target !== null) openWorkspace(target);
+  }, [target]);
+  if (list.isError) return <ServedShell />;
+  if (list.data && target === null) return <FirstRun root={list.data.root} />;
+  return <NeutralShell />;
+}
+
+function ServedShell() {
   const status = useStatus();
   const mode = serveMode(status.data);
   if (mode === "code") return <CodeShell />;
@@ -178,12 +200,14 @@ function CodeShell() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [notesOpen]);
 
-  const workspace = status.data
-    ? (status.data.repo.split("/").filter(Boolean).pop() ?? status.data.repo)
-    : "…";
+  const workspace =
+    workspaceName() ??
+    (status.data ? (status.data.repo.split("/").filter(Boolean).pop() ?? status.data.repo) : "…");
   const go = useCallback((next: Route) => navigate(routeInMode(next, "code")), [navigate]);
+  const switcher = useWorkspaceSwitcher();
   const menu = useMemo<MenuItem[]>(
     () => [
+      ...switcher.items,
       { kind: "head", label: "Repository" },
       {
         kind: "text",
@@ -201,7 +225,7 @@ function CodeShell() {
         run: () => void copyText(cliFor(route), "Command copied"),
       },
     ],
-    [route, status.data],
+    [route, status.data, switcher.items],
   );
 
   return (
@@ -263,6 +287,7 @@ function CodeShell() {
         onSwitchTheme={() => theme.setPreference(theme.resolved === "dark" ? "light" : "dark")}
         onGo={(hash) => go(parseHash(hash))}
       />
+      {switcher.dialogs}
     </div>
   );
 }
@@ -287,9 +312,9 @@ function WorkspaceShell() {
   const toggleSidebar = useCallback(() => setPanelOpen((open) => !open), []);
   const inbox = useInboxCount();
 
-  const workspace = status.data
-    ? (status.data.repo.split("/").filter(Boolean).pop() ?? status.data.repo)
-    : "…";
+  const workspace =
+    workspaceName() ??
+    (status.data ? (status.data.repo.split("/").filter(Boolean).pop() ?? status.data.repo) : "…");
 
   // -- the issue panel ------------------------------------------------------
   // An issue opens beside the list, not instead of it: the route keeps the
@@ -493,8 +518,10 @@ function WorkspaceShell() {
   );
 
   // -- the workspace menu ----------------------------------------------------
+  const switcher = useWorkspaceSwitcher();
   const workspaceMenu = useMemo<MenuItem[]>(
     () => [
+      ...switcher.items,
       { kind: "head", label: "Workspace" },
       {
         kind: "text",
@@ -515,7 +542,7 @@ function WorkspaceShell() {
       { kind: "sep" },
       { label: "Settings", icon: <Settings className="i" aria-hidden />, kbd: "⌘,", run: () => navigate({ name: "settings" }) },
     ],
-    [navigate, route, status.data],
+    [navigate, route, status.data, switcher.items],
   );
 
   // -- the sidebar section and the header actions, both a function of the route
@@ -760,6 +787,7 @@ function WorkspaceShell() {
         onSwitchTheme={() => theme.setPreference(theme.resolved === "dark" ? "light" : "dark")}
         onGo={go}
       />
+      {switcher.dialogs}
     </div>
   );
 }

@@ -3,6 +3,7 @@
 // wire-format change is a one-file change.
 
 import { getToken } from "./auth";
+import { workspaceBase } from "./workspace";
 import { targetQuery, type AttachTarget } from "./attachments";
 import type {
   AttachedDto,
@@ -44,7 +45,9 @@ import type {
   ReleasePatchInput,
   FlowBoardDto,
   FlowSummaryDto,
+  WorkspaceAddedDto,
   WorkspaceCommentDto,
+  WorkspacesDto,
 } from "./types";
 
 export class ApiError extends Error {
@@ -57,7 +60,13 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/** A request to this page's workspace: `/w/<name>/api/…` on a server that
+ *  serves several (ADR 0028), `/api/…` on one that serves a single one. */
+function request<T>(path: string, init?: RequestInit): Promise<T> {
+  return send<T>(workspaceBase() + path, init);
+}
+
+async function send<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getToken();
   const headers: Record<string, string> = {};
   if (token) headers.Authorization = `Bearer ${token}`;
@@ -452,5 +461,33 @@ export function eventsUrl(): string | null {
   const token = getToken();
   if (!token) return null;
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${proto}//${window.location.host}/api/events?token=${encodeURIComponent(token)}`;
+  return `${proto}//${window.location.host}${workspaceBase()}/api/events?token=${encodeURIComponent(token)}`;
+}
+
+// ---------------------------------------------------------------- workspaces
+// The machine's list (ADR 0028). These live at the server's root, not under
+// `/w/<name>`: they are about every workspace, not this one. A server started
+// for a single workspace has no list and answers 404.
+
+export function listWorkspaces(): Promise<WorkspacesDto> {
+  return send<WorkspacesDto>("/api/workspaces");
+}
+
+/** A new workspace is a name; the server picks the folder. */
+export function createWorkspace(name: string): Promise<WorkspacesDto> {
+  return send<WorkspacesDto>("/api/workspaces", { method: "POST", body: JSON.stringify({ name }) });
+}
+
+/** Add a folder that already is a DIT workspace. */
+export function addWorkspace(path: string): Promise<WorkspaceAddedDto> {
+  return send<WorkspaceAddedDto>("/api/workspaces/add", { method: "POST", body: JSON.stringify({ path }) });
+}
+
+/** Take a workspace off the list. Its files stay where they are. */
+export function removeWorkspace(name: string): Promise<WorkspacesDto> {
+  return send<WorkspacesDto>(`/api/workspaces/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
+export function setDefaultWorkspace(name: string): Promise<WorkspacesDto> {
+  return send<WorkspacesDto>(`/api/workspaces/${encodeURIComponent(name)}/default`, { method: "POST" });
 }

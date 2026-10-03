@@ -32,6 +32,8 @@ export default defineConfig({
       // in the query string and the proxy must upgrade the connection).
       "/api": { target: "http://127.0.0.1:7433", changeOrigin: false, ws: true },
       "/events": { target: "ws://127.0.0.1:7433", ws: true },
+      // A server for many workspaces serves each at /w/<name>/ (ADR 0028).
+      "/w": { target: "http://127.0.0.1:7433", changeOrigin: false, ws: true },
     },
   },
 });

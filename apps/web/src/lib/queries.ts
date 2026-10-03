@@ -95,6 +95,20 @@ export function invalidateWorkspaceData(client: QueryClient) {
 // list views feel instant without serving ancient rows.
 const STALE_TIME_MS = 15_000;
 
+/** The machine's workspaces (ADR 0028). A server started for one workspace
+ *  has no list and answers 404, which is final: no retry, and no refetch
+ *  when the workspace menu mounts — the `/` gate decides on this answer, and
+ *  a refetch would flip it back to loading and unmount the menu again. */
+export function useWorkspaces() {
+  return useQuery({
+    queryKey: ["workspaces"] as const,
+    queryFn: api.listWorkspaces,
+    staleTime: STALE_TIME_MS,
+    retry: false,
+    retryOnMount: false,
+  });
+}
+
 export function useStatus() {
   return useQuery({ queryKey: queryKeys.status, queryFn: api.getStatus, staleTime: STALE_TIME_MS });
 }

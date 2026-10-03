@@ -48,6 +48,7 @@ import { navigate, routeToHash, withPeek, type PeekHost, type Route } from "../.
 import { isStarred, toggleStar } from "../../lib/starred";
 import type { FieldEventDto, FieldPatch, IssueDto, Priority, StatusDto } from "../../lib/types";
 import { cn } from "../../lib/cn";
+import { workspaceBase } from "../../lib/workspace";
 
 // The comment box is the same editor as the description (a lazy chunk), so
 // a comment can hold lines, lists, to-dos and code without knowing markdown.
@@ -975,7 +976,7 @@ async function deleteIssueRequest(id: string): Promise<void> {
   if (token) headers.Authorization = `Bearer ${token}`;
   let res: Response;
   try {
-    res = await fetch(`/api/issues/${encodeURIComponent(id)}`, { method: "DELETE", headers });
+    res = await fetch(`${workspaceBase()}/api/issues/${encodeURIComponent(id)}`, { method: "DELETE", headers });
   } catch (cause) {
     throw new ApiError(cause instanceof Error ? `Network error: ${cause.message}` : "Network error", 0);
   }

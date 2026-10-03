@@ -8,8 +8,9 @@
 // filter and the star button all read it from different corners of the tree.
 
 import { useEffect, useSyncExternalStore } from "react";
+import { scopedKey } from "./workspace";
 
-export const STARRED_KEY = "dit.starred";
+export const STARRED_KEY = scopedKey("dit.starred");
 
 let current: ReadonlySet<string> = new Set();
 let loaded = false;

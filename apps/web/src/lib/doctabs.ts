@@ -10,9 +10,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "./queries";
 import type { DocBodyDto } from "./types";
+import { scopedKey } from "./workspace";
 
-const TABS_KEY = "dit.docs.tabs";
-const PINNED_KEY = "dit.docs.pinned";
+const TABS_KEY = scopedKey("dit.docs.tabs");
+const PINNED_KEY = scopedKey("dit.docs.pinned");
 
 // Closing or renaming the active tab navigates away, and the URL changes a
 // beat later than the tab list. In between, the shell still sees the old

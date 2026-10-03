@@ -16,8 +16,9 @@ import { useViewOptions } from "../../lib/viewopts";
 import { TypeBadge } from "../badges";
 import { CheckSquare, ContextMenuFor, IBtn, MenuButton, Row, type MenuItem } from "../chrome";
 import { PaneSection } from "../PaneSection";
+import { scopedKey } from "../../lib/workspace";
 
-export const SAVED_VIEWS_KEY = "dit.views";
+export const SAVED_VIEWS_KEY = scopedKey("dit.views");
 
 type SavedView = [name: string, dql: string];
 

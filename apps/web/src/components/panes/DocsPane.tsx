@@ -54,12 +54,13 @@ import type { DocEntryDto } from "../../lib/types";
 import { ErrorBox, Loading } from "../states";
 import { ContextMenuFor, MenuButton, type MenuItem } from "../chrome";
 import { PaneSection } from "../PaneSection";
+import { scopedKey } from "../../lib/workspace";
 
 const DOC_ROOTS = ["docs", "notes", "epics", "changelogs"] as const;
 const FILE_DRAG_PREFIX = "file:";
 const DIR_DROP_PREFIX = "dir:";
-const EXPANDED_KEY = "dit.docs.expanded";
-const FOLDERS_KEY = "dit.docs.folders";
+const EXPANDED_KEY = scopedKey("dit.docs.expanded");
+const FOLDERS_KEY = scopedKey("dit.docs.folders");
 
 const EMPTY_FOLDER_NOTE =
   "Git cannot hold an empty directory: the folder lives in this browser until a page is created inside it.";
