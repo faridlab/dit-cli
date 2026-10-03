@@ -43,6 +43,8 @@ import type { MorseImportedDto as WireMorseImportedDto } from "./schema/MorseImp
 import type { WorkspaceDto as WireWorkspaceDto } from "./schema/WorkspaceDto";
 import type { WorkspacesDto as WireWorkspacesDto } from "./schema/WorkspacesDto";
 import type { WorkspaceAddedDto as WireWorkspaceAddedDto } from "./schema/WorkspaceAddedDto";
+import type { FolderChosenDto as WireFolderChosenDto } from "./schema/FolderChosenDto";
+import type { FolderPurpose as WireFolderPurpose } from "./schema/FolderPurpose";
 import type { MorseImportPreviewDto as WireMorseImportPreviewDto } from "./schema/MorseImportPreviewDto";
 import type { MorseImportDto as WireMorseImportDto } from "./schema/MorseImportDto";
 import type { MorseInlineRequestDto as WireMorseInlineRequestDto } from "./schema/MorseInlineRequestDto";
@@ -92,6 +94,8 @@ export type MorseImportedDto = WireMorseImportedDto;
 export type WorkspaceDto = WireWorkspaceDto;
 export type WorkspacesDto = WireWorkspacesDto;
 export type WorkspaceAddedDto = WireWorkspaceAddedDto;
+export type FolderChosenDto = WireFolderChosenDto;
+export type FolderPurpose = WireFolderPurpose;
 export type MorseImportPreviewDto = WireMorseImportPreviewDto;
 export type MorseImportDto = WireMorseImportDto;
 export type MorseInlineRequestDto = WireMorseInlineRequestDto;

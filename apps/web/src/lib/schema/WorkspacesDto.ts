@@ -3,6 +3,10 @@ import type { WorkspaceDto } from "./WorkspaceDto";
 
 export type WorkspacesDto = { workspaces: Array<WorkspaceDto>, default: string | null, 
 /**
- * Where "New workspace" puts one.
+ * Where "New workspace" puts one unless a folder is chosen.
  */
-root: string, };
+root: string, 
+/**
+ * Whether "Choose folder…" can open the system's dialog (ADR 0030).
+ */
+can_choose_folder: boolean, };

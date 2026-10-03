@@ -133,7 +133,7 @@ function RootGate() {
     if (target !== null) openWorkspace(target);
   }, [target]);
   if (list.isError) return <ServedShell />;
-  if (list.data && target === null) return <FirstRun root={list.data.root} />;
+  if (list.data && target === null) return <FirstRun root={list.data.root} canChoose={list.data.can_choose_folder} />;
   return <NeutralShell />;
 }
 

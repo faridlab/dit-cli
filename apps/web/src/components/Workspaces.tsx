@@ -9,7 +9,8 @@ import { AlertTriangle, Check, FolderPlus, Plus, Star, X } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import { addWorkspace, createWorkspace, removeWorkspace, setDefaultWorkspace } from "../lib/api";
+import { addWorkspace, chooseFolder, createWorkspace, removeWorkspace, setDefaultWorkspace } from "../lib/api";
+import type { FolderPurpose } from "../lib/types";
 import { useWorkspaces } from "../lib/queries";
 import { workspaceHref, workspaceName } from "../lib/workspace";
 import type { MenuItem } from "./chrome";
@@ -50,16 +51,42 @@ function Problem({ text }: { text: string | null }) {
 // The forms, shared by the first-run page and the dialogs
 // ---------------------------------------------------------------------------
 
-function NewWorkspaceForm({ root, footer }: { root: string; footer: (busy: boolean, ready: boolean) => ReactNode }) {
+/** "Choose folder…": the system's own dialog, opened by the local server
+ *  (ADR 0030). Resolves to the folder picked, or null when cancelled. */
+function useChooseFolder(purpose: FolderPurpose, onProblem: (text: string) => void) {
+  const [choosing, setChoosing] = useState(false);
+  const choose = (onChosen: (path: string) => void) => {
+    setChoosing(true);
+    chooseFolder(purpose)
+      .then((chosen) => {
+        if (chosen.path) onChosen(chosen.path);
+      })
+      .catch((e: unknown) => onProblem(message(e)))
+      .finally(() => setChoosing(false));
+  };
+  return { choosing, choose };
+}
+
+type FormProps = {
+  /** Whether "Choose folder…" can open the system's dialog. */
+  canChoose: boolean;
+  footer: (busy: boolean, ready: boolean) => ReactNode;
+};
+
+function NewWorkspaceForm({ root, canChoose, footer }: FormProps & { root: string }) {
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  /** A chosen folder, or null for the default one. */
+  const [at, setAt] = useState<string | null>(null);
+  const { choosing, choose } = useChooseFolder("new", setProblem);
   const name = toWorkspaceName(typed);
+  const location = at ?? root;
   const submit = () => {
     if (!name) return;
     setBusy(true);
     setProblem(null);
-    createWorkspace(name)
+    createWorkspace(name, at ?? undefined)
       .then(() => openWorkspace(name))
       .catch((e: unknown) => {
         setProblem(message(e));
@@ -84,27 +111,44 @@ function NewWorkspaceForm({ root, footer }: { root: string; footer: (busy: boole
             placeholder="Acme website"
             onChange={(e) => setTyped(e.target.value)}
           />
+        </div>
+        <div className="mw-fld">
+          <span className="ws-loc-label">Location</span>
+          <div className="ws-loc">
+            <code>{location}</code>
+            {canChoose ? (
+              <button type="button" className="mw-btn" disabled={choosing} onClick={() => choose(setAt)}>
+                {choosing ? "Choosing…" : "Choose folder…"}
+              </button>
+            ) : null}
+            {at !== null ? (
+              <button type="button" className="mw-btn" onClick={() => setAt(null)}>
+                Use default
+              </button>
+            ) : null}
+          </div>
           <p className="mw-hint" style={{ margin: 0 }}>
             {name ? (
               <>
-                Saved as <code>{name}</code> in <code>{`${root}/${name}`}</code>
+                Made as <code>{`${location}/${name}`}</code> — nothing to set up.
               </>
             ) : (
-              <>A folder for it is made in <code>{root}</code> — nothing to set up.</>
+              <>A folder named after the workspace is made here.</>
             )}
           </p>
         </div>
         <Problem text={problem} />
       </div>
-      {footer(busy, name !== "")}
+      {footer(busy || choosing, name !== "")}
     </form>
   );
 }
 
-function AddWorkspaceForm({ footer }: { footer: (busy: boolean, ready: boolean) => ReactNode }) {
+function AddWorkspaceForm({ canChoose, footer }: FormProps) {
   const [path, setPath] = useState("");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const { choosing, choose } = useChooseFolder("add", setProblem);
   const submit = () => {
     if (!path.trim()) return;
     setBusy(true);
@@ -126,14 +170,21 @@ function AddWorkspaceForm({ footer }: { footer: (busy: boolean, ready: boolean) 
       <div className="mw-dlg-b">
         <div className="mw-fld">
           <label htmlFor="ws-add-path">Folder</label>
-          <input
-            id="ws-add-path"
-            value={path}
-            autoFocus
-            spellCheck={false}
-            placeholder="/Users/you/Documents/DIT/acme"
-            onChange={(e) => setPath(e.target.value)}
-          />
+          <div className="ws-loc">
+            <input
+              id="ws-add-path"
+              value={path}
+              autoFocus
+              spellCheck={false}
+              placeholder="/Users/you/Documents/DIT/acme"
+              onChange={(e) => setPath(e.target.value)}
+            />
+            {canChoose ? (
+              <button type="button" className="mw-btn" disabled={choosing} onClick={() => choose(setPath)}>
+                {choosing ? "Choosing…" : "Choose folder…"}
+              </button>
+            ) : null}
+          </div>
           <p className="mw-hint" style={{ margin: 0 }}>
             A folder that already is a DIT workspace — one made on another machine, or moved here. To track a code
             repository that is not one yet, run <code>dit workspace add &lt;folder&gt;</code> in a terminal.
@@ -141,7 +192,7 @@ function AddWorkspaceForm({ footer }: { footer: (busy: boolean, ready: boolean) 
         </div>
         <Problem text={problem} />
       </div>
-      {footer(busy, path.trim() !== "")}
+      {footer(busy || choosing, path.trim() !== "")}
     </form>
   );
 }
@@ -155,10 +206,12 @@ export type WorkspaceDialog = { kind: "new" } | { kind: "add" } | { kind: "remov
 export function WorkspaceDialogs({
   dialog,
   root,
+  canChoose,
   onClose,
 }: {
   dialog: WorkspaceDialog;
   root: string;
+  canChoose: boolean;
   onClose: () => void;
 }) {
   const footer = (label: string) => (busy: boolean, ready: boolean) => (
@@ -179,8 +232,10 @@ export function WorkspaceDialogs({
         <Dialog.Overlay className="mw-scrim" />
         <Dialog.Content className="mw-dlg" aria-describedby={undefined}>
           <Dialog.Title className="mw-dlg-h">{title}</Dialog.Title>
-          {dialog?.kind === "new" ? <NewWorkspaceForm root={root} footer={footer("Create")} /> : null}
-          {dialog?.kind === "add" ? <AddWorkspaceForm footer={footer("Add")} /> : null}
+          {dialog?.kind === "new" ? (
+            <NewWorkspaceForm root={root} canChoose={canChoose} footer={footer("Create")} />
+          ) : null}
+          {dialog?.kind === "add" ? <AddWorkspaceForm canChoose={canChoose} footer={footer("Add")} /> : null}
           {dialog?.kind === "remove" ? <RemoveWorkspace name={dialog.name} onClose={onClose} /> : null}
         </Dialog.Content>
       </Dialog.Portal>
@@ -242,7 +297,7 @@ function RemoveWorkspace({ name, onClose }: { name: string; onClose: () => void 
 // ---------------------------------------------------------------------------
 
 /** What `/` shows when this machine has no workspace yet. */
-export function FirstRun({ root }: { root: string }) {
+export function FirstRun({ root, canChoose }: { root: string; canChoose: boolean }) {
   const [mode, setMode] = useState<"new" | "add">("new");
   const footer = (label: string) => (busy: boolean, ready: boolean) => (
     <div className="mw-dlg-f">
@@ -266,8 +321,8 @@ export function FirstRun({ root }: { root: string }) {
           A workspace holds one project's issues, documents and API scenarios.{" "}
           {mode === "new" ? "Give your first one a name." : "Point DIT at a workspace folder you already have."}
         </p>
-        {mode === "new" ? <NewWorkspaceForm root={root} footer={footer("Create workspace")} /> : null}
-        {mode === "add" ? <AddWorkspaceForm footer={footer("Add workspace")} /> : null}
+        {mode === "new" ? <NewWorkspaceForm root={root} canChoose={canChoose} footer={footer("Create workspace")} /> : null}
+        {mode === "add" ? <AddWorkspaceForm canChoose={canChoose} footer={footer("Add workspace")} /> : null}
       </div>
     </main>
   );
@@ -336,7 +391,12 @@ export function useWorkspaceSwitcher(): { items: MenuItem[]; dialogs: ReactNode 
   }, [data, current, queryClient]);
 
   const dialogs = data ? (
-    <WorkspaceDialogs dialog={dialog} root={data.root} onClose={() => setDialog(null)} />
+    <WorkspaceDialogs
+      dialog={dialog}
+      root={data.root}
+      canChoose={data.can_choose_folder}
+      onClose={() => setDialog(null)}
+    />
   ) : null;
   return { items, dialogs };
 }

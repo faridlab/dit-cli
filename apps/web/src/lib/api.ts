@@ -45,6 +45,8 @@ import type {
   ReleasePatchInput,
   FlowBoardDto,
   FlowSummaryDto,
+  FolderChosenDto,
+  FolderPurpose,
   WorkspaceAddedDto,
   WorkspaceCommentDto,
   WorkspacesDto,
@@ -473,9 +475,19 @@ export function listWorkspaces(): Promise<WorkspacesDto> {
   return send<WorkspacesDto>("/api/workspaces");
 }
 
-/** A new workspace is a name; the server picks the folder. */
-export function createWorkspace(name: string): Promise<WorkspacesDto> {
-  return send<WorkspacesDto>("/api/workspaces", { method: "POST", body: JSON.stringify({ name }) });
+/** A new workspace is a name; it is made under the default folder, or
+ *  under `at` when a folder was chosen. */
+export function createWorkspace(name: string, at?: string): Promise<WorkspacesDto> {
+  return send<WorkspacesDto>("/api/workspaces", { method: "POST", body: JSON.stringify(at ? { name, at } : { name }) });
+}
+
+/** Open the system's folder dialog on this machine (ADR 0030): the folder a
+ *  person picked, or null when they cancelled. */
+export function chooseFolder(purpose: FolderPurpose): Promise<FolderChosenDto> {
+  return send<FolderChosenDto>("/api/workspaces/choose-folder", {
+    method: "POST",
+    body: JSON.stringify({ purpose }),
+  });
 }
 
 /** Add a folder that already is a DIT workspace. */
