@@ -52,6 +52,9 @@ const ALLOWED: &[(&str, &[&str])] = &[
     // (DESIGN.md §6.5) would quietly die.
     ("dit-cli", &["dit-core", "dit-server"]),
     ("dit-server", &["dit-core"]),
+    // The menu bar app (ADR 0029) starts `dit ui` as a child process and
+    // reads the workspace list and the login item through the facade.
+    ("dit-tray", &["dit-core"]),
     ("dit-wasm", &["dit-model", "dit-parse", "dit-query"]),
 ];
 

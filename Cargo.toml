@@ -121,6 +121,12 @@ tar    = { version = "=0.4.46" }
 flate2 = { version = "=1.1.9" }
 sha2   = { version = "=0.10.9" }
 
+# The menu bar app (ADR 0029, DESIGN.md §9 risk 17): macOS-only GUI crates,
+# pinned to the newest releases honoring rust-version 1.82. Only dit-tray
+# sees them, and only on macOS.
+tray-icon = { version = "=0.24.2", default-features = false }
+tao       = { version = "=0.36.0", default-features = false }
+
 # Test-only, but declared here so every crate pins the same version.
 tempfile = "3"
 proptest = "1"

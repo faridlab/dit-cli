@@ -1,0 +1,25 @@
+[package]
+name    = "dit-tray"
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dit-core = { workspace = true }
+
+# The menu bar itself exists on macOS only (ADR 0029); elsewhere the binary
+# builds and says so, and Linux and Windows CI never need GTK.
+[target.'cfg(target_os = "macos")'.dependencies]
+tray-icon = { workspace = true }
+tao       = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[[bin]]
+name = "dit-tray"
+path = "src/main.rs"
