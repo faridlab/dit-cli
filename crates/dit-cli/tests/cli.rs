@@ -368,20 +368,22 @@ fn a_server_started_with_stop_with_parent_stops_when_its_parent_dies() {
     let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = probe.local_addr().unwrap().port();
     drop(probe);
-    // A parent that starts the server and dies a moment later.
-    let parent = Command::new("/bin/sh")
+    // A parent that starts the server and lives until the test closes its
+    // stdin — then dies, at a moment the test chooses rather than a guess.
+    let mut parent = Command::new("/bin/sh")
         .arg("-c")
         .arg(format!(
-            "\"$0\" ui --all --stop-with-parent --port {port} >/dev/null 2>&1 & sleep 2"
+            "\"$0\" ui --all --stop-with-parent --port {port} >/dev/null 2>&1 & read _"
         ))
         .arg(env!("CARGO_BIN_EXE_dit"))
         .current_dir(tmp.path())
         .env("XDG_CONFIG_HOME", config_home(tmp.path()))
         .env_remove("DIT_WORKSPACE")
+        .stdin(std::process::Stdio::piped())
         .spawn()
         .unwrap();
     let mut up = false;
-    for _ in 0..40 {
+    for _ in 0..200 {
         if http_get(port, "/api/workspaces", None).starts_with("HTTP/1.1 401") {
             up = true;
             break;
@@ -389,7 +391,7 @@ fn a_server_started_with_stop_with_parent_stops_when_its_parent_dies() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     assert!(up, "the server started");
-    let mut parent = parent;
+    drop(parent.stdin.take());
     parent.wait().unwrap();
     // Within a few seconds of the parent's death, the port is free.
     let mut gone = false;
