@@ -1765,6 +1765,42 @@ pub struct DocEntryDto {
     pub bytes: u64,
 }
 
+/// A kind of document a page can be made from (ADR 0031).
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct DocTemplateDto {
+    pub id: String,
+    pub name: String,
+    /// What the document answers, in a sentence.
+    pub summary: String,
+    /// Where a page of this kind is placed, e.g. `docs/business`.
+    pub folder: String,
+    pub built_in: bool,
+    /// The workspace's own `docs/.templates/<id>.md` replaces the built-in.
+    pub overridden: bool,
+}
+
+impl From<dit_core::DocTemplate> for DocTemplateDto {
+    fn from(t: dit_core::DocTemplate) -> Self {
+        DocTemplateDto {
+            id: t.id,
+            name: t.name,
+            summary: t.summary,
+            folder: t.folder,
+            built_in: t.built_in,
+            overridden: t.overridden,
+        }
+    }
+}
+
+/// Make a page from a document template.
+#[derive(Debug, Deserialize, TS)]
+#[ts(export)]
+pub struct NewDocFromTemplateDto {
+    pub kind: String,
+    pub title: String,
+}
+
 /// Where an uploaded picture landed (ADR 0026), and the relative link to
 /// write into the markdown that shows it.
 #[derive(Debug, Serialize, TS)]

@@ -1582,3 +1582,38 @@ async fn an_unknown_api_path_is_a_json_404_not_the_page() {
     assert_eq!(status, StatusCode::NOT_FOUND, "{text}");
     assert!(json["error"].is_string(), "{text}");
 }
+
+/// Document templates over the API (ADR 0031): the kinds, and a page made
+/// from one at its stage folder — never over an existing page.
+#[tokio::test]
+async fn a_page_is_made_from_a_template_and_an_existing_one_is_kept() {
+    let (app, _tmp) = test_app();
+    let (status, kinds, text) = req(&app, "GET", "/api/docs/templates", None).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let ids: Vec<&str> = kinds
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 11, "{ids:?}");
+    assert_eq!(ids[1], "prd");
+
+    let body = json!({ "kind": "prd", "title": "Checkout v2" });
+    let (status, page, text) =
+        req(&app, "POST", "/api/docs/from-template", Some(body.clone())).await;
+    assert_eq!(status, StatusCode::CREATED, "{text}");
+    assert_eq!(page["path"], "docs/business/checkout-v2.md");
+    assert!(page["body"].as_str().unwrap().contains("# Checkout v2"));
+
+    let (status, _, text) = req(&app, "POST", "/api/docs/from-template", Some(body)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{text}");
+    let (status, _, text) = req(
+        &app,
+        "POST",
+        "/api/docs/from-template",
+        Some(json!({ "kind": "memo", "title": "x" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{text}");
+}

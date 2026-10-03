@@ -129,6 +129,8 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/api/attachments/{*path}", get(get_attachment))
         .route("/api/docs", get(list_docs))
         .route("/api/docs/move", post(move_doc))
+        .route("/api/docs/templates", get(list_doc_templates))
+        .route("/api/docs/from-template", post(doc_from_template))
         .route(
             "/api/docs/{*path}",
             get(get_doc).put(put_doc).delete(delete_doc),
@@ -690,6 +692,38 @@ async fn move_doc(
     })
     .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_doc_templates(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<dto::DocTemplateDto>>, ApiError> {
+    let templates = read_dit(&state, |dit| {
+        dit.doc_templates()
+            .map(|all| all.into_iter().map(dto::DocTemplateDto::from).collect())
+            .map_err(ServerError::Dit)
+    })
+    .await?;
+    Ok(Json(templates))
+}
+
+/// Make a page from a template (ADR 0031) and answer it as written.
+async fn doc_from_template(
+    State(state): State<Arc<AppState>>,
+    Json(input): Json<dto::NewDocFromTemplateDto>,
+) -> Result<(StatusCode, Json<DocBodyDto>), ApiError> {
+    let me = state.me();
+    let page = write_dit(&state, move |dit| {
+        let mut tx = dit.transaction(&me).map_err(ServerError::Dit)?;
+        let path = tx
+            .write_doc_from_template(&input.kind, &input.title)
+            .map_err(ServerError::Dit)?;
+        tx.commit(&format!("dit docs new: {path}"))
+            .map_err(ServerError::Dit)?;
+        let body = dit.read_doc(&path).map_err(ServerError::Dit)?;
+        Ok(DocBodyDto { path, body })
+    })
+    .await?;
+    Ok((StatusCode::CREATED, Json(page)))
 }
 
 async fn list_comments(
