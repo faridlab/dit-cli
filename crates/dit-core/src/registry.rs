@@ -45,7 +45,7 @@ pub fn default_workspace_root() -> Option<PathBuf> {
     })
 }
 
-fn home() -> Option<PathBuf> {
+pub(crate) fn home() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .filter(|v| !v.is_empty())

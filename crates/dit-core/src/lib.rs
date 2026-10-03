@@ -17,6 +17,7 @@ mod agent;
 mod attachment;
 pub mod board;
 pub mod code;
+pub mod login_item;
 pub mod registry;
 pub use code::{
     ApiCall, ApiOperation, ApiReport, CodeGraph, CodeNeighbour, CodeNeighbourhood, CodeOverview,
@@ -78,6 +79,7 @@ pub use flow::{
     EdgeDisposition, FlowBoard, FlowClaim, FlowEdge, FlowLane, FlowNode, FlowOutsideBlocker,
     FlowSummary,
 };
+pub use login_item::{LoginItem, LOGIN_ITEM_LABEL};
 pub use morse::{morse_selector, morse_value_from_json, morse_value_to_json};
 pub use morse::{
     EnvEdit, EnvImported, ImportOutcome, ImportSource, LastRun, MorseEnvView, MorseEnvsView,
