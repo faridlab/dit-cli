@@ -108,13 +108,10 @@ fn removing_a_workspace_leaves_its_files_and_moves_the_default() {
         "the default falls back to what is left"
     );
     assert!(acme.exists());
-    assert!(matches!(
-        registry.remove("nope"),
-        Err(DitError::NotFound(_))
-    ));
+    assert!(matches!(registry.remove("nope"), Err(DitError::Missing(_))));
     assert!(matches!(
         registry.set_default("nope"),
-        Err(DitError::NotFound(_))
+        Err(DitError::Missing(_))
     ));
 }
 
@@ -142,10 +139,13 @@ fn a_workspace_is_named_by_flag_then_environment_then_nothing() {
         registry.resolve(None, None).unwrap().is_none(),
         "nothing named: the directory decides"
     );
-    assert!(matches!(
-        registry.resolve(Some("ghost"), None),
-        Err(DitError::NotFound(_))
-    ));
+    let ghost = registry.resolve(Some("ghost"), None).unwrap_err();
+    assert!(matches!(ghost, DitError::Missing(_)), "{ghost:?}");
+    // A workspace is not an issue, and the message must not say it is.
+    assert!(
+        ghost.to_string().starts_with("no workspace `ghost`"),
+        "{ghost}"
+    );
 }
 
 #[test]

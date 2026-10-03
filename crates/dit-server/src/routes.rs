@@ -220,6 +220,7 @@ impl From<ServerError> for ApiError {
             // A missing issue is the request naming something that isn't
             // there — the same 404 the resolver produces directly.
             ServerError::Dit(DitError::NotFound(m)) => ApiError::not_found(m),
+            ServerError::Dit(err @ DitError::Missing(_)) => ApiError::not_found(err.to_string()),
             // A reference matching several issues (ADR 0018): the client
             // must restate it; the candidate list rides the message.
             ServerError::Dit(err @ DitError::Ambiguous { .. }) => ApiError {

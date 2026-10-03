@@ -158,7 +158,7 @@ impl Registry {
             return Ok(None);
         };
         self.get(name).map(Some).ok_or_else(|| {
-            DitError::NotFound(format!(
+            DitError::Missing(format!(
                 "workspace `{name}` — `dit workspace list` shows the ones on this machine"
             ))
         })
@@ -233,7 +233,7 @@ impl Registry {
         let before = self.workspaces.len();
         self.workspaces.retain(|w| w.name != name);
         if self.workspaces.len() == before {
-            return Err(DitError::NotFound(format!("workspace `{name}`")));
+            return Err(DitError::Missing(format!("workspace `{name}`")));
         }
         if self.default.as_deref() == Some(name) {
             self.default = None;
@@ -243,7 +243,7 @@ impl Registry {
 
     pub fn set_default(&mut self, name: &str) -> Result<(), DitError> {
         if self.get(name).is_none() {
-            return Err(DitError::NotFound(format!("workspace `{name}`")));
+            return Err(DitError::Missing(format!("workspace `{name}`")));
         }
         self.default = Some(name.to_owned());
         self.save()

@@ -693,7 +693,7 @@ impl Dit {
             .code_maps()?
             .into_iter()
             .find(|m| m.map == map)
-            .ok_or_else(|| DitError::NotFound(format!("map `{map}`")))?;
+            .ok_or_else(|| DitError::Missing(format!("map `{map}`")))?;
         let parsed = dit_parse::codemap::parse_code_map(&stored.body)
             .map_err(|e| DitError::Refuse(format!("map `{map}`: {e}")))?;
         // Confirming says "this map holds"; a map naming a path that is gone
@@ -949,8 +949,8 @@ impl Dit {
         let mut near = self.index.code_files_like(name, 1)?;
         match near.pop() {
             Some((root, path)) => Ok(Located::File(root, path)),
-            None => Err(DitError::NotFound(format!(
-                "`{name}` names no indexed file or symbol — run `dit code where {name}`"
+            None => Err(DitError::Missing(format!(
+                "indexed file or symbol named `{name}` — run `dit code where {name}`"
             ))),
         }
     }

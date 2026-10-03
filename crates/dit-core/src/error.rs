@@ -34,6 +34,11 @@ pub enum DitError {
     /// "you asked for something that isn't there" signal (404, exit 2).
     #[error("no issue matches `{0}`")]
     NotFound(String),
+    /// The caller named something other than an issue that is not there —
+    /// a workspace, a page, a Morse scenario. The string reads after "no"
+    /// (`workspace `ghost``). Delivery treats it exactly as `NotFound`.
+    #[error("no {0}")]
+    Missing(String),
     /// The reference matches more than one issue (ADR 0018). Duplicate
     /// numbers exist in real workspaces; acting on a silently-chosen first
     /// hit is a data-loss class of bug, so the caller must disambiguate.

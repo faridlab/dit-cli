@@ -1083,7 +1083,8 @@ fn a_deleted_doc_disappears_in_one_commit() {
 
     assert!(dit.list_docs().is_empty());
     let err = dit.read_doc("notes/scratch.md").unwrap_err();
-    assert!(matches!(err, DitError::NotFound(_)), "{err}");
+    assert!(matches!(err, DitError::Missing(_)), "{err}");
+    assert_eq!(err.to_string(), "no page `notes/scratch.md`");
     assert!(!tmp.path().join("notes/scratch.md").exists());
 }
 
@@ -1117,7 +1118,7 @@ body text
     );
     assert!(matches!(
         dit.read_doc("docs/flows/auth.md").unwrap_err(),
-        DitError::NotFound(_)
+        DitError::Missing(_)
     ));
     let listed = dit.list_docs();
     let paths: Vec<&str> = listed.iter().map(|d| d.path.as_str()).collect();
@@ -1192,7 +1193,7 @@ fn moving_a_missing_doc_is_not_found_and_a_self_move_is_a_no_op() {
     let mut tx = dit.transaction("farid").unwrap();
     assert!(matches!(
         tx.move_doc("docs/ghost.md", "notes/ghost.md").unwrap_err(),
-        DitError::NotFound(_)
+        DitError::Missing(_)
     ));
     tx.abort();
 
@@ -1453,7 +1454,7 @@ fn a_workspace_without_releases_answers_with_an_empty_list() {
     // A full rebuild over a tree with no `.dit/releases/` is fine too.
     dit.reindex(ReindexMode::All).unwrap();
     assert!(dit.releases().unwrap().is_empty());
-    // And patching a plan that does not exist is NotFound, not a crash.
+    // And patching a plan that does not exist is Missing, not a crash.
     let mut tx = dit.transaction("farid").unwrap();
     let err = tx
         .set_release(
@@ -1464,7 +1465,7 @@ fn a_workspace_without_releases_answers_with_an_empty_list() {
             },
         )
         .unwrap_err();
-    assert!(matches!(err, DitError::NotFound(_)), "{err}");
+    assert!(matches!(err, DitError::Missing(_)), "{err}");
 }
 
 #[test]
@@ -5081,7 +5082,7 @@ fn reading_an_attachment_stays_inside_the_sandbox_and_trusts_bytes_not_names() {
     ));
     assert!(matches!(
         dit.read_attachment("docs/attachments/missing-0a1b2c3d.png"),
-        Err(dit_core::DitError::NotFound(_))
+        Err(dit_core::DitError::Missing(_))
     ));
 }
 
@@ -5318,7 +5319,7 @@ fn steps_are_moved_duplicated_renamed_and_deleted_one_commit_each() {
         assert!(
             matches!(
                 err,
-                dit_core::DitError::Refuse(_) | dit_core::DitError::NotFound(_)
+                dit_core::DitError::Refuse(_) | dit_core::DitError::Missing(_)
             ),
             "{what}: {err}"
         );
@@ -5364,7 +5365,7 @@ fn a_scenario_is_renamed_or_deleted_unless_an_issue_names_it() {
     .unwrap();
     assert!(matches!(
         dit.morse_scenario("register"),
-        Err(dit_core::DitError::NotFound(_))
+        Err(dit_core::DitError::Missing(_))
     ));
     assert_eq!(step_ids(&dit, "sign-up").len(), 3);
 
@@ -5400,7 +5401,7 @@ fn a_scenario_is_renamed_or_deleted_unless_an_issue_names_it() {
     dit.morse_delete_scenario("sign-up", "farid").unwrap();
     assert!(matches!(
         dit.morse_scenario("sign-up"),
-        Err(dit_core::DitError::NotFound(_))
+        Err(dit_core::DitError::Missing(_))
     ));
     let doc = dit.read_doc("docs/api/register.md").unwrap();
     assert_eq!(
@@ -5556,7 +5557,7 @@ fn an_environment_edit_refuses_addresses_and_names_that_would_mislead() {
     assert!(matches!(err, dit_core::DitError::Refuse(_)), "{err}");
     assert!(matches!(
         dit.morse_edit_env("missing", EnvEdit::Delete),
-        Err(dit_core::DitError::NotFound(_))
+        Err(dit_core::DitError::Missing(_))
     ));
 }
 

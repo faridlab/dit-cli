@@ -345,7 +345,9 @@ impl IntoResponse for HubError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
             HubError::NotFound(m) => (StatusCode::NOT_FOUND, m),
-            HubError::Dit(DitError::NotFound(m)) => (StatusCode::NOT_FOUND, format!("no {m}")),
+            HubError::Dit(e @ (DitError::NotFound(_) | DitError::Missing(_))) => {
+                (StatusCode::NOT_FOUND, e.to_string())
+            }
             HubError::Dit(e @ DitError::Refuse(_)) => (StatusCode::BAD_REQUEST, e.to_string()),
             HubError::Dit(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
             HubError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),

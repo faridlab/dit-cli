@@ -388,7 +388,7 @@ impl Dit {
     /// Take a spec off the list — unless a scenario stands on it.
     pub fn morse_unregister_spec(&mut self, id: &str, author: &str) -> Result<(), DitError> {
         if !self.config.specs.iter().any(|e| e.id == id) {
-            return Err(DitError::NotFound(format!("spec `{id}`")));
+            return Err(DitError::Missing(format!("spec `{id}`")));
         }
         let using: Vec<String> = self
             .index
@@ -957,14 +957,14 @@ impl Dit {
                 let env = local
                     .envs
                     .remove(name)
-                    .ok_or_else(|| DitError::NotFound(format!("environment `{name}`")))?;
+                    .ok_or_else(|| DitError::Missing(format!("environment `{name}`")))?;
                 local.envs.insert(to, env);
             }
             EnvEdit::Delete => {
                 local
                     .envs
                     .remove(name)
-                    .ok_or_else(|| DitError::NotFound(format!("environment `{name}`")))?;
+                    .ok_or_else(|| DitError::Missing(format!("environment `{name}`")))?;
             }
         }
         // Belt and braces: whatever happened above, trust did not change.
@@ -990,7 +990,7 @@ impl Dit {
             .morse_scenarios()?
             .into_iter()
             .find(|s| s.scenario == scenario)
-            .ok_or_else(|| DitError::NotFound(format!("scenario `{scenario}`")))
+            .ok_or_else(|| DitError::Missing(format!("scenario `{scenario}`")))
     }
 
     fn spec_entry(&self, id: &str) -> Result<SpecEntry, DitError> {
@@ -1509,7 +1509,7 @@ impl Dit {
         self.rewrite_scenario(scenario, author, &message, move |s| {
             let index_of = |s: &MorseScenario, id: &str| {
                 s.steps.iter().position(|x| x.id == id).ok_or_else(|| {
-                    DitError::NotFound(format!("step `{id}` of scenario `{}`", s.scenario))
+                    DitError::Missing(format!("step `{id}` of scenario `{}`", s.scenario))
                 })
             };
             let free = |s: &MorseScenario, id: &str| -> Result<(), DitError> {
@@ -1704,7 +1704,7 @@ impl Dit {
             .map_err(|e| DitError::Refuse(format!("scenario `{name}`: {e}")))?;
         let document = match self.read_doc(doc) {
             Ok(text) => text,
-            Err(DitError::NotFound(_)) => format!("# {name}\n"),
+            Err(DitError::Missing(_)) => format!("# {name}\n"),
             Err(other) => return Err(other),
         };
         let mut tx = self.transaction(author)?;
@@ -1750,7 +1750,7 @@ impl Dit {
             .collect();
         let mut document = match self.read_doc(doc) {
             Ok(text) => text,
-            Err(DitError::NotFound(_)) => {
+            Err(DitError::Missing(_)) => {
                 let title = doc
                     .rsplit('/')
                     .next()

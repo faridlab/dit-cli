@@ -92,7 +92,7 @@ impl Dit {
         let bytes = match std::fs::read(&file) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(DitError::NotFound(path.as_str().to_owned()))
+                return Err(DitError::Missing(format!("attachment `{}`", path.as_str())))
             }
             Err(e) => return Err(e.into()),
         };

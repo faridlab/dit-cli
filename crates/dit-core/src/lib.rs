@@ -1633,7 +1633,7 @@ impl Dit {
         match std::fs::read_to_string(&file) {
             Ok(text) => Ok(text),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Err(DitError::NotFound(doc_path.as_str().to_owned()))
+                Err(DitError::Missing(format!("page `{}`", doc_path.as_str())))
             }
             Err(e) => Err(e.into()),
         }
@@ -2263,7 +2263,9 @@ impl<'a> Transaction<'a> {
     pub fn set_release(&mut self, version: &str, patch: ReleasePatch) -> Result<(), DitError> {
         match self.store_tx.set_release(version, &patch) {
             Ok(()) => Ok(()),
-            Err(dit_store::StoreError::NotFound(name)) => Err(DitError::NotFound(name)),
+            Err(dit_store::StoreError::NotFound(name)) => {
+                Err(DitError::Missing(format!("release plan `{name}`")))
+            }
             Err(e) => Err(e.into()),
         }
     }
@@ -2277,12 +2279,14 @@ impl<'a> Transaction<'a> {
     }
 
     /// Delete a doc page. Mapping the store's "not there" onto the facade's
-    /// `NotFound` keeps delivery able to 404 uniformly.
+    /// `Missing` keeps delivery able to 404 uniformly.
     pub fn delete_doc(&mut self, path: &str) -> Result<(), DitError> {
         let doc_path = DocPath::parse(path)?;
         match self.store_tx.remove_doc(&doc_path) {
             Ok(()) => Ok(()),
-            Err(dit_store::StoreError::NotFound(name)) => Err(DitError::NotFound(name)),
+            Err(dit_store::StoreError::NotFound(name)) => {
+                Err(DitError::Missing(format!("page `{name}`")))
+            }
             Err(e) => Err(e.into()),
         }
     }
@@ -2307,7 +2311,9 @@ impl<'a> Transaction<'a> {
         let to_path = DocPath::parse(to)?;
         match self.store_tx.move_doc(&from_path, &to_path) {
             Ok(()) => Ok(()),
-            Err(dit_store::StoreError::NotFound(name)) => Err(DitError::NotFound(name)),
+            Err(dit_store::StoreError::NotFound(name)) => {
+                Err(DitError::Missing(format!("page `{name}`")))
+            }
             Err(dit_store::StoreError::Conflict(name)) => Err(DitError::Refuse(format!(
                 "a page already exists at `{name}` — nothing was moved"
             ))),
