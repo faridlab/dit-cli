@@ -152,12 +152,17 @@ fn a_workspace_is_named_by_flag_then_environment_then_nothing() {
 fn a_path_with_quotes_and_spaces_survives_the_file() {
     let tmp = tempfile::tempdir().unwrap();
     let config = tmp.path().join("config");
-    let odd = tmp.path().join("it's a \"project\" dir");
-    std::fs::create_dir_all(&odd).unwrap();
     let mut registry = Registry::load(&config).unwrap();
-    let name = registry.add(Some("odd"), &odd, false);
-    // Both kinds of quote cannot be written faithfully; say so rather than corrupt.
-    assert!(matches!(name, Err(DitError::Refuse(_))));
+    // Both kinds of quote cannot be written faithfully; say so rather than
+    // corrupt. Only where such a folder can exist: Windows forbids `"` in a
+    // file name.
+    #[cfg(unix)]
+    {
+        let odd = tmp.path().join("it's a \"project\" dir");
+        std::fs::create_dir_all(&odd).unwrap();
+        let name = registry.add(Some("odd"), &odd, false);
+        assert!(matches!(name, Err(DitError::Refuse(_))));
+    }
     let fine = tmp.path().join("it's fine");
     std::fs::create_dir_all(&fine).unwrap();
     registry.add(Some("fine"), &fine, false).unwrap();

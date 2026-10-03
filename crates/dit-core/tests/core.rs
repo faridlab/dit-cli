@@ -5883,6 +5883,8 @@ fn a_committed_openapi_file_is_registered_as_one_commit_and_its_operations_appea
 /// failed ("Author identity unknown") was reported as failed, rolled back on
 /// disk, but stayed staged; the next comment's commit swept it in, and the
 /// working tree no longer matched HEAD.
+// Unix only: the refusing hook needs an executable bit.
+#[cfg(unix)]
 #[test]
 fn a_failed_commit_leaves_nothing_staged_for_the_next_one() {
     use std::os::unix::fs::PermissionsExt;
