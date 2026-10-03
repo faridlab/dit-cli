@@ -4,4 +4,9 @@ export type FolderChosenDto = {
 /**
  * `null` when the person cancelled.
  */
-path: string | null, };
+path: string | null, 
+/**
+ * The chosen folder already is a DIT workspace — "New workspace" must
+ * not make another inside it; the page offers to add it instead.
+ */
+is_workspace: boolean, };

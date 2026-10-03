@@ -5,7 +5,7 @@
 
 import { useMemo, useState, type ReactNode } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { AlertTriangle, Check, FolderPlus, Plus, Star, X } from "lucide-react";
+import { AlertTriangle, Check, FolderOpen, FolderPlus, Plus, Star, X } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
@@ -52,14 +52,15 @@ function Problem({ text }: { text: string | null }) {
 // ---------------------------------------------------------------------------
 
 /** "Choose folder…": the system's own dialog, opened by the local server
- *  (ADR 0030). Resolves to the folder picked, or null when cancelled. */
+ *  (ADR 0030). Hands over the folder picked and whether it already is a
+ *  DIT workspace; a cancelled dialog hands over nothing. */
 function useChooseFolder(purpose: FolderPurpose, onProblem: (text: string) => void) {
   const [choosing, setChoosing] = useState(false);
-  const choose = (onChosen: (path: string) => void) => {
+  const choose = (onChosen: (path: string, isWorkspace: boolean) => void) => {
     setChoosing(true);
     chooseFolder(purpose)
       .then((chosen) => {
-        if (chosen.path) onChosen(chosen.path);
+        if (chosen.path) onChosen(chosen.path, chosen.is_workspace);
       })
       .catch((e: unknown) => onProblem(message(e)))
       .finally(() => setChoosing(false));
@@ -73,21 +74,43 @@ type FormProps = {
   footer: (busy: boolean, ready: boolean) => ReactNode;
 };
 
+function ChooseButton({ choosing, onClick }: { choosing: boolean; onClick: () => void }) {
+  return (
+    <button type="button" className="mw-btn" disabled={choosing} onClick={onClick}>
+      <FolderOpen className="i" aria-hidden />
+      {choosing ? "Choosing…" : "Choose folder…"}
+    </button>
+  );
+}
+
 function NewWorkspaceForm({ root, canChoose, footer }: FormProps & { root: string }) {
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   /** A chosen folder, or null for the default one. */
   const [at, setAt] = useState<string | null>(null);
+  /** The chosen folder already is a workspace: nothing is made inside it. */
+  const [atIsWorkspace, setAtIsWorkspace] = useState(false);
   const { choosing, choose } = useChooseFolder("new", setProblem);
   const name = toWorkspaceName(typed);
   const location = at ?? root;
   const submit = () => {
-    if (!name) return;
+    if (!name || atIsWorkspace) return;
     setBusy(true);
     setProblem(null);
     createWorkspace(name, at ?? undefined)
       .then(() => openWorkspace(name))
+      .catch((e: unknown) => {
+        setProblem(message(e));
+        setBusy(false);
+      });
+  };
+  const addInstead = () => {
+    if (!at) return;
+    setBusy(true);
+    setProblem(null);
+    addWorkspace(at)
+      .then((added) => openWorkspace(added.name))
       .catch((e: unknown) => {
         setProblem(message(e));
         setBusy(false);
@@ -113,33 +136,60 @@ function NewWorkspaceForm({ root, canChoose, footer }: FormProps & { root: strin
           />
         </div>
         <div className="mw-fld">
-          <span className="ws-loc-label">Location</span>
-          <div className="ws-loc">
-            <code>{location}</code>
-            {canChoose ? (
-              <button type="button" className="mw-btn" disabled={choosing} onClick={() => choose(setAt)}>
-                {choosing ? "Choosing…" : "Choose folder…"}
-              </button>
-            ) : null}
+          <div className="ws-loc-head">
+            <span className="ws-loc-label">Location</span>
             {at !== null ? (
-              <button type="button" className="mw-btn" onClick={() => setAt(null)}>
-                Use default
+              <button
+                type="button"
+                className="ws-link"
+                onClick={() => {
+                  setAt(null);
+                  setAtIsWorkspace(false);
+                }}
+              >
+                Use the default folder
               </button>
             ) : null}
           </div>
-          <p className="mw-hint" style={{ margin: 0 }}>
-            {name ? (
-              <>
-                Made as <code>{`${location}/${name}`}</code> — nothing to set up.
-              </>
-            ) : (
-              <>A folder named after the workspace is made here.</>
-            )}
-          </p>
+          <div className="ws-loc">
+            <code>{location}</code>
+            {canChoose ? (
+              <ChooseButton
+                choosing={choosing}
+                onClick={() =>
+                  choose((path, isWorkspace) => {
+                    setAt(path);
+                    setAtIsWorkspace(isWorkspace);
+                  })
+                }
+              />
+            ) : null}
+          </div>
+          {atIsWorkspace ? (
+            <div className="ws-note">
+              <span>
+                This folder already is a DIT workspace. A new one is not made inside another — add this one to
+                the list instead, or choose a different folder.
+              </span>
+              <button type="button" className="mw-btn pri" disabled={busy} onClick={addInstead}>
+                Add this workspace
+              </button>
+            </div>
+          ) : (
+            <p className="mw-hint" style={{ margin: 0 }}>
+              {name ? (
+                <>
+                  Made as <code>{`${location}/${name}`}</code> — nothing to set up.
+                </>
+              ) : (
+                <>A folder named after the workspace is made here.</>
+              )}
+            </p>
+          )}
         </div>
         <Problem text={problem} />
       </div>
-      {footer(busy || choosing, name !== "")}
+      {footer(busy || choosing, name !== "" && !atIsWorkspace)}
     </form>
   );
 }
@@ -148,6 +198,8 @@ function AddWorkspaceForm({ canChoose, footer }: FormProps) {
   const [path, setPath] = useState("");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  /** What the dialog said about the folder it handed over; null once typed. */
+  const [isWorkspace, setIsWorkspace] = useState<boolean | null>(null);
   const { choosing, choose } = useChooseFolder("add", setProblem);
   const submit = () => {
     if (!path.trim()) return;
@@ -177,22 +229,41 @@ function AddWorkspaceForm({ canChoose, footer }: FormProps) {
               autoFocus
               spellCheck={false}
               placeholder="/Users/you/Documents/DIT/acme"
-              onChange={(e) => setPath(e.target.value)}
+              onChange={(e) => {
+                setPath(e.target.value);
+                setIsWorkspace(null);
+              }}
             />
             {canChoose ? (
-              <button type="button" className="mw-btn" disabled={choosing} onClick={() => choose(setPath)}>
-                {choosing ? "Choosing…" : "Choose folder…"}
-              </button>
+              <ChooseButton
+                choosing={choosing}
+                onClick={() =>
+                  choose((chosen, workspace) => {
+                    setPath(chosen);
+                    setIsWorkspace(workspace);
+                  })
+                }
+              />
             ) : null}
           </div>
-          <p className="mw-hint" style={{ margin: 0 }}>
-            A folder that already is a DIT workspace — one made on another machine, or moved here. To track a code
-            repository that is not one yet, run <code>dit workspace add &lt;folder&gt;</code> in a terminal.
-          </p>
+          {isWorkspace === false ? (
+            <div className="mw-errline">
+              <AlertTriangle className="i" aria-hidden />
+              <span>
+                This folder is not a DIT workspace. Make a new one with New workspace, or add a code repository from a
+                terminal with <code>dit workspace add &lt;folder&gt;</code>.
+              </span>
+            </div>
+          ) : (
+            <p className="mw-hint" style={{ margin: 0 }}>
+              A folder that already is a DIT workspace — one made on another machine, or moved here. To track a code
+              repository that is not one yet, run <code>dit workspace add &lt;folder&gt;</code> in a terminal.
+            </p>
+          )}
         </div>
         <Problem text={problem} />
       </div>
-      {footer(busy || choosing, path.trim() !== "")}
+      {footer(busy || choosing, path.trim() !== "" && isWorkspace !== false)}
     </form>
   );
 }
