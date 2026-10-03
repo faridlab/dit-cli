@@ -1206,6 +1206,8 @@ Two consequences that need designing:
 If a demand for a desktop app shows up later, its shape is a **thin shell that runs `dit-server` as a sidecar and then points a webview at localhost**. One frontend, one API, zero divergence. What you gain: global shortcuts, a tray icon, file associations, and a one-click installer. What you pay: everything in reasons #2 and #3 above.
 
 Do not build both at the same time. Two API surfaces (`invoke()` and `fetch()`) are two places where bugs can diverge.
+
+**Built, as the smallest version of that shell (ADR 0029):** `dit-tray`, a macOS menu bar app with no window. It runs `dit ui --all` as a child process and opens the browser — no webview, so none of reasons #2 and #3 come back. It ships as `DIT.app` from our own Homebrew tap; without an Apple Developer account the cask clears the quarantine attribute on its own bundle, a cost ADR 0029 records until notarization exists.
 - **Tables**: TanStack Table + virtualization (`@tanstack/react-virtual`) — 50,000 rows still at 60fps
 - **Kanban**: `dnd-kit`
 - **Editor**: TipTap (block editor) + CodeMirror 6 (source mode & blame gutter) — see **§12** for the full analysis, including why markdown serialization must be owned by Rust
@@ -1554,6 +1556,7 @@ This is the section that usually gets skipped in a design doc and becomes the re
 | 14 | The editor's license changes tier (core features become paid) | Low | **TipTap decided** (§12.4), MIT core, and its Pro features are irrelevant because git already provides them. The bridge lives on the Rust side, so swapping the editor library does not touch the data format. |
 | 15 | Mode A doubles the contributor setup steps (two clones, two links) | Medium | `dit init --track` is idempotent; `dit doctor` detects a missing link and walks you through fixing it; a `README.md` at the root of the DIT repo explains the structure. |
 | 16 | The code map (ADR 0025) takes a C-backed, pre-1.0 parser: `tree-sitter` `=0.25.10`, `tree-sitter-language` `=0.1.5`, `tree-sitter-typescript` `=0.23.2`, `tree-sitter-rust` `=0.24.2`, `tree-sitter-kotlin-ng` `=1.1.0` (all MIT) | Medium | Pinned exactly — 0.25.10 is the newest tree-sitter honoring the workspace's rust-version (0.26+ needs 1.90), and `tree-sitter-language` is pinned below the grammars' own range for the same reason. Confined to the `dit-code` adapter, so the wasm-clean core never links it (I4). A grammar that stops building costs that language its symbols and edges, not the index: files stay indexed. |
+| 17 | The menu bar app (ADR 0029) takes two pre-1.0 GUI crates: `tray-icon` `=0.24.2` (MIT OR Apache-2.0) and `tao` `=0.36.0` (Apache-2.0) | Low | Pinned exactly — the newest releases honoring the workspace's rust-version 1.82 (`tray-icon` 0.25+ needs 1.90, `tao` 0.37 needs 1.85). macOS-only dependencies of `dit-tray`, a delivery crate nothing depends on: a release that breaks costs the menu bar icon, never the CLI, the server or a workspace. |
 
 Risk #0 is the only one that can destroy user data. Risk #7 and #9 are the ones most likely to kill this project, and neither is a technical problem.
 
