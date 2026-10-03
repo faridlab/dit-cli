@@ -100,6 +100,11 @@ enum Command {
         /// its code map.
         #[arg(long)]
         all: bool,
+        /// Stop when the process that started this one exits — the menu
+        /// bar app passes it, so a server never outlives the app, orphaned
+        /// and holding the port.
+        #[arg(long, hide = true)]
+        stop_with_parent: bool,
     },
     /// Register this binary as the repository's merge driver.
     InstallDriver,
@@ -869,7 +874,13 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
                 Ok(ExitCode::SUCCESS)
             }
         }
-        Command::Ui { host, port, all } => {
+        Command::Ui {
+            host,
+            port,
+            all,
+            stop_with_parent,
+        } => {
+            STOP_WITH_PARENT.store(stop_with_parent, std::sync::atomic::Ordering::Relaxed);
             let dir = workspace_dir()?;
             let display_host = if host == "0.0.0.0" {
                 "127.0.0.1".to_owned()
@@ -2216,6 +2227,26 @@ fn serve_hub(
     )
 }
 
+/// `dit ui --stop-with-parent`: set once, read when serving starts.
+static STOP_WITH_PARENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Resolves once the process that started this one has exited — on Unix a
+/// process whose parent dies is handed to another, so its parent id changes.
+async fn parent_gone() {
+    #[cfg(unix)]
+    {
+        let started_by = std::os::unix::process::parent_id();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            if std::os::unix::process::parent_id() != started_by {
+                return;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    std::future::pending::<()>().await;
+}
+
 /// Bind, announce, open the browser at `path`, and serve until stopped.
 fn serve_ui(
     app: dit_server::Router,
@@ -2230,11 +2261,27 @@ fn serve_ui(
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(dit_server::serve(app, host, port, move || {
-            println!("DIT listening on {base}");
-            println!("open: {url}");
-            open_browser(&url);
-        }))
+        .block_on(dit_server::serve_until(
+            app,
+            host.to_owned(),
+            port,
+            move || {
+                println!("DIT listening on {base}");
+                println!("open: {url}");
+                open_browser(&url);
+            },
+            async {
+                if STOP_WITH_PARENT.load(std::sync::atomic::Ordering::Relaxed) {
+                    tokio::select! {
+                        () = dit_server::stop_signal() => {}
+                        () = parent_gone() => {}
+                    }
+                } else {
+                    dit_server::stop_signal().await;
+                }
+            },
+            dit_server::STOP_GRACE,
+        ))
         .map_err(|e| {
             // A taken port is almost always another dit ui or dit-server
             // still holding it; say so instead of a bare OS error.

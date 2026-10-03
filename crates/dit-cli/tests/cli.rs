@@ -359,6 +359,50 @@ fn ui_all_serves_every_workspace_even_inside_a_plain_repository() {
     assert!(status.starts_with("HTTP/1.1 200"), "{status}");
 }
 
+/// The menu bar app runs `dit ui --all --stop-with-parent`: if the app is
+/// killed, the server must not live on, orphaned, holding the port.
+#[test]
+#[cfg(unix)]
+fn a_server_started_with_stop_with_parent_stops_when_its_parent_dies() {
+    let tmp = tempfile::tempdir().unwrap();
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+    // A parent that starts the server and dies a moment later.
+    let parent = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!(
+            "\"$0\" ui --all --stop-with-parent --port {port} >/dev/null 2>&1 & sleep 2"
+        ))
+        .arg(env!("CARGO_BIN_EXE_dit"))
+        .current_dir(tmp.path())
+        .env("XDG_CONFIG_HOME", config_home(tmp.path()))
+        .env_remove("DIT_WORKSPACE")
+        .spawn()
+        .unwrap();
+    let mut up = false;
+    for _ in 0..40 {
+        if http_get(port, "/api/workspaces", None).starts_with("HTTP/1.1 401") {
+            up = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(up, "the server started");
+    let mut parent = parent;
+    parent.wait().unwrap();
+    // Within a few seconds of the parent's death, the port is free.
+    let mut gone = false;
+    for _ in 0..80 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+            gone = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(gone, "the server outlived its parent on port {port}");
+}
+
 /// Start plain `dit ui` in a repository that is not a workspace, and wait
 /// for its code map to answer.
 fn start_ui_code_map(cwd: &Path) -> (std::process::Child, u16) {
