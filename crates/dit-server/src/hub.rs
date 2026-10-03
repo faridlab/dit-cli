@@ -141,11 +141,12 @@ pub fn hub_app(hub: Arc<Hub>) -> Router {
         .route("/api/workspaces/{name}", delete(remove_workspace))
         .route("/api/workspaces/{name}/default", post(set_default))
         .route("/api/{*rest}", any(no_workspace_here))
-        .route("/w/{name}", get(to_workspace_root))
-        .route("/w/{name}/", any(dispatch_root))
-        .route("/w/{name}/{*rest}", any(dispatch))
         .route("/", get(root))
-        .fallback(crate::routes::serve_uri)
+        // `/w/<name>/…` is matched by hand in the fallback, not as a route:
+        // a route's path parameters ride along in the request's extensions,
+        // and the workspace's router would count `name` and `rest` with its
+        // own — every handler taking a path parameter answered 500.
+        .fallback(dispatch)
         .layer(axum::middleware::from_fn_with_state(
             guard.clone(),
             crate::security::require_token,
@@ -296,24 +297,18 @@ async fn no_workspace_here() -> HubError {
     )
 }
 
-async fn to_workspace_root(Path(name): Path<String>) -> Redirect {
-    Redirect::permanent(&format!("/w/{name}/"))
-}
-
-async fn dispatch_root(
-    State(hub): State<Arc<Hub>>,
-    Path(name): Path<String>,
-    req: Request<Body>,
-) -> Response {
-    forward(&hub, &name, "", req).await
-}
-
-async fn dispatch(
-    State(hub): State<Arc<Hub>>,
-    Path((name, rest)): Path<(String, String)>,
-    req: Request<Body>,
-) -> Response {
-    forward(&hub, &name, &rest, req).await
+/// `/w/<name>/<rest>` goes to workspace `name` as `/<rest>`; `/w/<name>`
+/// gains its slash; anything else is the shell's static files.
+async fn dispatch(State(hub): State<Arc<Hub>>, req: Request<Body>) -> Response {
+    let path = req.uri().path().to_owned();
+    let Some(after) = path.strip_prefix("/w/") else {
+        return crate::routes::serve_uri(req.uri().clone()).await;
+    };
+    match after.split_once('/') {
+        Some((name, rest)) if !name.is_empty() => forward(&hub, name, rest, req).await,
+        None if !after.is_empty() => Redirect::permanent(&format!("/w/{after}/")).into_response(),
+        _ => crate::routes::serve_uri(req.uri().clone()).await,
+    }
 }
 
 /// Hand a request to workspace `name` as if it had arrived at `/<rest>`.

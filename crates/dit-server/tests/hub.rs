@@ -214,3 +214,31 @@ async fn an_api_path_outside_every_workspace_is_a_json_404_not_the_page() {
         "{body}"
     );
 }
+
+/// A forwarded request must not carry the hub's own path parameters
+/// (`name`, `rest`) into the workspace's router: there they were counted
+/// with the route's own, and every handler taking a path parameter — an
+/// issue, its comments, a page — answered 500.
+#[tokio::test]
+async fn routes_with_path_parameters_work_behind_the_prefix() {
+    let f = fixture();
+    let (status, created) = call(
+        &f.app,
+        "POST",
+        "/w/home/api/issues",
+        Some(json!({ "title": "Open me" })),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = created["id"].as_str().unwrap().to_owned();
+    for path in [
+        format!("/w/home/api/issues/{id}"),
+        format!("/w/home/api/issues/{id}/comments"),
+    ] {
+        let (status, body) = call(&f.app, "GET", &path, None, true).await;
+        assert_eq!(status, StatusCode::OK, "{path}: {body}");
+    }
+    let (status, body) = call(&f.app, "GET", "/w/home/api/issues/NOSUCHID", None, true).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+}
