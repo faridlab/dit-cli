@@ -94,6 +94,12 @@ enum Command {
         host: String,
         #[arg(long, default_value_t = 7700)]
         port: u16,
+        /// Serve every workspace on this machine and open the default,
+        /// whatever directory this runs in — how the menu bar app starts
+        /// DIT. Without it, a repository that is not a workspace opens as
+        /// its code map.
+        #[arg(long)]
+        all: bool,
     },
     /// Register this binary as the repository's merge driver.
     InstallDriver,
@@ -863,13 +869,26 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
                 Ok(ExitCode::SUCCESS)
             }
         }
-        Command::Ui { host, port } => {
+        Command::Ui { host, port, all } => {
             let dir = workspace_dir()?;
             let display_host = if host == "0.0.0.0" {
                 "127.0.0.1".to_owned()
             } else {
                 host.clone()
             };
+            if all {
+                let config = dit_core::config_dir().ok_or_else(|| {
+                    DitError::Refuse("there is no home folder to keep the workspace list in".into())
+                })?;
+                return serve_hub(
+                    &config,
+                    &host,
+                    &display_host,
+                    port,
+                    explicit.as_deref(),
+                    "/",
+                );
+            }
             // One server for every workspace on this machine (ADR 0028),
             // opened at the one asked for. A repository that is not a
             // workspace keeps its read-only code map, served alone (ADR 0025).

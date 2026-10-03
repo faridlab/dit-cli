@@ -264,12 +264,17 @@ fn reindex_rebuilds_after_the_cache_is_deleted() {
 /// unauthenticated request with 401 — the same gate the browser hits. The
 /// opener is skipped automatically because the test's stdout is a pipe.
 fn start_ui(cwd: &Path) -> (std::process::Child, u16) {
+    start_ui_with(cwd, &[])
+}
+
+fn start_ui_with(cwd: &Path, extra: &[&str]) -> (std::process::Child, u16) {
     // Reserve a free port, then hand it to the server.
     let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = probe.local_addr().unwrap().port();
     drop(probe);
     let mut child = command(cwd)
         .args(["ui", "--port", &port.to_string()])
+        .args(extra)
         .stdout(std::process::Stdio::null())
         .spawn()
         .unwrap();
@@ -312,6 +317,68 @@ fn ui_outside_a_workspace_serves_an_empty_list() {
     let _ = child.wait();
     assert!(list.starts_with("HTTP/1.1 200"), "{list}");
     assert!(list.contains("\"workspaces\":[]"), "{list}");
+}
+
+/// `dit ui --all` serves every workspace wherever it runs (ADR 0029): the
+/// menu bar app starts it from a home folder that may well be a git
+/// repository, which plain `dit ui` would open as that repository's code map.
+#[test]
+fn ui_all_serves_every_workspace_even_inside_a_plain_repository() {
+    let tmp = tempfile::tempdir().unwrap();
+    let code = tmp.path().join("dotfiles");
+    std::fs::create_dir_all(&code).unwrap();
+    assert!(Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&code)
+        .status()
+        .unwrap()
+        .success());
+    let at = tmp.path().join("DIT");
+    let made = dit(
+        &code,
+        &["workspace", "new", "acme", "--at", at.to_str().unwrap()],
+    );
+    assert!(made.status.success(), "{}", stderr(&made));
+    let token_file = config_home(&code).join("dit/server-token");
+
+    // Plain `dit ui` here is the repository's code map: no workspace list.
+    let (mut child, port) = start_ui_code_map(&code);
+    let token = std::fs::read_to_string(code.join(".dit/code/server-token")).unwrap_or_default();
+    let list = http_get(port, "/api/workspaces", Some(token.trim()));
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(list.starts_with("HTTP/1.1 404"), "{list}");
+
+    let (mut child, port) = start_ui_with(&code, &["--all"]);
+    let token = std::fs::read_to_string(&token_file).unwrap();
+    let list = http_get(port, "/api/workspaces", Some(token.trim()));
+    let status = http_get(port, "/w/acme/api/status", Some(token.trim()));
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(list.contains("\"name\":\"acme\""), "{list}");
+    assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+}
+
+/// Start plain `dit ui` in a repository that is not a workspace, and wait
+/// for its code map to answer.
+fn start_ui_code_map(cwd: &Path) -> (std::process::Child, u16) {
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+    let mut child = command(cwd)
+        .args(["ui", "--port", &port.to_string()])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    for _ in 0..100 {
+        if http_get(port, "/api/status", None).starts_with("HTTP/1.1 401") {
+            return (child, port);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!("`dit ui` never answered on port {port}");
 }
 
 /// `dit ui` inside a workspace registers it and serves it at `/w/<name>/`,
