@@ -13,6 +13,7 @@
 
 pub mod config;
 pub mod dto;
+pub mod folder_dialog;
 pub mod hub;
 pub mod routes;
 pub mod security;
@@ -20,6 +21,7 @@ pub mod state;
 
 /// The router `serve` takes, so a caller need not depend on axum itself.
 pub use axum::Router;
+pub use folder_dialog::{system_folder_chooser, FolderChooser};
 pub use hub::{hub_app, Hub, HubOptions};
 pub use routes::app;
 pub use state::AppState;

@@ -2216,6 +2216,7 @@ fn serve_hub(
         workspace_root,
         driver: std::env::current_exe()?,
         live_updates: true,
+        folder_chooser: dit_server::system_folder_chooser(),
     });
     serve_ui(
         dit_server::hub_app(hub),

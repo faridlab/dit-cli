@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use tower::ServiceExt;
 use ts_rs::TS;
 
+use crate::folder_dialog::FolderChooser;
 use crate::security::Guard;
 use crate::state::AppState;
 
@@ -40,6 +41,9 @@ pub struct HubOptions {
     pub driver: PathBuf,
     /// Start each opened workspace's watcher (off in tests).
     pub live_updates: bool,
+    /// The system's folder dialog (ADR 0030), when this machine has one.
+    /// Used only while the server is bound to this machine.
+    pub folder_chooser: Option<FolderChooser>,
 }
 
 // The token never appears in a debug dump, not even masked (as AppState).
@@ -66,6 +70,8 @@ pub struct Hub {
     options: HubOptions,
     /// Routers of the workspaces opened so far, by name.
     open: Mutex<BTreeMap<String, Router>>,
+    /// Held while a folder dialog is open: one at a time.
+    choosing: Mutex<()>,
 }
 
 impl Hub {
@@ -82,7 +88,21 @@ impl Hub {
             }),
             options,
             open: Mutex::new(BTreeMap::new()),
+            choosing: Mutex::new(()),
         })
+    }
+
+    /// The folder dialog, if this server may open one: a server reachable
+    /// from the network never puts a window on this machine's screen at
+    /// another device's request (ADR 0030).
+    fn chooser(&self) -> Option<FolderChooser> {
+        let local = matches!(self.options.bind_host.as_str(), "localhost" | "::1")
+            || self.options.bind_host.starts_with("127.");
+        if local {
+            self.options.folder_chooser.clone()
+        } else {
+            None
+        }
     }
 
     fn registry(&self) -> Result<Registry, HubError> {
@@ -138,6 +158,7 @@ pub fn hub_app(hub: Arc<Hub>) -> Router {
             get(list_workspaces).post(create_workspace),
         )
         .route("/api/workspaces/add", post(add_workspace))
+        .route("/api/workspaces/choose-folder", post(choose_folder))
         .route("/api/workspaces/{name}", delete(remove_workspace))
         .route("/api/workspaces/{name}/default", post(set_default))
         .route("/api/{*rest}", any(no_workspace_here))
@@ -173,14 +194,44 @@ pub struct WorkspaceDto {
 pub struct WorkspacesDto {
     pub workspaces: Vec<WorkspaceDto>,
     pub default: Option<String>,
-    /// Where "New workspace" puts one.
+    /// Where "New workspace" puts one unless a folder is chosen.
     pub root: String,
+    /// Whether "Choose folder…" can open the system's dialog (ADR 0030).
+    pub can_choose_folder: bool,
 }
 
 #[derive(Debug, Deserialize, TS)]
 #[ts(export)]
 pub struct NewWorkspaceDto {
     pub name: String,
+    /// The folder to make it in, instead of the default root. Must exist.
+    #[serde(default)]
+    #[ts(optional)]
+    pub at: Option<String>,
+}
+
+#[derive(Debug, Deserialize, TS)]
+#[ts(export)]
+pub struct ChooseFolderDto {
+    /// What the folder is for — it words the dialog's prompt.
+    #[serde(default)]
+    #[ts(optional)]
+    pub purpose: Option<FolderPurpose>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export)]
+pub enum FolderPurpose {
+    New,
+    Add,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct FolderChosenDto {
+    /// `null` when the person cancelled.
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, TS)]
@@ -210,6 +261,7 @@ fn list_dto(hub: &Hub, registry: &Registry) -> WorkspacesDto {
             .collect(),
         default: registry.default_entry().map(|w| w.name.clone()),
         root: hub.options.workspace_root.display().to_string(),
+        can_choose_folder: hub.chooser().is_some(),
     }
 }
 
@@ -225,12 +277,22 @@ async fn create_workspace(
     let hub2 = hub.clone();
     let list = tokio::task::spawn_blocking(move || -> Result<WorkspacesDto, HubError> {
         let mut registry = hub2.registry()?;
+        let root = match input.at.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
+            None => hub2.options.workspace_root.clone(),
+            Some(at) => {
+                let at = PathBuf::from(at);
+                // A chosen place, not one to be made up: it must be there.
+                if !at.is_absolute() || !at.is_dir() {
+                    return Err(HubError::Dit(DitError::Refuse(format!(
+                        "{} is not a folder on this machine",
+                        at.display()
+                    ))));
+                }
+                at
+            }
+        };
         registry
-            .create(
-                input.name.trim(),
-                &hub2.options.workspace_root,
-                &hub2.options.driver,
-            )
+            .create(input.name.trim(), &root, &hub2.options.driver)
             .map_err(HubError::Dit)?;
         Ok(list_dto(&hub2, &registry))
     })
@@ -254,6 +316,35 @@ async fn add_workspace(
         )
         .map_err(HubError::Dit)?;
     Ok(Json(WorkspaceAddedDto { name }))
+}
+
+/// Open the system's folder dialog and answer the folder a person picked
+/// (ADR 0030). The dialog blocks, so it runs off the async threads.
+async fn choose_folder(
+    State(hub): State<Arc<Hub>>,
+    Json(input): Json<ChooseFolderDto>,
+) -> Result<Json<FolderChosenDto>, HubError> {
+    let Some(chooser) = hub.chooser() else {
+        return Err(HubError::NotFound(
+            "this server cannot open a folder dialog — type the path instead".into(),
+        ));
+    };
+    let prompt = match input.purpose {
+        Some(FolderPurpose::Add) => "Choose a DIT workspace folder",
+        _ => "Choose where the new workspace goes",
+    };
+    let hub2 = hub.clone();
+    let chosen = tokio::task::spawn_blocking(move || {
+        let Ok(_open) = hub2.choosing.try_lock() else {
+            return Err(HubError::Busy("a folder dialog is already open".into()));
+        };
+        chooser(prompt).map_err(HubError::Internal)
+    })
+    .await
+    .map_err(|_| HubError::Internal("the folder dialog task failed".into()))??;
+    Ok(Json(FolderChosenDto {
+        path: chosen.map(|p| p.display().to_string()),
+    }))
 }
 
 async fn remove_workspace(
@@ -342,6 +433,7 @@ async fn forward(hub: &Arc<Hub>, name: &str, rest: &str, req: Request<Body>) -> 
 pub enum HubError {
     Dit(DitError),
     NotFound(String),
+    Busy(String),
     Internal(String),
 }
 
@@ -354,6 +446,7 @@ impl IntoResponse for HubError {
             }
             HubError::Dit(e @ DitError::Refuse(_)) => (StatusCode::BAD_REQUEST, e.to_string()),
             HubError::Dit(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+            HubError::Busy(m) => (StatusCode::CONFLICT, m),
             HubError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
         };
         (status, Json(serde_json::json!({ "error": message }))).into_response()

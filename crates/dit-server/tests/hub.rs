@@ -18,6 +18,10 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
+    fixture_with("127.0.0.1", None)
+}
+
+fn fixture_with(bind_host: &str, chooser: Option<dit_server::FolderChooser>) -> Fixture {
     let tmp = tempfile::tempdir().unwrap();
     let config = tmp.path().join("config");
     let root = tmp.path().join("Documents/DIT");
@@ -27,12 +31,13 @@ fn fixture() -> Fixture {
     registry.create("home", &root, &exe).unwrap();
     let hub = dit_server::Hub::new(dit_server::HubOptions {
         token: TOKEN.into(),
-        bind_host: "127.0.0.1".into(),
+        bind_host: bind_host.into(),
         me: Some("tester".into()),
         config_dir: config,
         workspace_root: root,
         driver: exe,
         live_updates: false,
+        folder_chooser: chooser,
     });
     Fixture {
         app: dit_server::hub_app(hub),
@@ -241,4 +246,93 @@ async fn routes_with_path_parameters_work_behind_the_prefix() {
     }
     let (status, body) = call(&f.app, "GET", "/w/home/api/issues/NOSUCHID", None, true).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+}
+
+/// A chooser standing in for the system's folder dialog (ADR 0030): it
+/// answers what a person would have picked.
+fn chooser(answer: Option<&'static str>) -> dit_server::FolderChooser {
+    std::sync::Arc::new(move |_prompt: &str| Ok(answer.map(std::path::PathBuf::from)))
+}
+
+#[tokio::test]
+async fn the_folder_dialog_answers_the_one_path_a_person_chose_or_null() {
+    let f = fixture_with("127.0.0.1", Some(chooser(Some("/Users/someone/Projects"))));
+    let (_, list) = call(&f.app, "GET", "/api/workspaces", None, true).await;
+    assert_eq!(list["can_choose_folder"], true);
+    let (status, chosen) = call(
+        &f.app,
+        "POST",
+        "/api/workspaces/choose-folder",
+        Some(json!({ "purpose": "new" })),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{chosen}");
+    assert_eq!(chosen["path"], "/Users/someone/Projects");
+
+    let f = fixture_with("127.0.0.1", Some(chooser(None)));
+    let (_, cancelled) = call(
+        &f.app,
+        "POST",
+        "/api/workspaces/choose-folder",
+        Some(json!({ "purpose": "add" })),
+        true,
+    )
+    .await;
+    assert_eq!(cancelled["path"], serde_json::Value::Null);
+
+    // The token guards it like every other route.
+    let (status, _) = call(&f.app, "POST", "/api/workspaces/choose-folder", None, false).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn no_dialog_opens_for_a_server_reachable_from_the_network_or_without_a_chooser() {
+    for f in [
+        fixture_with("0.0.0.0", Some(chooser(Some("/tmp")))),
+        fixture_with("127.0.0.1", None),
+    ] {
+        let (_, list) = call(&f.app, "GET", "/api/workspaces", None, true).await;
+        assert_eq!(list["can_choose_folder"], false);
+        let (status, _) = call(
+            &f.app,
+            "POST",
+            "/api/workspaces/choose-folder",
+            Some(json!({ "purpose": "new" })),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+}
+
+#[tokio::test]
+async fn a_new_workspace_can_go_to_a_chosen_folder_that_exists() {
+    let f = fixture();
+    let place = f.tmp.path().join("Clients");
+    std::fs::create_dir_all(&place).unwrap();
+    let (status, made) = call(
+        &f.app,
+        "POST",
+        "/api/workspaces",
+        Some(json!({ "name": "globex", "at": place })),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    assert!(place.join("globex/.dit/config.yaml").exists());
+
+    let (status, body) = call(
+        &f.app,
+        "POST",
+        "/api/workspaces",
+        Some(json!({ "name": "initech", "at": f.tmp.path().join("nowhere") })),
+        true,
+    )
+    .await;
+    assert!(status.is_client_error(), "{body}");
+    assert!(
+        !f.tmp.path().join("nowhere").exists(),
+        "no folder is made up"
+    );
 }
