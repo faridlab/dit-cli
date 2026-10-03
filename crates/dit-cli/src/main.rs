@@ -30,12 +30,25 @@ struct Cli {
     #[arg(long, global = true)]
     me: Option<String>,
 
+    /// The workspace to act on, by its name in `dit workspace list`
+    /// (default: $DIT_WORKSPACE, then the repository the current directory
+    /// is in). An agent working in a code repository names its workspace
+    /// here instead of changing directory (ADR 0028).
+    #[arg(long, short = 'W', global = true)]
+    workspace: Option<String>,
+
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// The workspaces on this machine (ADR 0028): list them, see which one a
+    /// command acts on, make or add one, pick the default.
+    Workspace {
+        #[command(subcommand)]
+        cmd: WorkspaceCmd,
+    },
     /// Make the current directory a workspace: git init, merge driver, README.
     Init {
         /// Where issue content lives (ADR 0005): `root` keeps `issues/`
@@ -406,6 +419,31 @@ enum MorseCmd {
 }
 
 #[derive(Subcommand)]
+enum WorkspaceCmd {
+    /// Every registered workspace; `*` marks the default.
+    List,
+    /// The workspace a command here would act on — what an agent checks
+    /// before it writes.
+    Current,
+    /// Make a new workspace by name, under ~/Documents/DIT unless `--at`.
+    New {
+        name: String,
+        #[arg(long)]
+        at: Option<std::path::PathBuf>,
+    },
+    /// Register a folder already on this machine.
+    Add {
+        path: std::path::PathBuf,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Take a workspace off the list. Its files are not touched.
+    Remove { name: String },
+    /// Make a workspace the default — what `dit ui` opens first.
+    Use { name: String },
+}
+
+#[derive(Subcommand)]
 enum MorseImport {
     /// One curl command, as a scenario of one step.
     Curl {
@@ -610,7 +648,10 @@ fn main() -> ExitCode {
                 ExitCode::from(3)
             // "You asked for something that isn't there" is its own code:
             // a script looping over refs can skip and continue on 2.
-            } else if matches!(e, DitError::NotFound(_) | DitError::TemplateMissing(_)) {
+            } else if matches!(
+                e,
+                DitError::NotFound(_) | DitError::Missing(_) | DitError::TemplateMissing(_)
+            ) {
                 ExitCode::from(2)
             } else {
                 ExitCode::from(1)
@@ -619,9 +660,41 @@ fn main() -> ExitCode {
     }
 }
 
+/// The workspace `--workspace` or `DIT_WORKSPACE` named, resolved once at
+/// start; every command that opens "the workspace" opens this, else the
+/// current directory.
+static NAMED_WORKSPACE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Where the workspace a command acts on lives.
+fn workspace_dir() -> Result<std::path::PathBuf, DitError> {
+    match NAMED_WORKSPACE.get() {
+        Some(path) => Ok(path.clone()),
+        None => Ok(std::env::current_dir()?),
+    }
+}
+
+fn registry() -> Result<dit_core::Registry, DitError> {
+    let dir = dit_core::config_dir().ok_or_else(|| {
+        DitError::Refuse("there is no home folder to keep the workspace list in".into())
+    })?;
+    dit_core::Registry::load(&dir)
+}
+
 fn run(cli: Cli) -> Result<ExitCode, DitError> {
     let explicit = alias(&cli);
+    let env_workspace = std::env::var("DIT_WORKSPACE").ok();
+    if cli.workspace.is_some()
+        || env_workspace
+            .as_deref()
+            .is_some_and(|w| !w.trim().is_empty())
+    {
+        let registry = registry()?;
+        if let Some(entry) = registry.resolve(cli.workspace.as_deref(), env_workspace.as_deref())? {
+            let _ = NAMED_WORKSPACE.set(entry.path.clone());
+        }
+    }
     match cli.command {
+        Command::Workspace { cmd } => workspace(cmd),
         Command::Init { layout, ai } => {
             let cwd = std::env::current_dir()?;
             let exe = std::env::current_exe()?;
@@ -648,6 +721,12 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
                 "templates: {} (.dit/templates/)",
                 dit.templates().join(", ")
             );
+            // Register it, so `dit ui` and `--workspace` know it by name.
+            if let Ok(mut list) = registry() {
+                if let Ok(name) = list.add(None, dit.root(), false) {
+                    println!("registered as workspace {name} (`dit workspace list`)");
+                }
+            }
             if ai {
                 let report = dit.write_agent_docs(&dit_core::AgentDocOptions::default())?;
                 println!(
@@ -785,57 +864,60 @@ fn run(cli: Cli) -> Result<ExitCode, DitError> {
             }
         }
         Command::Ui { host, port } => {
-            // A repository that is not a workspace opens as its code map:
-            // the Code screen only, read-only (ADR 0025).
-            let dit = Dit::open_for_ui(&std::env::current_dir()?)?;
-            // The same token file the standalone server reads, so `dit ui`
-            // and `dit-server` hand the same URL shape for one workspace; a
-            // code map keeps it beside its index, which ignores itself, so
-            // nothing lands in the repository's tree.
-            let cache = if dit.code_only() {
-                dit.root().join(dit_core::CODE_DIR)
-            } else {
-                dit.root().join(".dit-cache")
-            };
-            let token = dit_server::config::load_or_create_token(&cache)?;
-            let me = me_for(&dit, explicit.as_deref());
-            let code_only = dit.code_only();
-            let state = dit_server::AppState::with_bind_host(dit, &me, &token, &host);
-            // Catch the index up, then watch for other processes' writes
-            // (ADR 0017) — `dit ui` must live-update just like the server. A
-            // code map has no workspace files to watch; it refreshes on read.
-            if !code_only {
-                state.start_live_updates();
-            }
-            let app = dit_server::app(state);
+            let dir = workspace_dir()?;
             let display_host = if host == "0.0.0.0" {
-                "127.0.0.1"
+                "127.0.0.1".to_owned()
             } else {
-                host.as_str()
+                host.clone()
             };
-            tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()?
-                .block_on(dit_server::serve(app, &host, port, move || {
-                    let url = format!("http://{display_host}:{port}/#token={token}");
-                    println!("DIT listening on http://{display_host}:{port}/");
-                    println!("open: {url}");
-                    open_browser(&url);
-                }))
-                .map_err(|e| {
-                    // A taken port is almost always another dit ui or
-                    // dit-server still holding it; say so instead of a bare
-                    // OS error.
-                    if e.kind() == std::io::ErrorKind::AddrInUse {
-                        std::io::Error::new(
-                            e.kind(),
-                            format!("{e} — is another dit ui or dit-server on port {port}?"),
-                        )
-                    } else {
-                        e
-                    }
-                })?;
-            Ok(ExitCode::SUCCESS)
+            // One server for every workspace on this machine (ADR 0028),
+            // opened at the one asked for. A repository that is not a
+            // workspace keeps its read-only code map, served alone (ADR 0025).
+            let is_workspace = Dit::is_workspace(&dir).unwrap_or(false);
+            let config = dit_core::config_dir();
+            if let (true, Some(config)) = (
+                is_workspace || NAMED_WORKSPACE.get().is_some(),
+                config.clone(),
+            ) {
+                let root = Dit::open(&dir)?.root().to_path_buf();
+                let name = dit_core::Registry::load(&config)?.add(None, &root, false)?;
+                return serve_hub(
+                    &config,
+                    &host,
+                    &display_host,
+                    port,
+                    explicit.as_deref(),
+                    &format!("/w/{name}/"),
+                );
+            }
+            match Dit::open_for_ui(&dir) {
+                Ok(dit) if dit.code_only() => {
+                    let token = dit_server::config::load_or_create_token(
+                        &dit.root().join(dit_core::CODE_DIR),
+                    )?;
+                    let me = me_for(&dit, explicit.as_deref());
+                    let state = dit_server::AppState::with_bind_host(dit, &me, &token, &host);
+                    serve_ui(
+                        dit_server::app(state),
+                        &host,
+                        &display_host,
+                        port,
+                        "/",
+                        &token,
+                    )
+                }
+                _ => match config {
+                    Some(config) => serve_hub(
+                        &config,
+                        &host,
+                        &display_host,
+                        port,
+                        explicit.as_deref(),
+                        "/",
+                    ),
+                    None => Err(Dit::not_a_workspace()),
+                },
+            }
         }
         Command::InstallDriver => {
             let dit = open()?;
@@ -2083,14 +2165,139 @@ fn open_browser(url: &str) {
     let _ = std::process::Command::new(program).arg(url).spawn();
 }
 
+/// Serve every registered workspace (ADR 0028) and open `path` in the
+/// browser — `/w/<name>/`, or `/` for the default or the first-run page.
+fn serve_hub(
+    config: &std::path::Path,
+    host: &str,
+    display_host: &str,
+    port: u16,
+    me: Option<&str>,
+    path: &str,
+) -> Result<ExitCode, DitError> {
+    let token = dit_server::config::load_or_create_token(config)?;
+    let workspace_root =
+        dit_core::default_workspace_root().unwrap_or_else(|| config.join("workspaces"));
+    let hub = dit_server::Hub::new(dit_server::HubOptions {
+        token: token.clone(),
+        bind_host: host.to_owned(),
+        me: me.map(str::to_owned),
+        config_dir: config.to_path_buf(),
+        workspace_root,
+        driver: std::env::current_exe()?,
+        live_updates: true,
+    });
+    serve_ui(
+        dit_server::hub_app(hub),
+        host,
+        display_host,
+        port,
+        path,
+        &token,
+    )
+}
+
+/// Bind, announce, open the browser at `path`, and serve until stopped.
+fn serve_ui(
+    app: dit_server::Router,
+    host: &str,
+    display_host: &str,
+    port: u16,
+    path: &str,
+    token: &str,
+) -> Result<ExitCode, DitError> {
+    let url = format!("http://{display_host}:{port}{path}#token={token}");
+    let base = format!("http://{display_host}:{port}{path}");
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(dit_server::serve(app, host, port, move || {
+            println!("DIT listening on {base}");
+            println!("open: {url}");
+            open_browser(&url);
+        }))
+        .map_err(|e| {
+            // A taken port is almost always another dit ui or dit-server
+            // still holding it; say so instead of a bare OS error.
+            if e.kind() == std::io::ErrorKind::AddrInUse {
+                std::io::Error::new(
+                    e.kind(),
+                    format!("{e} — is another dit ui or dit-server on port {port}?"),
+                )
+            } else {
+                e
+            }
+        })?;
+    Ok(ExitCode::SUCCESS)
+}
+
 fn open() -> Result<Dit, DitError> {
-    let cwd = std::env::current_dir()?;
-    Dit::open(&cwd)
+    Dit::open(&workspace_dir()?)
+}
+
+/// `dit workspace …` (ADR 0028).
+fn workspace(cmd: WorkspaceCmd) -> Result<ExitCode, DitError> {
+    let mut registry = registry()?;
+    match cmd {
+        WorkspaceCmd::List => {
+            let default = registry.default_entry().map(|w| w.name.clone());
+            if registry.workspaces().is_empty() {
+                println!("no workspaces registered yet — `dit workspace new <name>` makes one");
+            }
+            for w in registry.workspaces() {
+                let mark = if Some(&w.name) == default.as_ref() {
+                    "*"
+                } else {
+                    " "
+                };
+                println!("{mark} {:<20} {}", w.name, w.path.display());
+            }
+        }
+        WorkspaceCmd::Current => {
+            let dir = workspace_dir()?;
+            if !Dit::is_workspace(&dir)? {
+                return Err(Dit::not_a_workspace());
+            }
+            let root = Dit::open(&dir)?.root().to_path_buf();
+            let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
+            match registry.workspaces().iter().find(|w| w.path == canonical) {
+                Some(w) => println!("{} {}", w.name, w.path.display()),
+                None => println!(
+                    "{} (not registered — `dit workspace add {}` gives it a name)",
+                    root.display(),
+                    root.display()
+                ),
+            }
+        }
+        WorkspaceCmd::New { name, at } => {
+            let root = match at {
+                Some(at) => at,
+                None => dit_core::default_workspace_root().ok_or_else(|| {
+                    DitError::Refuse("there is no home folder to make it in — pass --at".into())
+                })?,
+            };
+            let path = registry.create(&name, &root, &std::env::current_exe()?)?;
+            println!("workspace {name} is ready at {}", path.display());
+        }
+        WorkspaceCmd::Add { path, name } => {
+            let name = registry.add(name.as_deref(), &path, false)?;
+            println!("registered as {name}");
+        }
+        WorkspaceCmd::Remove { name } => {
+            registry.remove(&name)?;
+            println!("{name} is off the list; its files are where they were");
+        }
+        WorkspaceCmd::Use { name } => {
+            registry.set_default(&name)?;
+            println!("{name} is the default");
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// `dit code …`: refresh the map to HEAD, then answer from the index.
 fn code(cmd: CodeCmd, explicit: Option<&str>) -> Result<ExitCode, DitError> {
-    let cwd = std::env::current_dir()?;
+    let cwd = workspace_dir()?;
     if let CodeCmd::Hook { cmd } = &cmd {
         let (verb, hooks) = match cmd {
             HookCmd::Install => ("installed in", dit_core::code::install_code_hooks(&cwd)?),
@@ -2411,7 +2618,7 @@ fn code_check(dit: &dit_core::Dit) -> Result<ExitCode, DitError> {
 /// Refuse a workspace-only command outside a workspace — before `open`,
 /// which would leave a `.dit-cache/` behind in a repository that is not one.
 fn ensure_workspace() -> Result<(), DitError> {
-    let cwd = std::env::current_dir()?;
+    let cwd = workspace_dir()?;
     if Dit::is_workspace(&cwd)? {
         Ok(())
     } else {

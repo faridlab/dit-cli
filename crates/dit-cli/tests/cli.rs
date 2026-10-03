@@ -12,12 +12,32 @@ use std::process::{Command, Output};
 /// Run the real binary in `cwd`, with DIT_ME stripped so tests never inherit
 /// the calling shell's alias.
 fn dit(cwd: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_dit"))
-        .args(args)
-        .current_dir(cwd)
+    command(cwd).args(args).output().unwrap()
+}
+
+/// The binary in `cwd`, isolated from the person running the tests: no
+/// alias, no workspace named by the shell, and a config directory of its
+/// own — `dit init` registers what it creates, and that list must never be
+/// the real `~/.config/dit`. One config per `cwd`, so the commands of one
+/// test share a list and different tests do not.
+fn command(cwd: &Path) -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_dit"));
+    cmd.current_dir(cwd)
         .env_remove("DIT_ME")
-        .output()
-        .unwrap()
+        .env_remove("DIT_WORKSPACE")
+        .env("XDG_CONFIG_HOME", config_home(cwd));
+    cmd
+}
+
+fn config_home(cwd: &Path) -> std::path::PathBuf {
+    static BASE: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    let base = BASE.get_or_init(|| tempfile::tempdir().unwrap());
+    let key: String = cwd
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    base.path().join(key)
 }
 
 fn stdout(o: &Output) -> String {
@@ -240,52 +260,83 @@ fn reindex_rebuilds_after_the_cache_is_deleted() {
     assert!(dit(tmp.path(), &["issue", "show", &short]).status.success());
 }
 
-#[test]
-fn ui_outside_a_workspace_fails_cleanly() {
-    let tmp = tempfile::tempdir().unwrap();
-    let out = dit(tmp.path(), &["ui"]);
-    assert!(!out.status.success(), "there is nothing to serve here");
-}
-
-/// `dit ui` must actually serve: bind, answer HTTP on the loopback, and
-/// reject an unauthenticated request — the same gate the browser hits.
-/// The opener is skipped automatically because the test's stdout is a pipe.
-#[test]
-fn ui_serves_the_workspace_over_http() {
-    use std::io::{Read, Write};
-
-    let tmp = tempfile::tempdir().unwrap();
-    assert!(dit(tmp.path(), &["init"]).status.success());
-
+/// Start `dit ui` in `cwd` on a free port and wait until it answers an
+/// unauthenticated request with 401 — the same gate the browser hits. The
+/// opener is skipped automatically because the test's stdout is a pipe.
+fn start_ui(cwd: &Path) -> (std::process::Child, u16) {
     // Reserve a free port, then hand it to the server.
     let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = probe.local_addr().unwrap().port();
     drop(probe);
-
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_dit"))
+    let mut child = command(cwd)
         .args(["ui", "--port", &port.to_string()])
-        .current_dir(tmp.path())
-        .env_remove("DIT_ME")
+        .stdout(std::process::Stdio::null())
         .spawn()
         .unwrap();
-
-    let request = "GET /api/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-    let mut answered = false;
     for _ in 0..100 {
-        if let Ok(mut stream) = std::net::TcpStream::connect(("127.0.0.1", port)) {
-            if stream.write_all(request.as_bytes()).is_ok() {
-                let mut buf = String::new();
-                if stream.read_to_string(&mut buf).is_ok() && buf.starts_with("HTTP/1.1 401") {
-                    answered = true;
-                    break;
-                }
-            }
+        if http_get(port, "/api/workspaces", None).starts_with("HTTP/1.1 401") {
+            return (child, port);
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     let _ = child.kill();
     let _ = child.wait();
-    assert!(answered, "`dit ui` never answered on port {port}");
+    panic!("`dit ui` never answered on port {port}");
+}
+
+fn http_get(port: u16, path: &str, token: Option<&str>) -> String {
+    use std::io::{Read, Write};
+    let auth = token
+        .map(|t| format!("Authorization: Bearer {t}\r\n"))
+        .unwrap_or_default();
+    let request =
+        format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n{auth}Connection: close\r\n\r\n");
+    let mut buf = String::new();
+    if let Ok(mut stream) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+        if stream.write_all(request.as_bytes()).is_ok() {
+            let _ = stream.read_to_string(&mut buf);
+        }
+    }
+    buf
+}
+
+/// Outside any workspace, `dit ui` still serves (ADR 0028): the list is
+/// empty and the page offers to create the first workspace.
+#[test]
+fn ui_outside_a_workspace_serves_an_empty_list() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut child, port) = start_ui(tmp.path());
+    let token = std::fs::read_to_string(config_home(tmp.path()).join("dit/server-token")).unwrap();
+    let list = http_get(port, "/api/workspaces", Some(token.trim()));
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(list.starts_with("HTTP/1.1 200"), "{list}");
+    assert!(list.contains("\"workspaces\":[]"), "{list}");
+}
+
+/// `dit ui` inside a workspace registers it and serves it at `/w/<name>/`,
+/// behind the token.
+#[test]
+fn ui_serves_the_workspace_over_http() {
+    let tmp = tempfile::tempdir().unwrap();
+    assert!(dit(tmp.path(), &["init"]).status.success());
+    let (mut child, port) = start_ui(tmp.path());
+    let token = std::fs::read_to_string(config_home(tmp.path()).join("dit/server-token")).unwrap();
+    let current = stdout(&dit(tmp.path(), &["workspace", "current"]));
+    let name = current
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let unauthenticated = http_get(port, &format!("/w/{name}/api/status"), None);
+    let status = http_get(port, &format!("/w/{name}/api/status"), Some(token.trim()));
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(
+        unauthenticated.starts_with("HTTP/1.1 401"),
+        "{unauthenticated}"
+    );
+    assert!(status.starts_with("HTTP/1.1 200"), "{name}: {status}");
 }
 
 #[test]
