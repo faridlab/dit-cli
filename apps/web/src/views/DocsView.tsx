@@ -31,6 +31,7 @@ import { ContextMenuFor, type MenuItem } from "../components/chrome";
 import { Empty, Loading } from "../components/states";
 import { cn } from "../lib/cn";
 import { dirOf } from "../lib/attachments";
+import { joinFrontmatter, propertiesOf, splitFrontmatter } from "../lib/frontmatter";
 
 const CodeMirrorEditor = lazy(() => import("../editor/CodeMirrorEditor"));
 const RichEditor = lazy(() => import("../editor/RichEditor"));
@@ -387,10 +388,13 @@ export function DocsView({
                   // The editor's own 6px inset would shift the body off the
                   // path row's left edge; the article already has margins.
                   <div className="md" style={{ marginInline: -6 }}>
+                    <PageProperties front={splitFrontmatter(draft).front} />
                     <RichEditor
                       key={p}
-                      value={draft}
-                      onChange={(next) => tabs.setDraft(p, next)}
+                      // The editor holds the body; the frontmatter is put
+                      // back on every change, exactly as it was.
+                      value={splitFrontmatter(draft).body}
+                      onChange={(next) => tabs.setDraft(p, joinFrontmatter(splitFrontmatter(draft).front, next))}
                       onSave={saveNow}
                       // A document the bridge refuses (conflict markers, a
                       // wasm failure) can still be edited as text.
@@ -418,5 +422,22 @@ export function DocsView({
         )}
       </div>
     </>
+  );
+}
+
+/** A page's frontmatter fields, shown above the rich editor: kept apart from
+ *  the body it edits, and changed in Source mode. */
+function PageProperties({ front }: { front: string }) {
+  const fields = propertiesOf(front);
+  if (fields.length === 0) return null;
+  return (
+    <p className="doc-props" title="Page properties — change them in Source mode">
+      {fields.map(([key, value], i) => (
+        <span key={key}>
+          {i > 0 ? " · " : null}
+          <span className="k">{key}</span> {value}
+        </span>
+      ))}
+    </p>
   );
 }
