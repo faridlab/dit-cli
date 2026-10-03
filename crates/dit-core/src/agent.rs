@@ -243,6 +243,14 @@ DIT is project management where the source of truth is Markdown files inside thi
 repository. SQLite is only a disposable index, rebuilt from git at any time. Every issue
 is a file; every change is a commit; history is `git log`.
 
+## Which workspace you are in
+
+One machine can hold several DIT workspaces. Before writing anything, run
+`dit workspace current` — it prints the name and folder your commands act on. To act on
+another one without changing directory, name it: `dit --workspace <name> …` (or `-W`), or
+set `DIT_WORKSPACE=<name>` for the whole session. With neither, the repository the current
+directory is in decides. `dit workspace list` shows the workspaces on this machine.
+
 ## Rules that carry consequences
 
 1. **Never edit an issue file directly.** No `sed`, no text editor, no `Write`. Writes go
@@ -894,6 +902,21 @@ mod tests {
             "dit flow show",
             "dit morse sync",
             "dit ai spec <topic>",
+        ] {
+            assert!(doc.contains(needle), "missing `{needle}`:\n{doc}");
+        }
+    }
+
+    // One machine can hold many workspaces (ADR 0028): an agent must know
+    // which one its writes land in, and name it without changing directory.
+    #[test]
+    fn the_spec_says_how_to_know_and_name_the_workspace() {
+        let doc = agent_spec("9.9.9", &[], &[], &AgentContext::default());
+        for needle in [
+            "dit workspace current",
+            "--workspace",
+            "DIT_WORKSPACE",
+            "dit workspace list",
         ] {
             assert!(doc.contains(needle), "missing `{needle}`:\n{doc}");
         }
