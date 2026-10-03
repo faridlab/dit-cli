@@ -385,7 +385,7 @@ The map covers committed files only: a file you just wrote appears after it is c
 ## Recipes
 
 The common tasks as the commands that do them, in order. `dit ai spec <topic>` goes deeper
-on `issues`, `flow`, `morse` and `code`.
+on `issues`, `flow`, `morse`, `code` and `docs`.
 
 - **Report something:** `dit issue new "<title>"` prints `#<n>`; check it landed with
   `dit issue show '#<n>'`. Then shape it: `dit issue set '#<n>' labels=<a>,<b> lane=<lane>`.
@@ -399,6 +399,9 @@ on `issues`, `flow`, `morse` and `code`.
   `dit code check` says where the task is done and which file to copy.
 - **Rely on an endpoint:** `dit morse check`; if it is not proven for your environment,
   `dit morse sync <scenario> --env <name>`, and name the seam on both issues.
+- **Write a project document:** `dit docs templates` lists the kinds (PRD, FSD, business flow, …);
+  `dit docs new <kind> "<title>"` makes one in its stage folder. `dit ai spec docs` says how each
+  is filled.
 
 ## Shaping a flow diagram
 
@@ -441,7 +444,7 @@ flow falls back to computed stages and the screen says which document and line t
 ## Finding your way
 
 `dit --help` lists every command, and each subcommand explains its own flags.
-`dit ai spec <topic>` goes deeper on one subject: `issues`, `flow`, `morse`, `code`. `dit doctor`
+`dit ai spec <topic>` goes deeper on one subject: `issues`, `flow`, `morse`, `code`, `docs`. `dit doctor`
 checks what silently breaks a workspace when wrong, including whether this document was
 written by an older DIT than the one you are using.
 "##
@@ -449,7 +452,7 @@ written by an older DIT than the one you are using.
 }
 
 /// The subjects `dit ai spec <topic>` goes deeper on.
-pub const AGENT_TOPICS: [&str; 4] = ["issues", "flow", "morse", "code"];
+pub const AGENT_TOPICS: [&str; 5] = ["issues", "flow", "morse", "code", "docs"];
 
 /// One topic, or `None` for a name that is not one — the caller lists
 /// [`AGENT_TOPICS`]. Longer than the main spec on purpose: an agent opens a
@@ -457,6 +460,7 @@ pub const AGENT_TOPICS: [&str; 4] = ["issues", "flow", "morse", "code"];
 pub fn agent_topic(topic: &str, context: &AgentContext) -> Option<String> {
     match topic {
         "issues" => Some(TOPIC_ISSUES.to_owned()),
+        "docs" => Some(TOPIC_DOCS.to_owned()),
         "flow" => Some(TOPIC_FLOW.to_owned()),
         "morse" => {
             let specs = if context.specs.is_empty() {
@@ -635,6 +639,67 @@ Every path is `<root>:<glob>`. An entry needs a `task` and at least one of `chan
 After reading the map against the code, `dit code map confirm <map>` pins each root it names
 to HEAD, in one commit. Nothing else moves the pin: a map is a person's claim, and a claim
 nobody re-read must not look fresh. The fence may not name anything to run or fetch.
+"##;
+
+const TOPIC_DOCS: &str = r##"# Project documents in depth
+
+A project needs documents besides issues. DIT knows eleven kinds (ADR 0031) and places each
+by the stage of work it belongs to. A team writes the ones it needs and skips the rest.
+
+| Kind | Id | Placed in | Answers |
+|---|---|---|---|
+| Business Requirements | `brd` | `docs/business/` | Why, for whom, and what success looks like |
+| Product Requirements | `prd` | `docs/business/` | What the product does, for which users, in what scope |
+| Software Requirements Spec | `srs` | `docs/requirements/` | Every requirement, numbered and testable |
+| Functional Spec | `fsd` | `docs/requirements/` | How each feature behaves, rule by rule |
+| Business Flow + BDD | `business-flow` | `docs/requirements/` | How work moves, with Given/When/Then scenarios |
+| Technical Spec | `tsd` | `docs/technical/` | Components, choices, risks |
+| Data Model (ERD) | `data-model` | `docs/technical/` | Entities and relationships |
+| API Contract | `api-contract` | `docs/technical/` | Endpoints — explaining the OpenAPI file and its Morse scenarios |
+| Decision record | `adr` | `docs/adr/` | One decision, its alternatives, and why |
+| Test Plan & UAT | `test-plan` | `docs/testing/` | What is tested, by whom, what counts as accepted |
+| Release Notes | `release-notes` | `changelogs/` | What changed for the people who use it |
+
+They are usually written in that order: why (BRD) → what (PRD) → exactly what (SRS, FSD, business
+flows) → how (TSD, data model, API contract, decisions) → proof (test plan) → change (release notes).
+
+## Making one
+
+- `dit docs templates` lists the kinds this workspace has — the built-ins, any it replaced, and its own.
+- `dit docs new prd "Checkout v2"` writes `docs/business/checkout-v2.md` in one commit and prints
+  the path. It never overwrites a page; a second document needs a different title.
+- A workspace replaces a built-in with `docs/.templates/<id>.md`, or adds its own kind with any
+  other id. Use whatever `dit docs templates` lists; do not invent a layout beside it.
+
+## Filling one
+
+- Each heading carries an italic prompt saying what belongs there. Replace the prompt; delete a
+  section only when it truly does not apply, and say so in a line rather than leaving it empty.
+- Write what the sources say. Requirements come from issues, epics and the people asking — link
+  them by short ref, `[[Q2R7VN8]]` (from `dit issue show`), or by page, `[[docs/business/checkout-v2]]`. Behaviour comes from code you have read.
+  When you do not know, write the open question under *Open questions*; never invent a number,
+  a rule or a stakeholder.
+- Never write a fact that can be computed: who changed the page and when is `git log`; whether an
+  issue is done is its status. A document links to them instead.
+- Keep each fact in one document and link the others to it — the PRD states scope, the SRS
+  numbers requirements, the FSD describes behaviour, the test plan cites requirement ids.
+
+## Diagrams
+
+- Draw with a `mermaid` fence by default: flowchart for a business flow, `stateDiagram-v2` for a
+  record's states, `sequenceDiagram` for a technical exchange, `erDiagram` for a data model. It
+  stays editable as text, diffs in review, and renders on GitHub too.
+- A polished drawing made with another tool goes in as SVG inside a `dit-diagram` fence. DIT
+  sanitizes it — scripts, styles and external references are removed — so draw with plain shapes
+  and text, and keep the source that produced it next to the page or in the issue.
+- Never link an image from another host; it will not load (the page's security policy refuses it).
+
+## Not here
+
+`docs/flows/` is reserved for AI-generated flow documents whose sources and their commits are
+recorded so they can be checked for staleness (DESIGN §7.4). A human-written business flow is a `business-flow` page under
+`docs/requirements/`. An orchestration flow — issues sharing a name in `flows:` — has no page of its
+own; see `dit ai spec flow`.
 "##;
 
 const TOPIC_MORSE: &str = r##"# Morse in depth: seams you can prove
@@ -962,8 +1027,30 @@ mod tests {
         ] {
             assert!(code.contains(needle), "missing `{needle}`:\n{code}");
         }
+        // The document set (ADR 0031): what exists, how to make one, how to
+        // keep diagrams editable, and what never goes in.
+        let docs = agent_topic("docs", &ctx).unwrap();
+        for needle in [
+            "dit docs templates",
+            "dit docs new prd",
+            "business-flow",
+            "release-notes",
+            "docs/requirements/",
+            "docs/.templates/",
+            "mermaid",
+            "dit-diagram",
+            "docs/flows/",
+            "[[Q2R7VN8]]",
+        ] {
+            assert!(docs.contains(needle), "missing `{needle}`:\n{docs}");
+        }
+        // Only commands that exist, and only the link form DIT resolves.
+        assert!(
+            !docs.contains("dit docs check") && !docs.contains("[[#"),
+            "{docs}"
+        );
         assert!(agent_topic("nonsense", &ctx).is_none());
-        assert_eq!(AGENT_TOPICS, ["issues", "flow", "morse", "code"]);
+        assert_eq!(AGENT_TOPICS, ["issues", "flow", "morse", "code", "docs"]);
     }
 
     // An agent that does not know the map exists greps instead; one that
