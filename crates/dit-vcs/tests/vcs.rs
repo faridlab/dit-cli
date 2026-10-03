@@ -558,3 +558,37 @@ fn a_committed_file_reads_back_byte_for_byte_and_an_uncommitted_one_does_not() {
         "a tree is not a file"
     );
 }
+
+/// Unstaging takes a path back to what HEAD has — a new file leaves the
+/// index, a changed one returns to HEAD's version — and works before the
+/// first commit too, when there is no HEAD to reset to.
+#[test]
+fn unstage_returns_paths_to_head_with_or_without_a_first_commit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = hermetic_repo(tmp.path());
+    let status = || {
+        let out = std::process::Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+
+    // No commit yet.
+    std::fs::write(tmp.path().join("a.md"), "a\n").unwrap();
+    repo.add("a.md").unwrap();
+    repo.unstage(&["a.md".to_owned()]).unwrap();
+    assert_eq!(status(), "?? a.md\n");
+
+    // After one: a changed file goes back to HEAD's version in the index.
+    repo.add("a.md").unwrap();
+    repo.commit("first").unwrap();
+    std::fs::write(tmp.path().join("a.md"), "changed\n").unwrap();
+    std::fs::write(tmp.path().join("b.md"), "b\n").unwrap();
+    repo.add("a.md").unwrap();
+    repo.add("b.md").unwrap();
+    repo.unstage(&["a.md".to_owned(), "b.md".to_owned()])
+        .unwrap();
+    assert_eq!(status(), " M a.md\n?? b.md\n");
+}

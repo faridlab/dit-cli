@@ -5877,3 +5877,52 @@ fn a_committed_openapi_file_is_registered_as_one_commit_and_its_operations_appea
     let err = dit.morse_unregister_spec("billing", "farid").unwrap_err();
     assert!(err.to_string().contains("inv"), "{err}");
 }
+
+/// A write whose commit fails must leave nothing behind — not in the working
+/// tree, and not in git's index either. Found in use: a comment whose commit
+/// failed ("Author identity unknown") was reported as failed, rolled back on
+/// disk, but stayed staged; the next comment's commit swept it in, and the
+/// working tree no longer matched HEAD.
+#[test]
+fn a_failed_commit_leaves_nothing_staged_for_the_next_one() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut dit = workspace(tmp.path());
+    let mut tx = dit.transaction("farid").unwrap();
+    let id = tx.create_issue(draft("Login timeout")).unwrap();
+    tx.commit("create").unwrap();
+
+    // Any commit failure will do; a refusing hook is the deterministic one.
+    let hook = tmp.path().join(".git/hooks/pre-commit");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut tx = dit.transaction("farid").unwrap();
+    tx.comment(&id, "farid", None, "this one fails").unwrap();
+    assert!(tx.commit("comment that fails").is_err());
+
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    assert_eq!(
+        git(&["status", "--porcelain"]),
+        "",
+        "nothing staged, nothing changed"
+    );
+
+    std::fs::remove_file(&hook).unwrap();
+    let mut tx = dit.transaction("farid").unwrap();
+    tx.comment(&id, "farid", None, "this one lands").unwrap();
+    tx.commit("comment that lands").unwrap();
+    let files = git(&["show", "--name-only", "--format=", "HEAD"]);
+    assert_eq!(files.lines().count(), 1, "only its own comment:\n{files}");
+    assert_eq!(git(&["status", "--porcelain"]), "");
+    let comments = dit.comments(&id).unwrap();
+    assert_eq!(comments.len(), 1);
+    assert_eq!(comments[0].body.trim(), "this one lands");
+}

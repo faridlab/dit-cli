@@ -2345,9 +2345,10 @@ impl<'a> Transaction<'a> {
     }
 
     /// Stage the changeset into git, commit, and mirror the result into the
-    /// index. On any failure the files are rolled back so the working tree
-    /// is exactly as it was — a failed write must not leave half a change
-    /// lying around for the next writer to trip over.
+    /// index. On any failure the paths are unstaged and the files rolled
+    /// back, so git's index and the working tree are exactly as they were —
+    /// a failed write must not leave half a change lying around for the
+    /// next writer's commit to sweep in.
     fn commit_and_absorb(
         dit: &mut Dit,
         changeset: Changeset,
@@ -2366,9 +2367,9 @@ impl<'a> Transaction<'a> {
         // Collect first: the iterator borrows the changeset, and rollback
         // (inside the loop) consumes it.
         let rel_paths: Vec<String> = changeset.paths().map(|p| rel_to_root(&root, p)).collect();
-        for rel in rel_paths {
-            if let Err(e) = dit.repo.add(&rel) {
-                changeset.rollback();
+        for rel in &rel_paths {
+            if let Err(e) = dit.repo.add(rel) {
+                Self::undo(dit, &rel_paths, changeset);
                 return Err(e.into());
             }
         }
@@ -2386,10 +2387,18 @@ impl<'a> Transaction<'a> {
             }
             Ok(None) => Ok(None),
             Err(e) => {
-                changeset.rollback();
+                Self::undo(dit, &rel_paths, changeset);
                 Err(e.into())
             }
         }
+    }
+
+    /// Unstage what a failed commit staged, then restore the files.
+    fn undo(dit: &Dit, rel_paths: &[String], changeset: Changeset) {
+        if let Err(e) = dit.repo.unstage(rel_paths) {
+            tracing::warn!("could not unstage after a failed commit: {e}");
+        }
+        changeset.rollback();
     }
 
     /// Forget everything: staged writes never reached disk, so dropping the

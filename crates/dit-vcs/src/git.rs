@@ -168,6 +168,25 @@ impl Repo {
         Ok(())
     }
 
+    /// Take paths back out of the index, to what HEAD has. What a failed
+    /// commit staged must not ride along in the next one. On a repository
+    /// with no commit yet there is no HEAD to reset to, so the paths are
+    /// simply dropped from the index.
+    pub fn unstage(&self, paths: &[String]) -> Result<(), VcsError> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let mut reset: Vec<&str> = vec!["reset", "-q", "--"];
+        reset.extend(paths.iter().map(String::as_str));
+        if self.run(&reset).is_ok() {
+            return Ok(());
+        }
+        let mut rm: Vec<&str> = vec!["rm", "--cached", "-q", "--ignore-unmatch", "--"];
+        rm.extend(paths.iter().map(String::as_str));
+        self.run(&rm)?;
+        Ok(())
+    }
+
     /// Move or rename a tracked path. Repo-relative, forward-slash — the same
     /// convention as [`Repo::add`]. The layout migration uses this rather than
     /// write-plus-delete precisely because `git mv` keeps the change a rename:
