@@ -1909,7 +1909,7 @@ You are right that §7.4 already touches on this. Here is the complete shape of 
 | Page comments | `<slug>/README.md` + `<slug>/comments/` — a page becomes a folder, just like an issue | One file per comment. §4.4 defines `comments/` as a subfolder **inside the issue folder**; document pages must follow the same pattern, otherwise `comments/` would be shared by every page in that directory and comments could not be attributed. |
 | Mentions & notifications | `@alias` → `.dit/people/<alias>.yaml` | Index + `dit sync --watch` |
 | Labels | `labels:` in frontmatter | Index |
-| Page templates | `docs/.templates/*.md` | Copy + fill in the placeholders |
+| Page templates | Eleven kinds built in — BRD, PRD, SRS, FSD, business flow, TSD, data model, API contract, ADR, test plan, release notes — each replaceable by `docs/.templates/<id>.md` (ADR 0031) | `dit docs new <kind> "<title>"` or **New from template** in the Docs screen: placed by stage, a prompt under every heading |
 | Macros / dynamic content | `dit-query`, `dit-issues` blocks (§12.5) | Live in `dit ui` (the server has SQLite). In static publication: **pre-render in CI** via `dit docs export --resolve-queries`, producing a timestamped snapshot — not live, because §6.4 decided that WASM does not execute queries. |
 | Jira issue macro | `[[Q2R7VN8]]` or a `dit-issues` block | Wiki-link + index |
 | Diagrams | `dit-diagram` blocks (ADR 0012), `mermaid` fences (ADR 0013) | `dit-diagram`: SVG source in a fence, rendered sanitized in the editor, readable source everywhere else. `mermaid`: plain mermaid text, rendered in the editor by a lazily loaded renderer and natively by GitHub |
