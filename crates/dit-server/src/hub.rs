@@ -140,6 +140,7 @@ pub fn hub_app(hub: Arc<Hub>) -> Router {
         .route("/api/workspaces/add", post(add_workspace))
         .route("/api/workspaces/{name}", delete(remove_workspace))
         .route("/api/workspaces/{name}/default", post(set_default))
+        .route("/api/{*rest}", any(no_workspace_here))
         .route("/w/{name}", get(to_workspace_root))
         .route("/w/{name}/", any(dispatch_root))
         .route("/w/{name}/{*rest}", any(dispatch))
@@ -285,6 +286,14 @@ async fn root(State(hub): State<Arc<Hub>>, uri: Uri) -> Response {
         Some(name) => Redirect::temporary(&format!("/w/{name}/")).into_response(),
         None => crate::routes::serve_uri(uri).await,
     }
+}
+
+/// Every other API path lives under a workspace. Answering the page's
+/// shell here would hand a script HTML where it expects JSON.
+async fn no_workspace_here() -> HubError {
+    HubError::NotFound(
+        "no workspace is open at this address — the workspace API lives under /w/<name>/api".into(),
+    )
 }
 
 async fn to_workspace_root(Path(name): Path<String>) -> Redirect {

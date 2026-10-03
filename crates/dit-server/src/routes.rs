@@ -10,7 +10,7 @@ use std::sync::Arc;
 use axum::extract::{Path, Query, State, WebSocketUpgrade};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{any, get, post, put};
 use axum::{Json, Router};
 use dit_core::{Dit, DitError, Issue};
 use futures_util::{SinkExt, StreamExt};
@@ -137,6 +137,9 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/api/activity", get(get_activity))
         .route("/api/activity/summary", get(get_activity_summary))
         .route("/api/events", get(events))
+        // Every other API path is a JSON 404 — never the page's shell with
+        // a 200, which a client would read as an answer.
+        .route("/api/{*rest}", any(unknown_api))
         .fallback(serve_uri)
         .layer(axum::middleware::from_fn_with_state(
             guard.clone(),
@@ -1640,6 +1643,10 @@ async fn events(State(state): State<Arc<AppState>>, ws: WebSocketUpgrade) -> Res
             }
         }
     })
+}
+
+async fn unknown_api() -> ApiError {
+    ApiError::not_found("no such API endpoint on this server".to_owned())
 }
 
 // -- the UI --------------------------------------------------------------------

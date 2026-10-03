@@ -1571,3 +1571,14 @@ async fn a_spec_is_registered_from_a_candidate_and_unregistered_over_the_api() {
         .iter()
         .any(|s| s["id"] == "second"));
 }
+
+/// An API path the server does not have is a JSON 404, never the page's
+/// shell with a 200: the client asks for `/api/workspaces` to learn whether
+/// the server keeps a list of workspaces (ADR 0028), and must get a "no".
+#[tokio::test]
+async fn an_unknown_api_path_is_a_json_404_not_the_page() {
+    let (app, _tmp) = test_app();
+    let (status, json, text) = req(&app, "GET", "/api/workspaces", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{text}");
+    assert!(json["error"].is_string(), "{text}");
+}

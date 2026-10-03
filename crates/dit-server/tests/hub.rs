@@ -201,3 +201,16 @@ async fn the_browser_adds_only_a_folder_that_already_is_a_workspace() {
     assert_eq!(status, StatusCode::OK, "{added}");
     assert_eq!(added["name"], "home");
 }
+
+#[tokio::test]
+async fn an_api_path_outside_every_workspace_is_a_json_404_not_the_page() {
+    let f = fixture();
+    // The page at `/` (no workspace yet) asks for status; it must learn there
+    // is no workspace here, not receive the HTML shell with a 200.
+    let (status, body) = call(&f.app, "GET", "/api/status", None, true).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        body["error"].as_str().unwrap().contains("workspace"),
+        "{body}"
+    );
+}
