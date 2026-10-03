@@ -721,3 +721,43 @@ fn ai_spec_prints_a_topic_and_names_the_topics_it_does_not_know() {
         "{said}"
     );
 }
+
+/// Document templates from the terminal (ADR 0031): list the kinds, make a
+/// page placed by its stage, and never overwrite one.
+#[test]
+fn docs_new_makes_a_page_from_a_template_at_its_stage_folder() {
+    let tmp = tempfile::tempdir().unwrap();
+    assert!(dit(tmp.path(), &["init"]).status.success());
+    let list = dit(tmp.path(), &["docs", "templates"]);
+    assert!(list.status.success(), "{}", stderr(&list));
+    for id in [
+        "brd",
+        "prd",
+        "fsd",
+        "business-flow",
+        "data-model",
+        "release-notes",
+    ] {
+        assert!(
+            stdout(&list).contains(id),
+            "{id} missing:\n{}",
+            stdout(&list)
+        );
+    }
+
+    let made = dit(tmp.path(), &["docs", "new", "prd", "Checkout", "v2"]);
+    assert!(made.status.success(), "{}", stderr(&made));
+    assert_eq!(stdout(&made).trim(), "docs/business/checkout-v2.md");
+    let page = std::fs::read_to_string(tmp.path().join("docs/business/checkout-v2.md")).unwrap();
+    assert!(page.contains("# Checkout v2"), "{page}");
+
+    let again = dit(tmp.path(), &["docs", "new", "prd", "Checkout", "v2"]);
+    assert!(!again.status.success());
+    assert!(
+        stderr(&again).contains("already exists"),
+        "{}",
+        stderr(&again)
+    );
+    let unknown = dit(tmp.path(), &["docs", "new", "memo", "Anything"]);
+    assert_eq!(unknown.status.code(), Some(2), "{}", stderr(&unknown));
+}
