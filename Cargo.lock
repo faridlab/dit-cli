@@ -556,7 +556,7 @@ dependencies = [
 
 [[package]]
 name = "dit-ai"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "dit-model",
  "thiserror 2.0.20",
@@ -564,7 +564,7 @@ dependencies = [
 
 [[package]]
 name = "dit-cli"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "clap",
  "dit-core",
@@ -580,7 +580,7 @@ dependencies = [
 
 [[package]]
 name = "dit-code"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "dit-model",
  "tree-sitter",
@@ -592,7 +592,7 @@ dependencies = [
 
 [[package]]
 name = "dit-core"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "dit-ai",
  "dit-code",
@@ -614,7 +614,7 @@ dependencies = [
 
 [[package]]
 name = "dit-guards"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "axum",
  "dit-core",
@@ -630,7 +630,7 @@ dependencies = [
 
 [[package]]
 name = "dit-index"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "dit-model",
  "dit-query",
@@ -642,7 +642,7 @@ dependencies = [
 
 [[package]]
 name = "dit-model"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -652,7 +652,7 @@ dependencies = [
 
 [[package]]
 name = "dit-morse"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "dit-model",
  "dit-parse",
@@ -662,7 +662,7 @@ dependencies = [
 
 [[package]]
 name = "dit-parse"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "comrak",
  "dit-model",
@@ -682,7 +682,7 @@ dependencies = [
 
 [[package]]
 name = "dit-server"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "axum",
  "clap",
@@ -703,7 +703,7 @@ dependencies = [
 
 [[package]]
 name = "dit-store"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "dit-model",
  "dit-parse",
@@ -715,7 +715,7 @@ dependencies = [
 
 [[package]]
 name = "dit-tray"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "dit-core",
  "tao",
@@ -725,7 +725,7 @@ dependencies = [
 
 [[package]]
 name = "dit-vcs"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "dit-model",
  "dit-parse",
@@ -737,7 +737,7 @@ dependencies = [
 
 [[package]]
 name = "dit-wasm"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "dit-model",
  "dit-parse",
