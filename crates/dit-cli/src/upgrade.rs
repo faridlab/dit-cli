@@ -104,6 +104,13 @@ pub fn freshness() -> Freshness {
 /// latest release; `Some("0.1.9")` (with or without the `v`) that exact one.
 /// Returns a human line for the caller to print.
 pub fn upgrade(wanted: Option<&str>) -> Result<String, String> {
+    // Something else installed this binary: say so before downloading.
+    if let Some(why) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| managed_elsewhere(&exe))
+    {
+        return Err(why);
+    }
     let Some(triple) = triple() else {
         return Err(
             "no prebuilt release for this platform — build from source: scripts/install.sh"
@@ -159,6 +166,25 @@ pub fn upgrade(wanted: Option<&str>) -> Result<String, String> {
         release.tag,
         exe.display()
     ))
+}
+
+/// Why this binary is not ours to replace, when something else installed it.
+/// `current_exe` answers the path it was started by — Homebrew's symlink —
+/// so the real file is looked up before deciding.
+fn managed_elsewhere(exe: &std::path::Path) -> Option<String> {
+    let real = fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
+    let path = real.to_string_lossy();
+    if path.contains(".app/Contents/MacOS/") {
+        return Some(
+            "this dit is part of DIT.app — run 'brew upgrade --cask dit', which updates the app, \
+             its menu bar and this command together"
+                .to_string(),
+        );
+    }
+    if path.contains("/Cellar/") || path.contains("/Caskroom/") {
+        return Some("this dit was installed by Homebrew — run 'brew upgrade' instead".to_string());
+    }
+    None
 }
 
 // -- the network shell -------------------------------------------------------
@@ -338,6 +364,41 @@ fn install(_tarball: &[u8], _exe: &Path) -> Result<(), String> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    // Found in use: `dit` from the Homebrew cask is a symlink into DIT.app,
+    // and `current_exe` answers the symlink — so `dit upgrade` replaced
+    // Homebrew's link with a loose binary, leaving the app and its menu bar
+    // half on the old version and the next `brew upgrade` unable to link.
+    #[test]
+    #[cfg(unix)]
+    fn a_dit_that_belongs_to_the_app_or_homebrew_is_left_to_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let inside = tmp.path().join("DIT.app/Contents/MacOS");
+        std::fs::create_dir_all(&inside).unwrap();
+        std::fs::write(inside.join("dit"), "").unwrap();
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::os::unix::fs::symlink(inside.join("dit"), bin.join("dit")).unwrap();
+
+        for exe in [inside.join("dit"), bin.join("dit")] {
+            let why = managed_elsewhere(&exe).unwrap_or_default();
+            assert!(
+                why.contains("brew upgrade --cask dit"),
+                "{}: {why:?}",
+                exe.display()
+            );
+        }
+        let cellar = tmp.path().join("Cellar/dit/0.13.0/bin");
+        std::fs::create_dir_all(&cellar).unwrap();
+        std::fs::write(cellar.join("dit"), "").unwrap();
+        assert!(managed_elsewhere(&cellar.join("dit")).is_some_and(|w| w.contains("brew upgrade")));
+
+        // A binary of its own, as scripts/install.sh leaves it, is ours to replace.
+        let own = tmp.path().join("cargo-bin");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::write(own.join("dit"), "").unwrap();
+        assert_eq!(managed_elsewhere(&own.join("dit")), None);
+    }
 
     #[test]
     fn versions_parse_with_or_without_the_v() {
