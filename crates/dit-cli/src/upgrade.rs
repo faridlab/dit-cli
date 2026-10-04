@@ -172,7 +172,7 @@ pub fn upgrade(wanted: Option<&str>) -> Result<String, String> {
 /// `current_exe` answers the path it was started by — Homebrew's symlink —
 /// so the real file is looked up before deciding.
 fn managed_elsewhere(exe: &std::path::Path) -> Option<String> {
-    let real = fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
+    let real = std::fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
     let path = real.to_string_lossy();
     if path.contains(".app/Contents/MacOS/") {
         return Some(
