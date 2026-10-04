@@ -13,7 +13,7 @@ cask "dit" do
   desc "Local-first project management kept as Markdown in git"
   homepage "https://github.com/faridlab/dit-cli"
 
-  depends_on macos: ">= :big_sur"
+  depends_on macos: :big_sur
 
   app "DIT.app"
   # The same binary the app runs, on PATH for terminals and AI agents.
